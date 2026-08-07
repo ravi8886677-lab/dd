@@ -1065,8 +1065,11 @@ class FaceWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        # Face widget
-        self.face = LowPolyFaceWidget()
+        # Face widget. Imported here rather than at module scope because
+        # orb_widget imports JarvisState from this module.
+        from .orb_widget import ParticleOrbWidget
+
+        self.face = ParticleOrbWidget()
         layout.addWidget(self.face)
 
         # Position on the right side of the screen
