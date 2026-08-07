@@ -652,6 +652,10 @@ Running from source enables Chatterbox TTS (AI voice with emotion/cloning). Pipe
 
 Verify: `sudo lsof -i -n -P | grep jarvis` (should only show 127.0.0.1 to Ollama)
 
+The Memory Viewer is served from `127.0.0.1` and loads no webfonts, scripts or
+styles from any CDN, so opening your diary and knowledge graph makes no outbound
+request at all. It renders identically with the machine offline.
+
 </details>
 
 <details>

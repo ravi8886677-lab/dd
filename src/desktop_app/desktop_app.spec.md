@@ -202,6 +202,18 @@ COLORS = {
 
 Components use `JARVIS_THEME_STYLESHEET` for consistent styling across all dialogs and windows.
 
+### No remote assets
+
+Every surface renders from local resources only — no CDN webfonts, scripts,
+styles, or `preconnect` hints. This binds hardest on the Memory Viewer, which
+is HTML and could trivially pull a webfont: that page shows the user's diary
+and personal facts, so a font request would disclose their IP, User-Agent and
+the time they opened it, and would degrade the design on an offline machine.
+Typography goes through the `--font-ui` / `--font-mono` custom properties,
+which prefer the design's faces when installed locally and fall back to
+system faces ending in a generic family. Guarded by
+`tests/test_memory_viewer_offline.py`.
+
 ## Update System
 
 The desktop app includes an auto-update mechanism:
