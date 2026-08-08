@@ -3155,40 +3155,84 @@ _INDEX_HTML = """<!DOCTYPE html>
             const cx = w / 2, cy = h / 2, radius = Math.min(w, h) * 0.235;
             orbCtx.clearRect(0, 0, w, h);
 
-            // Instrument rings, drawn behind the sphere.
-            const rings = [
-                {r: 1.42, from: 0.00, sweep: 1.15, dir:  1, width: 1.6, alpha: 0.55},
-                {r: 1.42, from: 3.14, sweep: 0.85, dir:  1, width: 1.6, alpha: 0.40},
-                {r: 1.24, from: 1.20, sweep: 2.40, dir: -1, width: 1.0, alpha: 0.30},
-                {r: 1.62, from: 2.10, sweep: 0.55, dir: -1, width: 2.4, alpha: 0.45},
-                {r: 1.62, from: 5.10, sweep: 0.55, dir: -1, width: 2.4, alpha: 0.45}
+            // ── HUD instrumentation ────────────────────────────────
+            // Layered concentric tracks, counter-rotating at different
+            // rates. Every layer's speed is derived from m.spin, so the
+            // whole assembly accelerates when Jarvis is thinking and
+            // settles when idle — the rings report state, not decoration.
+            const glow = (colour, blur) => {
+                orbCtx.shadowColor = colour;
+                orbCtx.shadowBlur = blur;
+            };
+            const CY = '103,232,249', CY_DEEP = '34,211,238';
+
+            // 1. Outer dashed containment ring.
+            glow(`rgba(${CY_DEEP},0.95)`, 18);
+            orbCtx.strokeStyle = `rgba(${CY},${0.85 * m.brightness})`;
+            orbCtx.lineWidth = 2;
+            orbCtx.setLineDash([14, 9]);
+            orbCtx.lineDashOffset = -t * m.spin * 90;
+            orbCtx.beginPath();
+            orbCtx.arc(cx, cy, radius * 1.95, 0, Math.PI * 2);
+            orbCtx.stroke();
+            orbCtx.setLineDash([]);
+
+            // 2. Heavy segmented arcs — the ring that reads as "active".
+            const seg = [
+                {r: 1.72, from: 0.15, sweep: 1.55, dir:  1, w: 7,   a: 0.95},
+                {r: 1.72, from: 3.30, sweep: 1.20, dir:  1, w: 7,   a: 0.95},
+                {r: 1.52, from: 1.90, sweep: 2.10, dir: -1, w: 3.5, a: 0.80},
+                {r: 1.52, from: 5.10, sweep: 0.80, dir: -1, w: 3.5, a: 0.80},
+                {r: 1.34, from: 0.60, sweep: 2.60, dir:  1, w: 2,   a: 0.55}
             ];
-            for (const ring of rings) {
-                const spinR = t * m.spin * 1.8 * ring.dir;
+            for (const s of seg) {
+                const a0 = s.from + t * m.spin * 1.6 * s.dir;
+                glow(`rgba(${CY_DEEP},0.95)`, 20);
+                orbCtx.strokeStyle = `rgba(${CY},${s.a * m.brightness})`;
+                orbCtx.lineWidth = s.w;
+                orbCtx.lineCap = 'round';
                 orbCtx.beginPath();
-                orbCtx.arc(cx, cy, radius * ring.r,
-                           ring.from + spinR, ring.from + ring.sweep + spinR);
-                orbCtx.strokeStyle = `rgba(103,232,249,${Math.min(1, ring.alpha * 1.7) * m.brightness})`;
-                orbCtx.lineWidth = ring.width * 1.5;
-                orbCtx.shadowColor = 'rgba(34,211,238,0.9)';
-                orbCtx.shadowBlur = 14;
+                orbCtx.arc(cx, cy, radius * s.r, a0, a0 + s.sweep);
                 orbCtx.stroke();
-                orbCtx.shadowBlur = 0;
             }
-            // Tick marks on the outer track.
-            orbCtx.strokeStyle = `rgba(34,211,238,${0.65 * m.brightness})`;
-            orbCtx.shadowColor = 'rgba(34,211,238,0.8)';
-            orbCtx.shadowBlur = 8;
-            orbCtx.lineWidth = 1;
-            for (let i = 0; i < 48; i++) {
-                const a = (i / 48) * Math.PI * 2 - t * m.spin * 0.5;
-                const inner = radius * 1.72, outer = radius * (i % 4 === 0 ? 1.82 : 1.77);
+            orbCtx.lineCap = 'butt';
+
+            // 3. Fine tick track.
+            glow(`rgba(${CY_DEEP},0.8)`, 8);
+            for (let i = 0; i < 72; i++) {
+                const a = (i / 72) * Math.PI * 2 - t * m.spin * 0.55;
+                const major = i % 6 === 0;
+                const inner = radius * 1.80;
+                const outer = radius * (major ? 1.92 : 1.86);
+                orbCtx.strokeStyle = `rgba(${CY},${(major ? 0.9 : 0.45) * m.brightness})`;
+                orbCtx.lineWidth = major ? 2 : 1;
                 orbCtx.beginPath();
                 orbCtx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
                 orbCtx.lineTo(cx + Math.cos(a) * outer, cy + Math.sin(a) * outer);
                 orbCtx.stroke();
             }
+
+            // 4. Inner data ring: discrete blocks, like a readout.
+            for (let i = 0; i < 40; i++) {
+                const a = (i / 40) * Math.PI * 2 + t * m.spin * 2.2;
+                const lit = (i * 7 + Math.floor(t * 6)) % 5 !== 0;
+                orbCtx.strokeStyle = `rgba(${CY},${(lit ? 0.75 : 0.16) * m.brightness})`;
+                orbCtx.lineWidth = 3;
+                orbCtx.beginPath();
+                orbCtx.arc(cx, cy, radius * 1.16, a, a + 0.10);
+                orbCtx.stroke();
+            }
+
+            // 5. Core disc behind the particles, so the sphere sits in light.
+            const core = orbCtx.createRadialGradient(cx, cy, 0, cx, cy, radius * 1.05);
+            core.addColorStop(0, `rgba(${CY_DEEP},${0.30 * m.brightness})`);
+            core.addColorStop(0.65, `rgba(${CY_DEEP},${0.10 * m.brightness})`);
+            core.addColorStop(1, 'rgba(4,10,20,0)');
             orbCtx.shadowBlur = 0;
+            orbCtx.fillStyle = core;
+            orbCtx.beginPath();
+            orbCtx.arc(cx, cy, radius * 1.05, 0, Math.PI * 2);
+            orbCtx.fill();
 
             const swell = 1 + m.breathe * Math.sin(t * 1.9);
             const spun = m.spin * t, cs = Math.cos(spun), sn = Math.sin(spun);
@@ -3207,10 +3251,12 @@ _INDEX_HTML = """<!DOCTYPE html>
                 drawn.push([cx + rx * radius, cy - y * r * radius, depth]);
             }
             drawn.sort((a, b) => a[2] - b[2]);  // far side first
+            orbCtx.shadowColor = 'rgba(34,211,238,0.9)';
+            orbCtx.shadowBlur = 10;
 
             for (const [px, py, depth] of drawn) {
                 const size = 0.7 + 2.0 * Math.pow(depth, 1.3);
-                const alpha = (0.12 + 0.88 * Math.pow(depth, 1.8)) * m.brightness;
+                const alpha = (0.18 + 0.82 * Math.pow(depth, 1.6)) * m.brightness;
                 const cr = Math.round(0x0e + (0x67 - 0x0e) * depth);
                 const cg = Math.round(0x5f + (0xe8 - 0x5f) * depth);
                 const cb = Math.round(0x74 + (0xf9 - 0x74) * depth);
@@ -3219,6 +3265,18 @@ _INDEX_HTML = """<!DOCTYPE html>
                 orbCtx.arc(px, py, size, 0, Math.PI * 2);
                 orbCtx.fill();
             }
+            orbCtx.shadowBlur = 0;
+
+            // Core label, over the sphere.
+            orbCtx.save();
+            orbCtx.shadowColor = 'rgba(34,211,238,1)';
+            orbCtx.shadowBlur = 16;
+            orbCtx.fillStyle = `rgba(232,247,252,${0.95 * m.brightness})`;
+            orbCtx.font = `600 ${Math.round(radius * 0.30)}px 'JetBrains Mono', monospace`;
+            orbCtx.textAlign = 'center';
+            orbCtx.textBaseline = 'middle';
+            orbCtx.fillText('J.A.R.V.I.S', cx, cy);
+            orbCtx.restore();
         }
 
         (function orbLoop(start) {
