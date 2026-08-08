@@ -1351,12 +1351,20 @@ _INDEX_HTML = """<!DOCTYPE html>
 
         /* ── HUD workspace ────────────────────────────────────────── */
         .hud {
+            position: relative;
             display: grid;
             grid-template-columns: 290px minmax(0, 1fr) 400px;
             gap: 18px;
             height: calc(100vh - 210px);
             min-height: 560px;
         }
+        .hud::before {
+            content: ''; position: absolute; inset: 0; pointer-events: none;
+            background: repeating-linear-gradient(
+                to bottom, rgba(34,211,238,0.030) 0 1px, transparent 1px 3px);
+            opacity: 0.5; z-index: 0;
+        }
+        .hud > * { position: relative; z-index: 1; }
         .hud-rail { display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
         .hud-panel {
             background: linear-gradient(160deg, rgba(13,36,64,0.85), rgba(8,24,43,0.9));
@@ -1364,6 +1372,21 @@ _INDEX_HTML = """<!DOCTYPE html>
             border-radius: 12px;
             padding: 16px 18px;
             box-shadow: inset 0 0 24px rgba(34,211,238,0.05);
+        }
+        .hud-panel { position: relative; }
+        .hud-panel::before, .hud-panel::after {
+            content: ''; position: absolute; width: 14px; height: 14px;
+            border-color: var(--accent-primary); opacity: 0.65;
+        }
+        .hud-panel::before {
+            top: -1px; left: -1px;
+            border-top: 2px solid; border-left: 2px solid;
+            border-top-left-radius: 12px;
+        }
+        .hud-panel::after {
+            bottom: -1px; right: -1px;
+            border-bottom: 2px solid; border-right: 2px solid;
+            border-bottom-right-radius: 12px;
         }
         .hud-panel h3 {
             font-family: var(--font-mono);
@@ -1391,9 +1414,11 @@ _INDEX_HTML = """<!DOCTYPE html>
         }
         .hud-core {
             display: flex; flex-direction: column;
-            align-items: center; justify-content: center; gap: 6px;
+            align-items: center; justify-content: center; gap: 26px;
             min-width: 0;
         }
+        .hud-core .orb-stage { height: auto; flex: 0 1 auto; }
+        .hud-core .orb-stage canvas { height: auto; max-height: 52vh; }
         .hud-activate {
             font-family: var(--font-mono);
             font-size: 15px; letter-spacing: 0.24em; text-transform: uppercase;
@@ -1446,10 +1471,14 @@ _INDEX_HTML = """<!DOCTYPE html>
         .orb-state {
             font-family: var(--font-mono);
             font-size: 11px;
-            letter-spacing: 0.22em;
+            letter-spacing: 0.30em;
             text-transform: uppercase;
-            color: var(--text-muted);
-            padding-top: 10px;
+            color: var(--accent-secondary);
+            padding: 6px 18px;
+            border: 1px solid var(--border-color);
+            border-radius: 999px;
+            background: rgba(8,24,43,0.75);
+            text-shadow: 0 0 12px rgba(34,211,238,0.7);
         }
         .chat-shell.talking .orb-stage { height: 132px; }
         .orb-stage canvas { height: 100%; }
