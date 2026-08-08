@@ -464,6 +464,91 @@ def weather_now() -> Response:
         return jsonify({"error": str(e)}), 503
 
 
+# Fields the settings panel may write. An allow-list, so a POST cannot
+# reach unrelated config (db paths, MCP commands, wake words).
+_SETTINGS_FIELDS = (
+    "llm_provider", "llm_base_url", "llm_chat_model", "fast_model",
+    "embedding_provider", "embedding_model",
+)
+
+
+def _key_hint(key: str) -> str:
+    """Last four characters, so a user can tell which key is loaded."""
+    key = (key or "").strip()
+    return f"…{key[-4:]}" if len(key) >= 4 else ""
+
+
+@app.route("/api/settings")
+def settings_get() -> Response:
+    """Current LLM settings. The key itself is never returned.
+
+    Sending it back would put a live credential in the page source, in
+    the browser cache, and in anything that scrapes the DOM. A hint is
+    enough to answer "which key is this?".
+    """
+    from jarvis.config import _load_json
+
+    raw = _load_json(_config_path())
+    out = {f: raw.get(f, "") for f in _SETTINGS_FIELDS}
+    out["has_key"] = bool((raw.get("llm_api_key") or "").strip())
+    out["key_hint"] = _key_hint(raw.get("llm_api_key", ""))
+    return jsonify(out)
+
+
+@app.route("/api/settings", methods=["POST"])
+def settings_post() -> Response:
+    """Write LLM settings, including an optional new API key."""
+    from jarvis.config import _load_json, _save_json
+
+    payload = request.get_json(silent=True) or {}
+    raw = _load_json(_config_path())
+
+    for field in _SETTINGS_FIELDS:
+        if field in payload:
+            raw[field] = str(payload[field] or "").strip()
+
+    # Only replace the key when a new one is actually supplied, so the
+    # user can change the model without re-typing their credential.
+    new_key = str(payload.get("llm_api_key", "") or "").strip()
+    if new_key:
+        raw["llm_api_key"] = new_key
+
+    if not _save_json(_config_path(), raw):
+        return jsonify({"error": "could not write config.json"}), 500
+    return jsonify({"ok": True, "note": "Applied on the next message."})
+
+
+@app.route("/api/settings/test", methods=["POST"])
+def settings_test() -> Response:
+    """Ask the configured endpoint for its model list.
+
+    Saving a wrong key otherwise fails silently much later, inside a
+    reply, where the user cannot tell config from outage.
+    """
+    import requests as _rq
+
+    payload = request.get_json(silent=True) or {}
+    base = str(payload.get("llm_base_url", "") or "").strip().rstrip("/")
+    key = str(payload.get("llm_api_key", "") or "").strip()
+    if not key:
+        from jarvis.config import _load_json
+        key = (_load_json(_config_path()).get("llm_api_key") or "").strip()
+    if not base:
+        return jsonify({"error": "base URL is required"}), 400
+
+    try:
+        resp = _rq.get(f"{base}/models",
+                       headers={"Authorization": f"Bearer {key}"} if key else {},
+                       timeout=20)
+        if not resp.ok:
+            return jsonify({"error": f"endpoint returned HTTP {resp.status_code}"}), 502
+        data = resp.json()
+        models = [m.get("id", "") for m in (data.get("data") or [])]
+        return jsonify({"ok": True, "count": len(models), "models": models[:60]})
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 502
+
+
 @app.route("/api/chat/reset", methods=["POST"])
 def chat_reset() -> Response:
     """Start a fresh conversation, keeping what was said for the diary."""
@@ -1483,6 +1568,47 @@ _INDEX_HTML = """<!DOCTYPE html>
         .chat-shell.talking .orb-stage { height: 132px; }
         .orb-stage canvas { height: 100%; }
         .chat-shell.talking .orb-state { font-size: 10px; padding-top: 6px; }
+
+        /* ── Settings ─────────────────────────────────────────────── */
+        .settings-grid {
+            display: grid;
+            grid-template-columns: 180px minmax(0, 520px);
+            gap: 12px 18px;
+            align-items: center;
+            margin-bottom: 22px;
+        }
+        .settings-grid label {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .settings-grid input, .settings-grid select {
+            padding: 11px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 13px;
+        }
+        .settings-grid input:focus, .settings-grid select:focus {
+            outline: none; border-color: var(--accent-primary);
+        }
+        .settings-actions { display: flex; align-items: center; gap: 12px; }
+        .settings-actions button {
+            padding: 11px 26px; border-radius: 10px; cursor: pointer;
+            font-family: var(--font-ui); font-weight: 600; font-size: 14px;
+            border: 1px solid var(--border-color);
+        }
+        .settings-actions .btn-primary {
+            background: var(--accent-primary); border-color: var(--accent-primary); color: #04121c;
+        }
+        .settings-actions .btn-ghost { background: transparent; color: var(--text-secondary); }
+        .settings-status { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+        .settings-status.ok { color: var(--success); }
+        .settings-status.bad { color: var(--error); }
 
         /* ── Connections ──────────────────────────────────────────── */
         .conn-intro { margin-bottom: 22px; max-width: 720px; }
@@ -2692,6 +2818,9 @@ _INDEX_HTML = """<!DOCTYPE html>
             <button class="tab" data-tab="connections">
                 <span>🔌</span> Connections
             </button>
+            <button class="tab" data-tab="settings">
+                <span>🔑</span> Settings
+            </button>
         </div>
 
         <div class="tab-content">
@@ -2844,6 +2973,45 @@ _INDEX_HTML = """<!DOCTYPE html>
                 </div>
             </div>
 
+            <div id="settings-content" class="tab-pane" style="display: none;">
+                <div class="conn-intro">
+                    <h2>🔑 AI Provider</h2>
+                    <p>Point Jarvis at any OpenAI-compatible endpoint and supply your
+                       own key. Works with Gemini, OpenAI, Groq, Together, OpenRouter,
+                       or anything you self-host (Ollama, LM Studio, llama.cpp).
+                       Saved to <code>config.json</code> and applied on your next message.</p>
+                </div>
+
+                <div class="settings-grid">
+                    <label>Provider</label>
+                    <select id="set-provider">
+                        <option value="openai_compatible">openai_compatible</option>
+                        <option value="ollama">ollama</option>
+                    </select>
+
+                    <label>Base URL</label>
+                    <input id="set-baseurl" placeholder="https://generativelanguage.googleapis.com/v1beta/openai" />
+
+                    <label>API key</label>
+                    <input id="set-key" type="password" placeholder="leave blank to keep the current key" />
+
+                    <label>Chat model</label>
+                    <input id="set-chat" placeholder="gemini-3.1-flash-lite" />
+
+                    <label>Fast model</label>
+                    <input id="set-fast" placeholder="used for planning and routing" />
+
+                    <label>Embedding model</label>
+                    <input id="set-embed" placeholder="gemini-embedding-001" />
+                </div>
+
+                <div class="settings-actions">
+                    <button class="btn-primary" id="set-save">Save</button>
+                    <button class="btn-ghost" id="set-test">Test connection</button>
+                    <span id="set-status" class="settings-status"></span>
+                </div>
+            </div>
+
             <div id="connections-content" class="tab-pane" style="display: none;">
                 <div class="conn-intro">
                     <h2>🔌 Connections</h2>
@@ -2891,6 +3059,7 @@ _INDEX_HTML = """<!DOCTYPE html>
         const mealsToDateInput = document.getElementById('meals-to-date');
         const topicsCloud = document.getElementById('topics-cloud');
         const connPane = document.getElementById('connections-content');
+        const settingsPane = document.getElementById('settings-content');
         const chatPane = document.getElementById('chat-content');
         const chatLog = document.getElementById('chat-log');
         const chatInput = document.getElementById('chat-input');
@@ -3229,6 +3398,7 @@ _INDEX_HTML = """<!DOCTYPE html>
             graphContent.style.display = 'none';
             mealsPane.style.display = 'none';
             connPane.style.display = 'none';
+            settingsPane.style.display = 'none';
 
             if (currentTab === 'chat') {
                 chatPane.style.display = '';
@@ -3242,6 +3412,9 @@ _INDEX_HTML = """<!DOCTYPE html>
             } else if (currentTab === 'connections') {
                 connPane.style.display = '';
                 loadConnections();
+            } else if (currentTab === 'settings') {
+                settingsPane.style.display = '';
+                loadSettings();
             } else {
                 mealsPane.style.display = '';
                 loadMeals();
@@ -3250,6 +3423,65 @@ _INDEX_HTML = """<!DOCTYPE html>
 
         tabs.forEach(tab => {
             tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+        });
+
+        // ── Settings ──────────────────────────────────────────────────
+        async function loadSettings() {
+            const d = await (await fetch('/api/settings')).json();
+            document.getElementById('set-provider').value = d.llm_provider || 'openai_compatible';
+            document.getElementById('set-baseurl').value = d.llm_base_url || '';
+            document.getElementById('set-chat').value = d.llm_chat_model || '';
+            document.getElementById('set-fast').value = d.fast_model || '';
+            document.getElementById('set-embed').value = d.embedding_model || '';
+            // The key is never sent to the page. A hint identifies which one
+            // is loaded without exposing the credential.
+            document.getElementById('set-key').placeholder = d.has_key
+                ? `key ending ${d.key_hint} is saved — leave blank to keep it`
+                : 'paste your API key';
+        }
+
+        function settingsPayload() {
+            return {
+                llm_provider: document.getElementById('set-provider').value,
+                llm_base_url: document.getElementById('set-baseurl').value.trim(),
+                llm_chat_model: document.getElementById('set-chat').value.trim(),
+                fast_model: document.getElementById('set-fast').value.trim(),
+                embedding_model: document.getElementById('set-embed').value.trim(),
+                llm_api_key: document.getElementById('set-key').value.trim()
+            };
+        }
+
+        function setStatus(text, cls) {
+            const el = document.getElementById('set-status');
+            el.textContent = text;
+            el.className = 'settings-status ' + (cls || '');
+        }
+
+        document.getElementById('set-save').addEventListener('click', async () => {
+            setStatus('Saving…');
+            const res = await fetch('/api/settings', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(settingsPayload())
+            });
+            const d = await res.json();
+            if (res.ok) {
+                document.getElementById('set-key').value = '';
+                setStatus('Saved — applies on your next message.', 'ok');
+                loadSettings();
+            } else {
+                setStatus(d.error || 'Could not save.', 'bad');
+            }
+        });
+
+        document.getElementById('set-test').addEventListener('click', async () => {
+            setStatus('Testing…');
+            const res = await fetch('/api/settings/test', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(settingsPayload())
+            });
+            const d = await res.json();
+            if (res.ok) setStatus(`Connected — ${d.count} models available.`, 'ok');
+            else setStatus(d.error || 'Connection failed.', 'bad');
         });
 
         // ── Connections (MCP) ─────────────────────────────────────────
