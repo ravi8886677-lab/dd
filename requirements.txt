@@ -14,6 +14,9 @@ Pillow==10.4.0
 webrtcvad==2.0.10
 rapidfuzz==3.6.1
 pynput>=1.7.6
+# Mouse/keyboard control for the computerUse tool. Needs a desktop
+# session; the tool imports it lazily so headless installs still work.
+pyautogui>=0.9.54
 geoip2==4.8.0
 tzdata==2026.1; sys_platform == "win32"
 miniupnpc==2.2.8

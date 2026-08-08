@@ -17,6 +17,7 @@ from .builtin.nutrition.log_meal import LogMealTool
 from .builtin.nutrition.fetch_meals import FetchMealsTool
 from .builtin.nutrition.delete_meal import DeleteMealTool
 from .builtin.refresh_mcp_tools import RefreshMCPToolsTool
+from .builtin.computer_use import ComputerUseTool
 from .builtin.open_app import OpenAppTool
 from .builtin.weather import WeatherTool
 from .builtin.stop import StopTool
@@ -39,6 +40,7 @@ BUILTIN_TOOLS = {
     "refreshMCPTools": RefreshMCPToolsTool(),
     "getWeather": WeatherTool(),
     "openApp": OpenAppTool(),
+    "computerUse": ComputerUseTool(),
     "stop": StopTool(),
     "toolSearchTool": ToolSearchTool(),
 }
