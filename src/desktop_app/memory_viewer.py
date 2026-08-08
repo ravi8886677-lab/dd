@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -203,6 +204,158 @@ def get_meals() -> Response:
         return jsonify({"meals": meals, "count": len(meals)})
     except Exception as e:
         return jsonify({"error": str(e), "meals": [], "count": 0}), 500
+
+
+# ── Chat ──────────────────────────────────────────────────────────────
+#
+# One conversation for the dashboard, held for the life of the server so
+# follow-ups ("and where do they live?") see the earlier turns. The
+# engine writes the diary and knowledge graph itself, exactly as it does
+# for the terminal front end — the browser is another way in, not a
+# second assistant.
+_chat_lock = threading.Lock()
+_chat_memory = None
+
+
+def _get_chat_memory():
+    global _chat_memory
+    if _chat_memory is None:
+        from jarvis.memory.conversation import DialogueMemory
+
+        cfg = load_settings()
+        _chat_memory = DialogueMemory(
+            inactivity_timeout=cfg.dialogue_memory_timeout, max_interactions=20,
+        )
+    return _chat_memory
+
+
+@app.route("/api/chat", methods=["POST"])
+def chat() -> Response:
+    """Answer one message from the dashboard."""
+    payload = request.get_json(silent=True) or {}
+    message = str(payload.get("message", "")).strip()
+    if not message:
+        return jsonify({"error": "message is required"}), 400
+
+    # Serialised: the reply engine mutates shared dialogue memory, and two
+    # browser tabs posting at once would interleave turns into nonsense.
+    with _chat_lock:
+        try:
+            import dataclasses
+
+            from jarvis.memory.db import Database
+            from jarvis.reply.engine import run_reply_engine
+
+            cfg = dataclasses.replace(load_settings(), use_stdin=True)
+            db = Database(_get_db_path(), cfg.sqlite_vss_path)
+            try:
+                reply = run_reply_engine(db, cfg, None, message, _get_chat_memory())
+            finally:
+                db.close()
+        except Exception as e:
+            debug_log(f"dashboard chat failed: {e}", "memory_viewer")
+            return jsonify({"error": str(e)}), 500
+
+    if not reply:
+        return jsonify({"error": "the assistant returned no reply"}), 502
+    return jsonify({"reply": reply})
+
+
+def _config_path():
+    import os
+
+    from jarvis.config import default_config_path
+
+    override = os.environ.get("JARVIS_CONFIG_PATH")
+    return Path(override).expanduser() if override else default_config_path()
+
+
+@app.route("/api/mcp")
+def mcp_list() -> Response:
+    """Configured MCP servers, with how many tools each is offering.
+
+    Tool counts come from a live discovery pass, so a server that is
+    configured but broken shows up as connected-with-zero rather than
+    silently looking fine.
+    """
+    from jarvis.config import _load_json
+
+    servers = (_load_json(_config_path()).get("mcps") or {})
+
+    counts: dict = {}
+    errors: dict = {}
+    if servers:
+        try:
+            from jarvis.tools.registry import discover_mcp_tools
+
+            tools, errors = discover_mcp_tools(servers)
+            for name in tools:
+                if "__" in name:
+                    server = name.split("__")[0]
+                    counts[server] = counts.get(server, 0) + 1
+        except Exception as e:
+            debug_log(f"MCP discovery from dashboard failed: {e}", "memory_viewer")
+
+    return jsonify({
+        "servers": [
+            {
+                "name": name,
+                "command": spec.get("command", ""),
+                "args": spec.get("args", []),
+                "tools": counts.get(name, 0),
+                "error": errors.get(name),
+            }
+            for name, spec in servers.items()
+        ]
+    })
+
+
+@app.route("/api/mcp", methods=["POST"])
+def mcp_add() -> Response:
+    """Add or replace one MCP server, persisting to config.json."""
+    from jarvis.config import _load_json, _save_json
+
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name", "")).strip()
+    command = str(payload.get("command", "")).strip()
+    if not name or not command:
+        return jsonify({"error": "name and command are required"}), 400
+
+    args = payload.get("args") or []
+    if isinstance(args, str):
+        args = args.split()
+
+    path = _config_path()
+    cfg_json = _load_json(path)
+    cfg_json.setdefault("mcps", {})[name] = {
+        "command": command,
+        "args": [str(a) for a in args],
+    }
+    if not _save_json(path, cfg_json):
+        return jsonify({"error": "could not write config.json"}), 500
+    return jsonify({"ok": True})
+
+
+@app.route("/api/mcp/<name>", methods=["DELETE"])
+def mcp_remove(name: str) -> Response:
+    from jarvis.config import _load_json, _save_json
+
+    path = _config_path()
+    cfg_json = _load_json(path)
+    if (cfg_json.get("mcps") or {}).pop(name, None) is None:
+        return jsonify({"error": f"no MCP server named {name}"}), 404
+    if not _save_json(path, cfg_json):
+        return jsonify({"error": "could not write config.json"}), 500
+    return jsonify({"ok": True})
+
+
+@app.route("/api/chat/reset", methods=["POST"])
+def chat_reset() -> Response:
+    """Start a fresh conversation, keeping what was said for the diary."""
+    with _chat_lock:
+        memory = _get_chat_memory()
+        memory.start_new_conversation()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/stats")
@@ -1047,6 +1200,200 @@ def index() -> str:
             flex: 1;
             min-height: 0;
         }
+
+        /* ── Chat ─────────────────────────────────────────────────── */
+        /* The orb is the assistant's presence: a hero while the transcript
+           is empty, stepping back to a header band once there is text to
+           read. Height drives the size so the layout reflows properly —
+           a transform would scale the pixels while leaving the old box. */
+        .orb-stage {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            height: 340px;
+            transition: height 420ms ease;
+            background: radial-gradient(ellipse at 50% 45%,
+                        rgba(245, 158, 11, 0.07), transparent 62%);
+        }
+        .orb-stage canvas {
+            height: 78%;
+            width: auto;
+            max-width: 100%;
+        }
+        .orb-state {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding-top: 10px;
+        }
+        .chat-shell.talking .orb-stage { height: 132px; }
+        .chat-shell.talking .orb-state { font-size: 10px; padding-top: 6px; }
+
+        /* ── Connections ──────────────────────────────────────────── */
+        .conn-intro { margin-bottom: 22px; max-width: 720px; }
+        .conn-intro h2 { font-size: 20px; margin-bottom: 8px; }
+        .conn-intro p { color: var(--text-secondary); line-height: 1.6; }
+        .conn-intro code {
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: var(--accent-secondary);
+        }
+        .conn-add {
+            display: grid;
+            grid-template-columns: 1fr 1fr 2fr auto;
+            gap: 10px;
+            margin-bottom: 24px;
+        }
+        .conn-add input {
+            padding: 11px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-ui);
+            font-size: 14px;
+        }
+        .conn-add input:focus { outline: none; border-color: var(--accent-primary); }
+        .conn-add button {
+            padding: 0 22px;
+            border-radius: 10px;
+            border: 1px solid var(--accent-primary);
+            background: var(--accent-primary);
+            color: #14110a;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .conn-list { display: flex; flex-direction: column; gap: 12px; }
+        .conn-card {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 16px 18px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+        .conn-card .conn-name { font-weight: 600; font-size: 15px; }
+        .conn-card .conn-cmd {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 4px;
+            word-break: break-all;
+        }
+        .conn-card .conn-meta { flex: 1; min-width: 0; }
+        .conn-pill {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            padding: 5px 11px;
+            border-radius: 999px;
+            white-space: nowrap;
+        }
+        .conn-pill.ok { background: rgba(34,197,94,0.14); color: var(--success-light); }
+        .conn-pill.bad { background: rgba(239,68,68,0.14); color: var(--error-light); }
+        .conn-remove {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            border-radius: 8px;
+            padding: 7px 13px;
+            cursor: pointer;
+        }
+        .conn-remove:hover { border-color: var(--error); color: var(--error-light); }
+        .chat-shell {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 230px);
+            min-height: 380px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            overflow: hidden;
+        }
+        .chat-log {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        .chat-msg { display: flex; }
+        .chat-msg.user { justify-content: flex-end; }
+        .chat-bubble {
+            max-width: min(72%, 620px);
+            padding: 12px 16px;
+            border-radius: 14px;
+            line-height: 1.55;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .chat-msg.user .chat-bubble {
+            background: var(--accent-primary);
+            color: #14110a;
+            border-bottom-right-radius: 4px;
+        }
+        .chat-msg.assistant .chat-bubble {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-bottom-left-radius: 4px;
+        }
+        .chat-msg.pending .chat-bubble {
+            color: var(--text-muted);
+            font-style: italic;
+        }
+        .chat-msg.error .chat-bubble {
+            border-color: var(--error);
+            color: var(--error-light);
+        }
+        .chat-composer {
+            display: flex;
+            gap: 10px;
+            padding: 14px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-secondary);
+        }
+        .chat-composer textarea {
+            flex: 1;
+            resize: none;
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-ui);
+            font-size: 15px;
+            line-height: 1.5;
+        }
+        .chat-composer textarea:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+        .chat-composer button {
+            padding: 0 20px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            font-family: var(--font-ui);
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .chat-composer .btn-primary {
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+            color: #14110a;
+        }
+        .chat-composer .btn-ghost {
+            background: transparent;
+            color: var(--text-secondary);
+        }
+        .chat-composer button:hover { filter: brightness(1.1); }
 
         .tab-pane.with-sidebar {
             display: grid;
@@ -2080,7 +2427,10 @@ def index() -> str:
 
     <main class="main-container">
         <div class="tabs">
-            <button class="tab active" data-tab="memories">
+            <button class="tab active" data-tab="chat">
+                <span>💬</span> Chat
+            </button>
+            <button class="tab" data-tab="memories">
                 <span>💭</span> Diary
             </button>
             <button class="tab" data-tab="graph">
@@ -2089,10 +2439,35 @@ def index() -> str:
             <button class="tab" data-tab="meals">
                 <span>🍽️</span> Meals
             </button>
+            <button class="tab" data-tab="connections">
+                <span>🔌</span> Connections
+            </button>
         </div>
 
         <div class="tab-content">
-            <div id="memories-content" class="tab-pane with-sidebar">
+            <div id="chat-content" class="tab-pane active">
+                <div class="chat-shell">
+                    <div class="orb-stage">
+                        <canvas id="orb" width="620" height="420"></canvas>
+                        <div class="orb-state" id="orb-state">idle</div>
+                    </div>
+                    <div class="chat-log" id="chat-log">
+                        <div class="empty-state">
+                            <div class="empty-icon">💬</div>
+                            <div class="empty-title">Talk to Jarvis</div>
+                            <p>Same assistant as the voice and terminal front ends —
+                               same memory, same tools.</p>
+                        </div>
+                    </div>
+                    <div class="chat-composer">
+                        <textarea id="chat-input" rows="1" placeholder="Ask Jarvis something…"></textarea>
+                        <button class="btn-primary" id="chat-send">Send</button>
+                        <button class="btn-ghost" id="chat-reset" title="Save this conversation and start fresh">New</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="memories-content" class="tab-pane with-sidebar" style="display: none;">
                 <aside class="sidebar" id="diary-sidebar">
                     <div class="sidebar-section" id="date-filter-section">
                         <div class="sidebar-title">📅 Date Range</div>
@@ -2184,12 +2559,33 @@ def index() -> str:
                     <div class="loading"><div class="spinner"></div></div>
                 </div>
             </div>
+
+            <div id="connections-content" class="tab-pane" style="display: none;">
+                <div class="conn-intro">
+                    <h2>🔌 Connections</h2>
+                    <p>MCP servers give Jarvis new tools — Home Assistant, GitHub,
+                       Slack, your filesystem, a database. Anything added here is
+                       written to <code id="conn-config-path">config.json</code> and
+                       picked up on the next conversation.</p>
+                </div>
+
+                <div class="conn-add">
+                    <input id="conn-name" placeholder="Name (e.g. github)" />
+                    <input id="conn-command" placeholder="Command (e.g. npx)" />
+                    <input id="conn-args" placeholder="Arguments (e.g. -y @modelcontextprotocol/server-github)" />
+                    <button class="btn-primary" id="conn-add-btn">Add</button>
+                </div>
+
+                <div id="conn-list" class="conn-list">
+                    <div class="loading"><div class="spinner"></div></div>
+                </div>
+            </div>
         </div>
     </main>
 
     <script>
         // State
-        let currentTab = 'memories';
+        let currentTab = 'chat';
         let selectedTopics = new Set();
         let searchQuery = '';
         let diaryImportDone = false;
@@ -2210,6 +2606,10 @@ def index() -> str:
         const mealsFromDateInput = document.getElementById('meals-from-date');
         const mealsToDateInput = document.getElementById('meals-to-date');
         const topicsCloud = document.getElementById('topics-cloud');
+        const connPane = document.getElementById('connections-content');
+        const chatPane = document.getElementById('chat-content');
+        const chatLog = document.getElementById('chat-log');
+        const chatInput = document.getElementById('chat-input');
         const memoriesPane = document.getElementById('memories-content');
         const mealsPane = document.getElementById('meals-content');
         const graphContent = document.getElementById('graph-content');
@@ -2540,16 +2940,24 @@ def index() -> str:
             currentTab = tabName;
 
             // Hide all panes
+            chatPane.style.display = 'none';
             memoriesPane.style.display = 'none';
             graphContent.style.display = 'none';
             mealsPane.style.display = 'none';
+            connPane.style.display = 'none';
 
-            if (currentTab === 'memories') {
+            if (currentTab === 'chat') {
+                chatPane.style.display = '';
+                chatInput.focus();
+            } else if (currentTab === 'memories') {
                 memoriesPane.style.display = '';
                 loadMemories();
             } else if (currentTab === 'graph') {
                 graphContent.style.display = '';
                 initGraph();
+            } else if (currentTab === 'connections') {
+                connPane.style.display = '';
+                loadConnections();
             } else {
                 mealsPane.style.display = '';
                 loadMeals();
@@ -2558,6 +2966,229 @@ def index() -> str:
 
         tabs.forEach(tab => {
             tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+        });
+
+        // ── Connections (MCP) ─────────────────────────────────────────
+        async function loadConnections() {
+            const list = document.getElementById('conn-list');
+            list.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            try {
+                const data = await (await fetch('/api/mcp')).json();
+                if (!data.servers.length) {
+                    list.innerHTML = '<div class="empty-state">'
+                        + '<div class="empty-icon">🔌</div>'
+                        + '<div class="empty-title">No connections yet</div>'
+                        + '<p>Add an MCP server above to give Jarvis more tools.</p></div>';
+                    return;
+                }
+                list.innerHTML = data.servers.map(s => {
+                    // A configured server offering zero tools is a failure worth
+                    // showing — silence here used to look like success.
+                    const ok = s.tools > 0;
+                    const label = ok ? `${s.tools} tool${s.tools === 1 ? '' : 's'}`
+                                     : (s.error ? 'failed' : 'no tools');
+                    const cmd = escapeHtml([s.command].concat(s.args || []).join(' '));
+                    return `<div class="conn-card">
+                        <div class="conn-meta">
+                            <div class="conn-name">${escapeHtml(s.name)}</div>
+                            <div class="conn-cmd">${cmd}</div>
+                            ${s.error ? `<div class="conn-cmd">⚠️ ${escapeHtml(s.error)}</div>` : ''}
+                        </div>
+                        <span class="conn-pill ${ok ? 'ok' : 'bad'}">${label}</span>
+                        <button class="conn-remove" data-name="${escapeHtml(s.name)}">Remove</button>
+                    </div>`;
+                }).join('');
+
+                list.querySelectorAll('.conn-remove').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        await fetch('/api/mcp/' + encodeURIComponent(btn.dataset.name),
+                                    {method: 'DELETE'});
+                        loadConnections();
+                    });
+                });
+            } catch (err) {
+                list.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div>'
+                    + '<div class="empty-title">Could not load connections</div></div>';
+            }
+        }
+
+        document.getElementById('conn-add-btn').addEventListener('click', async () => {
+            const name = document.getElementById('conn-name').value.trim();
+            const command = document.getElementById('conn-command').value.trim();
+            const args = document.getElementById('conn-args').value.trim();
+            if (!name || !command) return;
+
+            const res = await fetch('/api/mcp', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name, command, args: args ? args.split(/\\s+/) : []})
+            });
+            if (res.ok) {
+                document.getElementById('conn-name').value = '';
+                document.getElementById('conn-command').value = '';
+                document.getElementById('conn-args').value = '';
+                loadConnections();
+            }
+        });
+
+        // ── Orb ───────────────────────────────────────────────────────
+        // Same geometry as the desktop widget (orb_widget.py): points spread
+        // over a sphere by a Fibonacci spiral, spun about the vertical axis
+        // and projected flat, with depth driving size and opacity. Kept in
+        // step with MOTION there — speaking is the only state that ripples,
+        // because that is the cue that Jarvis is talking.
+        const ORB_MOTION = {
+            idle:     {spin: 0.18, breathe: 0.028, ripple: 0,     rippleSpeed: 0,   turbulence: 0,     brightness: 0.70},
+            thinking: {spin: 0.85, breathe: 0.030, ripple: 0,     rippleSpeed: 0,   turbulence: 0.10,  brightness: 0.85},
+            speaking: {spin: 0.34, breathe: 0.030, ripple: 0.115, rippleSpeed: 3.1, turbulence: 0.015, brightness: 1.00}
+        };
+        const ORB_POINTS = (() => {
+            const n = 380, golden = Math.PI * (3 - Math.sqrt(5)), pts = [];
+            for (let i = 0; i < n; i++) {
+                const y = 1 - (2 * i) / (n - 1);
+                const r = Math.sqrt(Math.max(0, 1 - y * y));
+                const th = golden * i;
+                pts.push([Math.cos(th) * r, y, Math.sin(th) * r]);
+            }
+            return pts;
+        })();
+
+        let orbState = 'idle';
+        const orbCanvas = document.getElementById('orb');
+        const orbCtx = orbCanvas.getContext('2d');
+        const orbLabel = document.getElementById('orb-state');
+
+        function setOrbState(state) {
+            orbState = state;
+            orbLabel.textContent = state;
+        }
+
+        function drawOrb(t) {
+            const m = ORB_MOTION[orbState] || ORB_MOTION.idle;
+            const w = orbCanvas.width, h = orbCanvas.height;
+            const cx = w / 2, cy = h / 2, radius = Math.min(w, h) * 0.38;
+            orbCtx.clearRect(0, 0, w, h);
+
+            const swell = 1 + m.breathe * Math.sin(t * 1.9);
+            const spun = m.spin * t, cs = Math.cos(spun), sn = Math.sin(spun);
+            const drawn = [];
+
+            for (let i = 0; i < ORB_POINTS.length; i++) {
+                const [x, y, z] = ORB_POINTS[i];
+                let r = swell;
+                if (m.ripple) r += m.ripple * Math.sin(y * 3.4 - t * m.rippleSpeed);
+                if (m.turbulence) {
+                    r += m.turbulence * Math.sin(i * 12.9898 + t * 1.7) * Math.cos(i * 4.1414 + t * 0.9);
+                }
+                const rx = (x * cs - z * sn) * r;
+                const rz = (x * sn + z * cs) * r;
+                const depth = Math.max(0, Math.min(1, (rz + 1) / 2));
+                drawn.push([cx + rx * radius, cy - y * r * radius, depth]);
+            }
+            drawn.sort((a, b) => a[2] - b[2]);  // far side first
+
+            for (const [px, py, depth] of drawn) {
+                const size = 0.5 + 1.7 * Math.pow(depth, 1.3);
+                const alpha = (0.04 + 0.96 * Math.pow(depth, 2.2)) * m.brightness;
+                const cr = Math.round(0x92 + (0xfb - 0x92) * depth);
+                const cg = Math.round(0x40 + (0xbf - 0x40) * depth);
+                const cb = Math.round(0x0e + (0x24 - 0x0e) * depth);
+                orbCtx.fillStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+                orbCtx.beginPath();
+                orbCtx.arc(px, py, size, 0, Math.PI * 2);
+                orbCtx.fill();
+            }
+        }
+
+        (function orbLoop(start) {
+            const step = (now) => {
+                drawOrb((now - start) / 1000);
+                requestAnimationFrame(step);
+            };
+            requestAnimationFrame(step);
+        })(performance.now());
+
+        // ── Chat ──────────────────────────────────────────────────────
+        let chatBusy = false;
+
+        function appendBubble(role, text) {
+            const empty = chatLog.querySelector('.empty-state');
+            if (empty) empty.remove();
+            document.querySelector('.chat-shell').classList.add('talking');
+            const row = document.createElement('div');
+            row.className = 'chat-msg ' + role;
+            row.innerHTML = `<div class="chat-bubble">${escapeHtml(text)}</div>`;
+            chatLog.appendChild(row);
+            chatLog.scrollTop = chatLog.scrollHeight;
+            return row;
+        }
+
+        async function sendChat() {
+            const message = chatInput.value.trim();
+            if (!message || chatBusy) return;
+
+            chatBusy = true;
+            setOrbState('thinking');
+            chatInput.value = '';
+            chatInput.style.height = 'auto';
+            appendBubble('user', message);
+
+            // The reply engine plans, may call tools, then answers — that
+            // can run to tens of seconds, so the wait needs to be visible
+            // or the page looks broken.
+            const pending = appendBubble('assistant pending', 'Thinking…');
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message})
+                });
+                const data = await response.json();
+                pending.remove();
+                if (!response.ok) {
+                    appendBubble('assistant error', data.error || 'Something went wrong.');
+                } else {
+                    appendBubble('assistant', data.reply);
+                    // Hold SPEAKING for roughly as long as the reply takes to
+                    // read, so the ripple lines up with the user reading it.
+                    setOrbState('speaking');
+                    const dwell = Math.min(9000, 1200 + (data.reply || '').length * 45);
+                    setTimeout(() => { if (!chatBusy) setOrbState('idle'); }, dwell);
+                }
+            } catch (err) {
+                pending.remove();
+                appendBubble('assistant error', 'Could not reach Jarvis: ' + err.message);
+            } finally {
+                chatBusy = false;
+                if (orbState === 'thinking') setOrbState('idle');
+                chatInput.focus();
+            }
+        }
+
+        document.getElementById('chat-send').addEventListener('click', sendChat);
+
+        chatInput.addEventListener('keydown', (e) => {
+            // Enter sends; Shift+Enter is a newline, as in every chat app.
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendChat();
+            }
+        });
+
+        chatInput.addEventListener('input', () => {
+            chatInput.style.height = 'auto';
+            chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + 'px';
+        });
+
+        document.getElementById('chat-reset').addEventListener('click', async () => {
+            await fetch('/api/chat/reset', {method: 'POST'});
+            chatLog.innerHTML = '<div class="empty-state">'
+                + '<div class="empty-icon">💬</div>'
+                + '<div class="empty-title">Fresh conversation</div>'
+                + '<p>The previous one was saved to the diary.</p></div>';
+            document.querySelector('.chat-shell').classList.remove('talking');
+            setOrbState('idle');
         });
 
         // Diary maintenance button lives in the diary tab's sidebar, which
@@ -3782,10 +4413,12 @@ def index() -> str:
             });
         }
 
-        // Initial load
+        // Initial load. Chat is the default tab, so the diary lists load
+        // lazily when that tab is opened; stats and topics feed the header
+        // and sidebar, which are cheap and always visible.
         loadStats();
         loadTopics();
-        loadMemories();
+        chatInput.focus();
     </script>
 </body>
 </html>"""
