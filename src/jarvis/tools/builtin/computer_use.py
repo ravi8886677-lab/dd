@@ -27,6 +27,19 @@ it to click something.
 Codes are single-use and bound to the exact action proposed, so an
 approval for "click Play" cannot be replayed to authorise a different
 click.
+
+## Why it is not a code every time
+
+A gate people meet on every scroll is a gate they learn to clear without
+reading, which is worse than no gate — it trains the habit the gate
+exists to prevent. So one approval opens a window covering ordinary
+actions, the way sudo does.
+
+The window never covers typing or key presses. The asymmetry is the
+point: a mistaken click is a mistaken click, while a mistaken Enter
+sends the email or empties the folder. Approving a risky action does not
+open the window either, so consenting to type once cannot silently
+unlock clicking.
 """
 
 from __future__ import annotations
@@ -46,6 +59,21 @@ _CONFIRM_TTL_SEC = 120.0
 
 # One pending proposal at a time: (code, description, action, issued_at).
 _pending: Optional[Tuple[str, str, Dict[str, Any], float]] = None
+
+# When the user last approved something. Confirming every click makes the
+# tool unusable — nobody reads a code to scroll — so an approval opens a
+# trust window, the way sudo does. Risky actions ignore it entirely.
+_trusted_until: float = 0.0
+
+# How long one approval covers ordinary actions. Long enough to work
+# through a task, short enough that walking away closes it.
+_TRUST_WINDOW_SEC = 900.0
+
+# Actions that can submit, destroy, or enter text somewhere unintended.
+# These always ask, however recently the user approved something else:
+# the cost of a wrong click is a wrong click, but the cost of a wrong
+# Enter is a sent email or a deleted file.
+_ALWAYS_CONFIRM = {"type", "key"}
 
 _ACTIONS = ("click", "double_click", "right_click", "type", "key", "scroll", "move")
 
@@ -91,9 +119,10 @@ class ComputerUseTool(Tool):
         "— click buttons, type into fields, scroll, press keys. Use for requests "
         "like 'click play', 'fill in this form', 'press enter'. Call with "
         "action='screenshot' first to see the screen and work out coordinates. "
-        "Every action needs a confirmation code the user reads off their screen "
-        "and gives you; propose the action, tell the user what you intend to do, "
-        "and wait for them to supply the code."
+        "The first action asks for a confirmation code shown on the user's screen: "
+        "say what you intend to do and wait for them to read it to you — you cannot "
+        "see it yourself. After one approval, clicking, scrolling and moving run "
+        "without asking again for a while; typing and key presses always ask."
     )
     inputSchema = {
         "type": "object",
@@ -118,7 +147,7 @@ class ComputerUseTool(Tool):
     }
 
     def run(self, args: Optional[Dict[str, Any]], context: ToolContext) -> ToolExecutionResult:
-        global _pending
+        global _pending, _trusted_until
         args = args or {}
         action = str(args.get("action", "")).strip().lower()
 
@@ -132,6 +161,12 @@ class ComputerUseTool(Tool):
             )
 
         supplied = str(args.get("confirmation_code", "") or "").strip()
+
+        # Inside a trust window, ordinary actions run straight away. The
+        # user has already said yes to this session; asking again for
+        # every scroll teaches them to approve without reading.
+        if not supplied and self._covered_by_trust(action, args):
+            return self._execute(self._payload(args, action), _describe(self._payload(args, action)), context)
 
         if not supplied:
             return self._propose(args, action, context)
@@ -169,7 +204,27 @@ class ComputerUseTool(Tool):
             )
 
         _pending = None
+        # This approval also covers ordinary actions for a while, so the
+        # user is not re-reading codes throughout one task.
+        if pending_action["action"] not in _ALWAYS_CONFIRM:
+            _trusted_until = time.time() + _TRUST_WINDOW_SEC
+            context.user_print(
+                f"  🔓 Approved. Clicking and scrolling will not ask again for "
+                f"{int(_TRUST_WINDOW_SEC / 60)} minutes. Typing and key presses "
+                f"still will."
+            )
         return self._execute(pending_action, description, context)
+
+    def _payload(self, args: Dict[str, Any], action: str) -> Dict[str, Any]:
+        payload = {k: args.get(k) for k in ("x", "y", "text", "key", "amount", "target")}
+        payload["action"] = action
+        return payload
+
+    def _covered_by_trust(self, action: str, args: Dict[str, Any]) -> bool:
+        """Whether this action may run on an earlier approval."""
+        if action in _ALWAYS_CONFIRM:
+            return False
+        return time.time() < _trusted_until
 
     def _signature(self, action: Dict[str, Any], kind: str) -> tuple:
         return (
@@ -181,8 +236,7 @@ class ComputerUseTool(Tool):
     def _propose(self, args: Dict[str, Any], action: str, context: ToolContext) -> ToolExecutionResult:
         global _pending
 
-        payload = {k: args.get(k) for k in ("x", "y", "text", "key", "amount", "target")}
-        payload["action"] = action
+        payload = self._payload(args, action)
         description = _describe(payload)
 
         code = f"{secrets.randbelow(9000) + 1000}"
