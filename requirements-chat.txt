@@ -14,6 +14,9 @@ html2text>=2020.1.16
 numpy<2.0.0
 rapidfuzz==3.6.1
 geoip2==4.8.0
+# mcp 2.x removes the initialize handshake and reworks the client
+# surface; the exact pin keeps installs on the 1.x contract this
+# codebase targets.
 mcp==1.13.1
 faiss-cpu>=1.7.4
 

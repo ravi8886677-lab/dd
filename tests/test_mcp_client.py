@@ -817,7 +817,7 @@ class TestConnectStdioPathInjection:
             fake_stdio_client,
         )
 
-        client = MCPClient({"test": {"command": "npx", "args": ["-y", "server"]}})
+        client = MCPClient({"test": {"command": "npx", "args": ["-y", "server@1.0.0"]}})
         client._connect_stdio(client.server_configs["test"])
 
         env = captured_params["env"]

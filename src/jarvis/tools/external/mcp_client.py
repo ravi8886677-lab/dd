@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from mcp import ClientSession  # type: ignore
 from mcp.client.stdio import stdio_client, StdioServerParameters  # type: ignore
 
+from .mcp_supply_chain import validate_server_launch
+
 
 import glob as _glob
 import shlex as _shlex
@@ -143,7 +145,7 @@ class MCPClient:
     def __init__(self, mcps_config: Dict[str, Any]) -> None:
         self.server_configs: Dict[str, Dict[str, Any]] = mcps_config or {}
 
-    def _connect_stdio(self, server_cfg: Dict[str, Any]):
+    def _connect_stdio(self, server_cfg: Dict[str, Any], server_name: str = "?"):
         """Build an async context manager for the stdio transport.
 
         Returns an ``_StdioConnection`` that owns both the stdio_client
@@ -151,7 +153,12 @@ class MCPClient:
         subprocess's stderr. Path resolution and PATH injection happen
         synchronously here so any ``FileNotFoundError`` surfaces at the
         call site, before the ``async with`` block.
+
+        The supply-chain guard runs first, so a launch that would
+        auto-install an unpinned package never reaches the point of
+        spawning a subprocess.
         """
+        validate_server_launch(server_name, server_cfg)
         command = str(server_cfg.get("command"))
         # Windows compatibility: prefer npx.cmd when requested
         if os.name == "nt" and command.lower() == "npx":
@@ -199,7 +206,7 @@ class MCPClient:
         if transport != "stdio":
             raise NotImplementedError(f"Unsupported MCP transport '{transport}'. Only 'stdio' is supported currently.")
 
-        async with self._connect_stdio(cfg) as (read, write):
+        async with self._connect_stdio(cfg, server_name) as (read, write):
             # Disable anyio TaskGroup cancellation propagation issues by scoping session strictly here
             async with ClientSession(read, write) as session:
                 await session.initialize()
