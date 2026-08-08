@@ -89,16 +89,53 @@ def _launch(argv: list) -> bool:
 
 
 def _open_app(name: str) -> Optional[str]:
-    """Launch a known application. Returns the command used, or None."""
+    """Launch a known application. Returns the command used, or None.
+
+    ``shutil.which`` only proves the *launcher* exists, which is nearly
+    meaningless off Linux: ``cmd`` and ``open`` always resolve, so
+    ``cmd /c start chrome`` and ``open -a "Google Chrome"`` both start
+    successfully on a machine with no Chrome and fail asynchronously
+    afterwards. Where a launcher is involved we therefore wait briefly
+    and check the exit status, so "Opened browser" is not reported to
+    someone staring at an unchanged screen.
+    """
     system = platform.system()
     for argv in _APPS.get(name, {}).get(system, []):
-        # Only try candidates that exist, so a missing browser falls
-        # through to the next rather than reporting a false success.
         if shutil.which(argv[0]) is None:
             continue
-        if _launch(argv):
+        if _launch_and_verify(argv, system):
             return " ".join(argv)
     return None
+
+
+def _launch_and_verify(argv: list, system: str) -> bool:
+    """Start a candidate and, where the OS can tell us, confirm it took."""
+    # macOS `open` and Windows `start` return promptly with a non-zero
+    # status when the target application is missing, so a short wait
+    # turns a silent failure into a usable answer. Linux launches the
+    # binary directly, and `which` already proved it exists.
+    verifiable = system in ("Darwin", "Windows")
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as e:
+        debug_log(f"launch failed for {argv[0]}: {e}", "open_app")
+        return False
+
+    if not verifiable:
+        return True
+
+    try:
+        return proc.wait(timeout=3.0) == 0
+    except subprocess.TimeoutExpired:
+        # Still running after three seconds means it launched something.
+        return True
+    except Exception:
+        return True
 
 
 class OpenAppTool(Tool):
@@ -155,7 +192,14 @@ class OpenAppTool(Tool):
                     error_message=f"Searching {site} needs a query.",
                 )
             target = _SEARCHES[site].format(q=urllib.parse.quote_plus(query))
-            webbrowser.open(target)
+            # Returns False when no browser could be launched — on a
+            # headless box, or Windows with no registered default. Saying
+            # "opened" then is a lie the user acts on.
+            if not webbrowser.open(target):
+                return ToolExecutionResult(
+                    success=False, reply_text=None,
+                    error_message="No web browser could be opened on this machine.",
+                )
             debug_log(f"opened {site} search: {query!r}", "open_app")
             return ToolExecutionResult(
                 success=True,
@@ -172,7 +216,11 @@ class OpenAppTool(Tool):
                     success=False, reply_text=None,
                     error_message=f"Refused to open a '{scheme or 'schemeless'}' URL; only http and https.",
                 )
-            webbrowser.open(url)
+            if not webbrowser.open(url):
+                return ToolExecutionResult(
+                    success=False, reply_text=None,
+                    error_message="No web browser could be opened on this machine.",
+                )
             debug_log(f"opened url: {url[:80]}", "open_app")
             return ToolExecutionResult(success=True, reply_text=f"Opened {url} in the browser.")
 

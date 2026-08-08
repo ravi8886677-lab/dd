@@ -26,6 +26,18 @@ def _clear_state():
     cu._trusted_until = 0.0
 
 
+def _no_actions(mock_pg) -> None:
+    """Nothing was clicked, typed, or scrolled.
+
+    `_pyautogui` is also used read-only to look up the screen size when
+    validating coordinates, so its being called proves nothing. What
+    matters is that no action method fired.
+    """
+    pg = mock_pg.return_value
+    for method in ("click", "doubleClick", "rightClick", "moveTo", "write", "press", "scroll"):
+        getattr(pg, method).assert_not_called()
+
+
 def _ctx(mode="risky"):
     ctx = Mock(spec=ToolContext)
     ctx.user_print = Mock()
@@ -54,7 +66,7 @@ class TestNothingHappensWithoutAHuman:
 
         assert result.success is True
         assert "PROPOSED" in result.reply_text
-        mock_pg.assert_not_called()
+        _no_actions(mock_pg)
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_the_code_is_shown_to_the_user_not_returned_to_the_model(self, mock_pg, capsys):
@@ -79,7 +91,7 @@ class TestNothingHappensWithoutAHuman:
         )
 
         assert result.success is False
-        mock_pg.assert_not_called()
+        _no_actions(mock_pg)
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_a_code_with_nothing_pending_does_nothing(self, mock_pg):
@@ -88,7 +100,7 @@ class TestNothingHappensWithoutAHuman:
         )
 
         assert result.success is False
-        mock_pg.assert_not_called()
+        _no_actions(mock_pg)
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_an_expired_code_does_nothing(self, mock_pg):
@@ -103,7 +115,7 @@ class TestNothingHappensWithoutAHuman:
 
         assert result.success is False
         assert "expired" in (result.error_message or "").lower()
-        mock_pg.assert_not_called()
+        _no_actions(mock_pg)
 
 
 @pytest.mark.unit
@@ -125,7 +137,7 @@ class TestApprovalCannotBeRedirected:
         )
 
         assert result.success is False
-        mock_pg.assert_not_called()
+        _no_actions(mock_pg)
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_a_click_code_cannot_authorise_typing(self, mock_pg):
@@ -138,7 +150,7 @@ class TestApprovalCannotBeRedirected:
         )
 
         assert result.success is False
-        mock_pg.assert_not_called()
+        _no_actions(mock_pg)
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_a_code_is_single_use(self, mock_pg):
@@ -199,7 +211,7 @@ class TestHeadlessAndUnknownInput:
         result = ComputerUseTool().run({"action": "format_disk"}, _ctx())
 
         assert result.success is False
-        mock_pg.assert_not_called()
+        _no_actions(mock_pg)
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_a_destructive_key_is_flagged_to_the_user(self, mock_pg, capsys):
@@ -352,7 +364,7 @@ class TestConfirmModes:
         )
 
         assert "PROPOSED" in (result.reply_text or "")
-        mock_pg.assert_not_called()
+        _no_actions(mock_pg)
 
 
 @pytest.mark.unit
@@ -377,4 +389,110 @@ class TestGateCannotBeBruteForced:
             {"action": "click", "x": 5, "y": 6, "confirmation_code": real_code}, _ctx(),
         )
         assert result.success is False
-        mock_pg.assert_not_called()
+        _no_actions(mock_pg)
+
+
+@pytest.mark.unit
+class TestCoordinatesAreValidated:
+    """The gate cannot catch this: the user approves "click on Send", and
+    a missing coordinate clicks wherever the pointer already sits."""
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_a_click_without_coordinates_is_refused(self, mock_pg):
+        result = ComputerUseTool().run({"action": "click", "target": "Send"}, _ctx())
+
+        assert result.success is False
+        assert cu._pending is None, "a proposal was created for an unusable action"
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_a_partial_coordinate_is_refused(self, mock_pg):
+        result = ComputerUseTool().run({"action": "click", "x": 100}, _ctx())
+
+        assert result.success is False
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_a_negative_coordinate_is_refused(self, mock_pg):
+        result = ComputerUseTool().run({"action": "click", "x": -5, "y": 10}, _ctx())
+
+        assert result.success is False
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_an_off_screen_coordinate_is_refused(self, mock_pg):
+        """pyautogui clamps to an edge, turning a wild coordinate into a
+        plausible-looking edge click."""
+        pg = Mock()
+        pg.size.return_value = (1920, 1080)
+        mock_pg.return_value = pg
+
+        result = ComputerUseTool().run({"action": "click", "x": 99999, "y": 5}, _ctx())
+
+        assert result.success is False
+        assert "outside" in (result.error_message or "").lower()
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_typing_needs_no_coordinates(self, mock_pg):
+        result = ComputerUseTool().run({"action": "type", "text": "hello"}, _ctx())
+
+        assert "PROPOSED" in (result.reply_text or "")
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_a_valid_coordinate_still_proposes(self, mock_pg):
+        pg = Mock()
+        pg.size.return_value = (1920, 1080)
+        mock_pg.return_value = pg
+
+        result = ComputerUseTool().run({"action": "click", "x": 500, "y": 400}, _ctx())
+
+        assert "PROPOSED" in (result.reply_text or "")
+
+
+@pytest.mark.unit
+class TestCoordinatesAreChecked:
+    """The gate cannot catch a bad coordinate: the user approved "click on
+    Send", and a missing x/y still reads as that in the proposal."""
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_a_click_without_coordinates_is_refused(self, mock_pg):
+        """pyautogui treats a missing coordinate as "wherever the pointer
+        already is", so this would click whatever is under the cursor."""
+        result = ComputerUseTool().run(
+            {"action": "click", "target": "Send"}, _ctx(),
+        )
+
+        assert result.success is False
+        assert "needs both x and y" in (result.error_message or "")
+        _no_actions(mock_pg)
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_negative_coordinates_are_refused(self, mock_pg):
+        result = ComputerUseTool().run({"action": "click", "x": -5, "y": 10}, _ctx())
+
+        assert result.success is False
+        _no_actions(mock_pg)
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_a_coordinate_past_the_screen_edge_is_refused(self, mock_pg):
+        """pyautogui silently clamps to an edge, turning a wildly wrong
+        coordinate into a plausible-looking edge click."""
+        mock_pg.return_value.size.return_value = (1920, 1080)
+
+        result = ComputerUseTool().run({"action": "click", "x": 99999, "y": 5}, _ctx())
+
+        assert result.success is False
+        assert "outside" in (result.error_message or "").lower()
+        _no_actions(mock_pg)
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_typing_needs_no_coordinates(self, mock_pg):
+        """Only pointer actions have a target; typing goes to focus."""
+        result = ComputerUseTool().run({"action": "type", "text": "hi"}, _ctx())
+
+        assert "PROPOSED" in (result.reply_text or "")
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_validation_runs_before_the_confirmation_is_issued(self, mock_pg):
+        """Asking someone to approve an action that cannot execute wastes
+        their attention and trains them to approve without reading."""
+        ComputerUseTool().run({"action": "click", "target": "Send"}, _ctx())
+
+        assert cu._pending is None

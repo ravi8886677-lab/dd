@@ -135,3 +135,65 @@ class TestRefusals:
 
         assert result.success is False
         mock_open.assert_not_called()
+
+
+@pytest.mark.unit
+class TestFalseSuccessIsNotReported:
+    """Telling someone their song is playing when the screen is unchanged
+    is worse than failing: they act on it."""
+
+    @patch("src.jarvis.tools.builtin.open_app.webbrowser.open", return_value=False)
+    def test_a_site_search_fails_when_no_browser_opens(self, mock_open):
+        """webbrowser.open returns False on a headless box, or on Windows
+        with no registered default browser."""
+        result = OpenAppTool().run({"site": "youtube", "query": "hindi songs"}, _ctx())
+
+        assert result.success is False
+        assert "browser" in (result.error_message or "").lower()
+
+    @patch("src.jarvis.tools.builtin.open_app.webbrowser.open", return_value=False)
+    def test_a_url_fails_when_no_browser_opens(self, mock_open):
+        result = OpenAppTool().run({"url": "https://example.com"}, _ctx())
+
+        assert result.success is False
+
+    @patch("src.jarvis.tools.builtin.open_app.platform.system", return_value="Darwin")
+    @patch("src.jarvis.tools.builtin.open_app.shutil.which", return_value="/usr/bin/open")
+    @patch("src.jarvis.tools.builtin.open_app.subprocess.Popen")
+    def test_macos_reports_failure_when_the_app_is_missing(self, mock_popen, _which, _sys):
+        """`which('open')` always resolves, so the launcher existing proves
+        nothing. `open -a "Google Chrome"` exits non-zero without Chrome."""
+        proc = Mock()
+        proc.wait.return_value = 1
+        mock_popen.return_value = proc
+
+        result = OpenAppTool().run({"app": "browser"}, _ctx())
+
+        assert result.success is False
+        assert "could not find" in (result.error_message or "").lower()
+
+    @patch("src.jarvis.tools.builtin.open_app.platform.system", return_value="Darwin")
+    @patch("src.jarvis.tools.builtin.open_app.shutil.which", return_value="/usr/bin/open")
+    @patch("src.jarvis.tools.builtin.open_app.subprocess.Popen")
+    def test_macos_reports_success_when_the_app_starts(self, mock_popen, _which, _sys):
+        proc = Mock()
+        proc.wait.return_value = 0
+        mock_popen.return_value = proc
+
+        result = OpenAppTool().run({"app": "browser"}, _ctx())
+
+        assert result.success is True
+
+    @patch("src.jarvis.tools.builtin.open_app.platform.system", return_value="Linux")
+    @patch("src.jarvis.tools.builtin.open_app.shutil.which", return_value="/usr/bin/firefox")
+    @patch("src.jarvis.tools.builtin.open_app.subprocess.Popen")
+    def test_linux_does_not_wait_on_a_long_running_app(self, mock_popen, _which, _sys):
+        """The binary is launched directly and `which` already proved it
+        exists, so blocking for three seconds would just be latency."""
+        proc = Mock()
+        mock_popen.return_value = proc
+
+        result = OpenAppTool().run({"app": "browser"}, _ctx())
+
+        assert result.success is True
+        proc.wait.assert_not_called()

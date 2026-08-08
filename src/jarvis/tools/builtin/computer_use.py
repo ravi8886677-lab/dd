@@ -130,6 +130,44 @@ def _announce(message: str) -> None:
         pass
 
 
+# Actions that are meaningless without a target. pyautogui treats a
+# missing coordinate as "wherever the pointer already is", so an absent
+# x/y silently becomes a click on whatever the cursor happens to be
+# over — the one failure the confirmation cannot catch, because the
+# proposal the user approved said "click on Send".
+_NEEDS_COORDS = {"click", "double_click", "right_click", "move"}
+
+
+def _validate_coords(action: str, args: Dict[str, Any]) -> Optional[str]:
+    """Return a complaint if the coordinates are unusable."""
+    if action not in _NEEDS_COORDS:
+        return None
+
+    x, y = args.get("x"), args.get("y")
+    if x is None or y is None:
+        return (
+            f"'{action}' needs both x and y. Without them the pointer stays "
+            f"where it is and clicks whatever is under it."
+        )
+    try:
+        x, y = int(x), int(y)
+    except (TypeError, ValueError):
+        return f"x and y must be whole numbers, got {x!r} and {y!r}."
+    if x < 0 or y < 0:
+        return f"({x}, {y}) is off-screen; coordinates start at (0, 0)."
+
+    # Bounds-check against the real screen where we can see it. pyautogui
+    # silently clamps out-of-range points to an edge, which would turn a
+    # wildly wrong coordinate into a plausible-looking edge click.
+    try:
+        width, height = _pyautogui().size()
+    except Exception:
+        return None
+    if x >= width or y >= height:
+        return f"({x}, {y}) is outside the {width}x{height} screen."
+    return None
+
+
 def _describe(action: Dict[str, Any]) -> str:
     kind = action.get("action", "")
     x, y = action.get("x"), action.get("y")
@@ -205,6 +243,10 @@ class ComputerUseTool(Tool):
                 success=False, reply_text=None,
                 error_message=f"Unknown action '{action}'. Known: {', '.join(_ACTIONS)}.",
             )
+
+        complaint = _validate_coords(action, args)
+        if complaint:
+            return ToolExecutionResult(success=False, reply_text=None, error_message=complaint)
 
         supplied = str(args.get("confirmation_code", "") or "").strip()
 
