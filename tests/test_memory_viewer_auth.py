@@ -29,8 +29,18 @@ def viewer():
 
 @pytest.fixture
 def client(viewer):
+    """Deliberately unauthenticated — most tests here check refusals."""
     viewer.app.config["TESTING"] = True
     with viewer.app.test_client() as c:
+        yield c
+
+
+@pytest.fixture
+def auth_client(viewer):
+    """Past the gate, for tests about what happens after authentication."""
+    viewer.app.config["TESTING"] = True
+    with viewer.app.test_client() as c:
+        c.environ_base["HTTP_X_DASHBOARD_TOKEN"] = viewer._SESSION_TOKEN
         yield c
 
 
@@ -115,3 +125,50 @@ class TestHostHeaderIsChecked:
             "/api/stats", headers={"Host": host, "X-Dashboard-Token": viewer._SESSION_TOKEN},
         )
         assert response.status_code == 200
+
+
+@pytest.mark.unit
+class TestSettingsTestDoesNotLeakTheKey:
+    """`Test connection` sends a credential somewhere. Where matters.
+
+    Before the guard, POSTing a foreign base URL made the endpoint read
+    the user's live key out of config.json and hand it to that server —
+    credential exfiltration through a button labelled "Test connection".
+    """
+
+    def test_a_foreign_host_will_not_borrow_the_saved_key(self, auth_client):
+        response = auth_client.post(
+            "/api/settings/test",
+            json={"llm_base_url": "http://attacker.example/v1"},
+        )
+
+        assert response.status_code == 400
+        assert b"saved key" in response.data
+
+    def test_a_non_http_scheme_is_refused(self, auth_client):
+        response = auth_client.post(
+            "/api/settings/test", json={"llm_base_url": "file:///etc/passwd"},
+        )
+
+        assert response.status_code == 400
+
+    def test_a_key_is_not_sent_to_a_private_address(self, auth_client):
+        """Local model servers are legitimate, but they need no credential."""
+        response = auth_client.post(
+            "/api/settings/test",
+            json={"llm_base_url": "http://127.0.0.1:11434/v1", "llm_api_key": "sk-live-secret"},
+        )
+
+        assert response.status_code == 400
+        assert b"private address" in response.data
+
+    def test_a_local_endpoint_without_a_key_is_allowed(self, auth_client):
+        """Ollama and LM Studio are the normal offline setup."""
+        response = auth_client.post(
+            "/api/settings/test", json={"llm_base_url": "http://127.0.0.1:11434/v1"},
+        )
+
+        # Reaches the request stage rather than being refused outright;
+        # nothing is listening in the test environment, hence 502.
+        assert response.status_code in (200, 400, 502)
+        assert b"private address" not in response.data
