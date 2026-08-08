@@ -402,6 +402,68 @@ def mcp_remove(name: str) -> Response:
     return jsonify({"ok": True})
 
 
+@app.route("/api/system")
+def system_status() -> Response:
+    """Live host telemetry for the HUD rail.
+
+    Every field is real or absent — a panel that invents numbers is worse
+    than one that says it has none, because an operator reads it as truth.
+    """
+    out: dict = {}
+    try:
+        import psutil
+
+        out["cpu"] = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory()
+        out["memory"] = {"percent": mem.percent,
+                         "used_gb": round(mem.used / 1024 ** 3, 1),
+                         "total_gb": round(mem.total / 1024 ** 3, 1)}
+        disk = psutil.disk_usage("/")
+        out["disk"] = {"percent": disk.percent,
+                       "free_gb": round(disk.free / 1024 ** 3, 1)}
+    except Exception as e:
+        debug_log(f"system telemetry unavailable: {e}", "memory_viewer")
+
+    try:
+        cfg = load_settings()
+        out["model"] = cfg.llm_chat_model
+        out["provider"] = cfg.llm_provider
+    except Exception:
+        pass
+
+    return jsonify(out)
+
+
+@app.route("/api/weather")
+def weather_now() -> Response:
+    """Current conditions, via the same tool the assistant uses.
+
+    Returns 503 rather than a placeholder when location is off or the
+    lookup fails, so the panel can say so instead of showing a number
+    nobody can trust.
+    """
+    try:
+        from jarvis.memory.db import Database
+        from jarvis.tools.base import ToolContext
+        from jarvis.tools.registry import BUILTIN_TOOLS
+
+        cfg = load_settings()
+        db = Database(_get_db_path(), cfg.sqlite_vss_path)
+        try:
+            ctx = ToolContext(db=db, cfg=cfg, system_prompt="", original_prompt="weather",
+                              redacted_text="weather", max_retries=1,
+                              user_print=lambda *a, **k: None)
+            result = BUILTIN_TOOLS["getWeather"].run({}, ctx)
+        finally:
+            db.close()
+        if not result.success or not result.reply_text:
+            return jsonify({"error": "weather unavailable"}), 503
+        return jsonify({"text": result.reply_text})
+    except Exception as e:
+        debug_log(f"weather panel failed: {e}", "memory_viewer")
+        return jsonify({"error": str(e)}), 503
+
+
 @app.route("/api/chat/reset", methods=["POST"])
 def chat_reset() -> Response:
     """Start a fresh conversation, keeping what was said for the diary."""
@@ -1287,6 +1349,77 @@ _INDEX_HTML = """<!DOCTYPE html>
             min-height: 0;
         }
 
+        /* ── HUD workspace ────────────────────────────────────────── */
+        .hud {
+            display: grid;
+            grid-template-columns: 290px minmax(0, 1fr) 400px;
+            gap: 18px;
+            height: calc(100vh - 210px);
+            min-height: 560px;
+        }
+        .hud-rail { display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+        .hud-panel {
+            background: linear-gradient(160deg, rgba(13,36,64,0.85), rgba(8,24,43,0.9));
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px 18px;
+            box-shadow: inset 0 0 24px rgba(34,211,238,0.05);
+        }
+        .hud-panel h3 {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--accent-secondary);
+            margin-bottom: 14px;
+        }
+        .hud-readout { font-family: var(--font-mono); font-size: 13px; }
+        .hud-readout.muted { color: var(--text-secondary); line-height: 1.6; }
+        .hud-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
+        .hud-row span { color: var(--text-secondary); }
+        .hud-row b { color: var(--text-primary); font-weight: 600; }
+        .hud-row b.ok { color: var(--accent-primary); }
+        .hud-bar {
+            height: 4px; border-radius: 2px; margin-bottom: 12px;
+            background: rgba(34,211,238,0.12); overflow: hidden;
+        }
+        .hud-bar i {
+            display: block; height: 100%; width: 0%;
+            background: var(--accent-primary);
+            box-shadow: 0 0 10px var(--accent-primary);
+            transition: width 500ms ease;
+        }
+        .hud-core {
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 6px;
+            min-width: 0;
+        }
+        .hud-activate {
+            font-family: var(--font-mono);
+            font-size: 15px; letter-spacing: 0.24em; text-transform: uppercase;
+            padding: 13px 46px; border-radius: 8px; cursor: pointer;
+            color: #04121c; font-weight: 700;
+            background: var(--accent-primary);
+            border: 1px solid var(--accent-secondary);
+            box-shadow: 0 0 26px rgba(34,211,238,0.55);
+        }
+        .hud-activate:hover { filter: brightness(1.15); }
+        .hud-activate.listening {
+            background: transparent; color: var(--accent-secondary);
+            box-shadow: 0 0 34px rgba(34,211,238,0.8);
+        }
+        .hud-conversation { display: flex; flex-direction: column; min-height: 0; padding-bottom: 0; }
+        .hud-conversation .chat-log { padding: 0 0 14px; }
+        .hud-conversation .chat-composer {
+            margin: 0 -18px; border-radius: 0 0 12px 12px;
+        }
+        .hud-conversation .chat-bubble { max-width: 92%; font-size: 14px; }
+
+        @media (max-width: 1250px) {
+            .hud { grid-template-columns: 1fr; height: auto; }
+            .hud-core { min-height: 380px; }
+        }
+
         /* ── Chat ─────────────────────────────────────────────────── */
         /* The orb is the assistant's presence: a hero while the transcript
            is empty, stepping back to a header band once there is text to
@@ -1294,12 +1427,13 @@ _INDEX_HTML = """<!DOCTYPE html>
            a transform would scale the pixels while leaving the old box. */
         .orb-stage {
             position: relative;
+            width: 100%;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             flex: 0 0 auto;
-            height: 340px;
+            height: 420px;
             transition: height 420ms ease;
             background: radial-gradient(ellipse at 50% 45%,
                         rgba(245, 158, 11, 0.07), transparent 62%);
@@ -1318,6 +1452,7 @@ _INDEX_HTML = """<!DOCTYPE html>
             padding-top: 10px;
         }
         .chat-shell.talking .orb-stage { height: 132px; }
+        .orb-stage canvas { height: 100%; }
         .chat-shell.talking .orb-state { font-size: 10px; padding-top: 6px; }
 
         /* ── Connections ──────────────────────────────────────────── */
@@ -2532,24 +2667,58 @@ _INDEX_HTML = """<!DOCTYPE html>
 
         <div class="tab-content">
             <div id="chat-content" class="tab-pane active">
-                <div class="chat-shell">
-                    <div class="orb-stage">
-                        <canvas id="orb" width="640" height="640"></canvas>
-                        <div class="orb-state" id="orb-state">idle</div>
-                    </div>
-                    <div class="chat-log" id="chat-log">
-                        <div class="empty-state">
-                            <div class="empty-icon">💬</div>
-                            <div class="empty-title">Talk to Jarvis</div>
-                            <p>Same assistant as the voice and terminal front ends —
-                               same memory, same tools.</p>
+                <div class="hud">
+                    <aside class="hud-rail">
+                        <section class="hud-panel">
+                            <h3>◈ System Stats</h3>
+                            <div id="sys-stats" class="hud-readout">
+                                <div class="hud-row"><span>CPU</span><b id="sys-cpu">—</b></div>
+                                <div class="hud-bar"><i id="bar-cpu"></i></div>
+                                <div class="hud-row"><span>Memory</span><b id="sys-mem">—</b></div>
+                                <div class="hud-bar"><i id="bar-mem"></i></div>
+                                <div class="hud-row"><span>Disk</span><b id="sys-disk">—</b></div>
+                                <div class="hud-bar"><i id="bar-disk"></i></div>
+                            </div>
+                        </section>
+
+                        <section class="hud-panel">
+                            <h3>◈ Weather</h3>
+                            <div id="weather-body" class="hud-readout muted">Loading…</div>
+                        </section>
+
+                        <section class="hud-panel">
+                            <h3>◈ System</h3>
+                            <div class="hud-readout">
+                                <div class="hud-row"><span>Provider</span><b id="sys-provider">—</b></div>
+                                <div class="hud-row"><span>Model</span><b id="sys-model">—</b></div>
+                                <div class="hud-row"><span>Status</span><b id="sys-state" class="ok">IDLE</b></div>
+                            </div>
+                        </section>
+                    </aside>
+
+                    <div class="hud-core">
+                        <div class="orb-stage">
+                            <canvas id="orb" width="640" height="640"></canvas>
+                            <div class="orb-state" id="orb-state">idle</div>
                         </div>
+                        <button id="activate-btn" class="hud-activate">Activate</button>
                     </div>
-                    <div class="chat-composer">
-                        <textarea id="chat-input" rows="1" placeholder="Ask Jarvis something…"></textarea>
-                        <button class="btn-primary" id="chat-send">Send</button>
-                        <button class="btn-ghost" id="chat-reset" title="Save this conversation and start fresh">New</button>
-                    </div>
+
+                    <section class="hud-panel hud-conversation">
+                        <h3>◈ Conversation</h3>
+                        <div class="chat-log" id="chat-log">
+                            <div class="empty-state">
+                                <div class="empty-icon">💬</div>
+                                <div class="empty-title">Talk to Jarvis</div>
+                                <p>Same assistant as the voice and terminal front ends.</p>
+                            </div>
+                        </div>
+                        <div class="chat-composer">
+                            <textarea id="chat-input" rows="1" placeholder="Ask Jarvis something…"></textarea>
+                            <button class="btn-primary" id="chat-send">Send</button>
+                            <button class="btn-ghost" id="chat-reset" title="Save and start fresh">New</button>
+                        </div>
+                    </section>
                 </div>
             </div>
 
@@ -3117,6 +3286,63 @@ _INDEX_HTML = """<!DOCTYPE html>
             }
         });
 
+        // ── HUD rail ──────────────────────────────────────────────────
+        // Telemetry is polled, not pushed: these numbers are ambient, and a
+        // socket for three gauges is not worth the reconnect logic.
+        function setGauge(id, barId, percent, label) {
+            document.getElementById(id).textContent = label;
+            document.getElementById(barId).style.width = Math.max(0, Math.min(100, percent)) + '%';
+        }
+
+        async function loadSystem() {
+            try {
+                const d = await (await fetch('/api/system')).json();
+                if (d.cpu !== undefined) setGauge('sys-cpu', 'bar-cpu', d.cpu, d.cpu.toFixed(0) + '%');
+                if (d.memory) setGauge('sys-mem', 'bar-mem', d.memory.percent,
+                    `${d.memory.used_gb}/${d.memory.total_gb} GB`);
+                if (d.disk) setGauge('sys-disk', 'bar-disk', d.disk.percent,
+                    `${d.disk.free_gb} GB free`);
+                if (d.provider) document.getElementById('sys-provider').textContent = d.provider;
+                if (d.model) document.getElementById('sys-model').textContent = d.model;
+            } catch (e) { /* rail is ambient; a failed poll is not worth an alert */ }
+        }
+
+        async function loadWeather() {
+            const body = document.getElementById('weather-body');
+            try {
+                const res = await fetch('/api/weather');
+                const d = await res.json();
+                if (!res.ok) {
+                    // Say it plainly rather than showing a number nobody can trust.
+                    body.textContent = 'Unavailable — enable location in config.';
+                    return;
+                }
+                body.textContent = (d.text || '').split('\\n').slice(0, 4).join('\\n');
+            } catch (e) {
+                body.textContent = 'Unavailable.';
+            }
+        }
+
+        loadSystem();
+        loadWeather();
+        setInterval(loadSystem, 5000);
+        setInterval(loadWeather, 15 * 60 * 1000);
+
+        // Activate focuses the composer. It does not start the microphone:
+        // a browser cannot reach the mic through Flask, and a button that
+        // implies otherwise would be a lie about what this page can do.
+        document.getElementById('activate-btn').addEventListener('click', () => {
+            chatInput.focus();
+        });
+
+        // Mirror the orb's state into the rail readout.
+        const _setOrbState = setOrbState;
+        setOrbState = function (state) {
+            _setOrbState(state);
+            const el = document.getElementById('sys-state');
+            if (el) el.textContent = state.toUpperCase();
+        };
+
         // ── Orb ───────────────────────────────────────────────────────
         // Same geometry as the desktop widget (orb_widget.py): points spread
         // over a sphere by a Fibonacci spiral, spun about the vertical axis
@@ -3293,7 +3519,7 @@ _INDEX_HTML = """<!DOCTYPE html>
         function appendBubble(role, text) {
             const empty = chatLog.querySelector('.empty-state');
             if (empty) empty.remove();
-            document.querySelector('.chat-shell').classList.add('talking');
+            document.querySelector('.hud-core')?.classList.add('talking');
             const row = document.createElement('div');
             row.className = 'chat-msg ' + role;
             row.innerHTML = `<div class="chat-bubble">${escapeHtml(text)}</div>`;
@@ -3366,7 +3592,7 @@ _INDEX_HTML = """<!DOCTYPE html>
                 + '<div class="empty-icon">💬</div>'
                 + '<div class="empty-title">Fresh conversation</div>'
                 + '<p>The previous one was saved to the diary.</p></div>';
-            document.querySelector('.chat-shell').classList.remove('talking');
+            document.querySelector('.hud-core')?.classList.remove('talking');
             setOrbState('idle');
         });
 
