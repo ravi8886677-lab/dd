@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(not _HAS_FLASK, reason="Flask not available")
 @pytest.fixture
 def dashboard_html():
     from src.desktop_app import memory_viewer
-    return memory_viewer.index()
+    return memory_viewer._INDEX_HTML
 
 
 @pytest.mark.unit

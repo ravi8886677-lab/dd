@@ -932,6 +932,15 @@ class MemoryViewerWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        # The dashboard requires a per-launch token: it shows the user's
+        # diary and can act as them, and its MCP endpoint writes a command
+        # Jarvis later spawns. Minted here so this window and the server
+        # agree on it whether the server runs in-process or as a subprocess.
+        import secrets as _secrets
+
+        self.dashboard_token = _secrets.token_urlsafe(32)
+        os.environ["JARVIS_DASHBOARD_TOKEN"] = self.dashboard_token
+
         self.setWindowTitle("🧠 Jarvis Memory")
         self.setGeometry(150, 150, 1200, 900)
 
@@ -1217,11 +1226,17 @@ class MemoryViewerWindow(QMainWindow):
             if self.start_server():
                 if self.web_view:
                     # Set URL and load (URL is set here, not in __init__, to avoid WebEngine crash)
-                    self.web_view.setUrl(QUrl(f"http://localhost:{self.MEMORY_VIEWER_PORT}"))
+                    self.web_view.setUrl(QUrl(
+                        f"http://localhost:{self.MEMORY_VIEWER_PORT}"
+                        f"/?token={self.dashboard_token}"
+                    ))
                 else:
                     # Open in system browser as fallback
                     import webbrowser
-                    webbrowser.open(f"http://localhost:{self.MEMORY_VIEWER_PORT}")
+                    webbrowser.open(
+                        f"http://localhost:{self.MEMORY_VIEWER_PORT}"
+                        f"/?token={self.dashboard_token}"
+                    )
             else:
                 # Server failed to start - show error message
                 debug_log("memory viewer server failed to start", "desktop")

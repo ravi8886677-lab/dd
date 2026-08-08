@@ -1,0 +1,117 @@
+"""The dashboard must not be open to whatever can reach the port.
+
+It serves the user's diary, personal facts and meal log, it can chat as
+them, and `/api/mcp` writes a command that Jarvis later spawns. Binding
+to loopback is not access control: any local process can connect, and a
+page in the user's browser can be aimed at it — DNS rebinding defeats
+the assumption that a loopback address means a local caller.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+try:
+    import flask  # noqa: F401
+
+    _HAS_FLASK = True
+except ImportError:
+    _HAS_FLASK = False
+
+pytestmark = pytest.mark.skipif(not _HAS_FLASK, reason="Flask not available")
+
+
+@pytest.fixture
+def viewer():
+    from src.desktop_app import memory_viewer
+    return memory_viewer
+
+
+@pytest.fixture
+def client(viewer):
+    viewer.app.config["TESTING"] = True
+    with viewer.app.test_client() as c:
+        yield c
+
+
+@pytest.mark.unit
+class TestUnauthenticatedAccessIsRefused:
+    def test_reading_the_diary_needs_the_token(self, client):
+        assert client.get("/api/memories").status_code == 401
+
+    def test_the_knowledge_graph_needs_the_token(self, client):
+        assert client.get("/api/graph/tree").status_code == 401
+
+    def test_chatting_as_the_user_needs_the_token(self, client):
+        response = client.post("/api/chat", json={"message": "who am I?"})
+        assert response.status_code == 401
+
+    def test_registering_an_mcp_command_needs_the_token(self, client):
+        """The sharpest one: this writes a command Jarvis will spawn."""
+        response = client.post(
+            "/api/mcp", json={"name": "evil", "command": "/bin/sh", "args": ["-c", "id"]},
+        )
+        assert response.status_code == 401
+
+    def test_deleting_a_connection_needs_the_token(self, client):
+        assert client.delete("/api/mcp/anything").status_code == 401
+
+    def test_the_landing_page_explains_itself_rather_than_erroring_blankly(self, client):
+        response = client.get("/")
+        assert response.status_code == 401
+        assert b"token" in response.data.lower()
+
+
+@pytest.mark.unit
+class TestTokenGrantsAccess:
+    def test_the_launch_url_opens_the_dashboard(self, client, viewer):
+        response = client.get(f"/?token={viewer._SESSION_TOKEN}")
+        assert response.status_code == 200
+        assert b"Jarvis Memory" in response.data
+
+    def test_opening_it_sets_a_cookie_so_api_calls_carry_the_token(self, client, viewer):
+        client.get(f"/?token={viewer._SESSION_TOKEN}")
+        assert client.get("/api/stats").status_code == 200
+
+    def test_the_cookie_is_not_readable_by_scripts(self, client, viewer):
+        response = client.get(f"/?token={viewer._SESSION_TOKEN}")
+        cookie = response.headers.get("Set-Cookie", "")
+        assert "HttpOnly" in cookie
+        assert "SameSite=Strict" in cookie
+
+    def test_a_header_works_too(self, client, viewer):
+        response = client.get(
+            "/api/stats", headers={"X-Dashboard-Token": viewer._SESSION_TOKEN},
+        )
+        assert response.status_code == 200
+
+    def test_a_wrong_token_is_refused(self, client):
+        assert client.get("/api/stats?token=not-the-token").status_code == 401
+
+
+@pytest.mark.unit
+class TestHostHeaderIsChecked:
+    """Guards DNS rebinding: an attacker's name resolving to 127.0.0.1."""
+
+    def test_a_foreign_host_header_is_refused(self, client, viewer):
+        response = client.get(
+            "/api/stats",
+            headers={"Host": "evil.example.com", "X-Dashboard-Token": viewer._SESSION_TOKEN},
+        )
+        assert response.status_code == 403
+
+    def test_a_rebinding_host_is_refused_even_with_a_valid_token(self, client, viewer):
+        """Host check runs before auth — a stolen token must not be enough."""
+        response = client.post(
+            "/api/mcp",
+            json={"name": "x", "command": "/bin/sh"},
+            headers={"Host": "attacker.test", "X-Dashboard-Token": viewer._SESSION_TOKEN},
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.parametrize("host", ["localhost:5050", "127.0.0.1:5050", "localhost"])
+    def test_normal_local_hosts_are_accepted(self, client, viewer, host):
+        response = client.get(
+            "/api/stats", headers={"Host": host, "X-Dashboard-Token": viewer._SESSION_TOKEN},
+        )
+        assert response.status_code == 200

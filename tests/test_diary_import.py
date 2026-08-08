@@ -136,6 +136,9 @@ class TestImportDiaryEndpoint:
 
         app.config["TESTING"] = True
         self.client = app.test_client()
+        # Dashboard API calls carry a per-launch token.
+        from src.desktop_app import memory_viewer
+        self.client.environ_base["HTTP_X_DASHBOARD_TOKEN"] = memory_viewer._SESSION_TOKEN
 
         yield
         self.db.close()
@@ -247,6 +250,8 @@ class TestImportDialogueDismissal:
 
         app.config["TESTING"] = True
         client = app.test_client()
+        from src.desktop_app import memory_viewer
+        client.environ_base["HTTP_X_DASHBOARD_TOKEN"] = memory_viewer._SESSION_TOKEN
         resp = client.get("/")
         html = resp.data.decode("utf-8")
 

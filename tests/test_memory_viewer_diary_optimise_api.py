@@ -55,6 +55,8 @@ class TestDiaryOptimiseTopicsEndpoint:
 
         memory_viewer.app.config["TESTING"] = True
         self.client = memory_viewer.app.test_client()
+        # The dashboard requires a per-launch token on every API call.
+        self.client.environ_base["HTTP_X_DASHBOARD_TOKEN"] = memory_viewer._SESSION_TOKEN
 
     # Controlled fake events from optimise_diary_topics.
     _FAKE_EVENTS = [

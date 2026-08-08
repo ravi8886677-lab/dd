@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import os
+import secrets
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +24,57 @@ from jarvis.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
 
 
 app = Flask(__name__)
+
+# ── Access control ────────────────────────────────────────────────────
+#
+# The dashboard serves the user's diary, personal facts and meal log, and
+# can chat as them. `/api/mcp` additionally writes a command that Jarvis
+# later spawns, so an unauthenticated write here is a code-execution
+# path. Binding to 127.0.0.1 is not sufficient on its own:
+#
+#   - any process or user on the machine can reach a loopback port;
+#   - a page in the user's browser can be pointed at it, and DNS
+#     rebinding defeats the assumption that loopback means local.
+#
+# So: a token minted per server start, and a Host allow-list. The token
+# is handed to the browser once via the launch URL and kept in a cookie;
+# nothing needs to be stored on disk.
+# The desktop app launches this as a subprocess and needs the same
+# token to build the window's URL, so it may mint one and pass it in.
+_SESSION_TOKEN = os.environ.get("JARVIS_DASHBOARD_TOKEN") or secrets.token_urlsafe(32)
+_TOKEN_COOKIE = "jarvis_dashboard_token"
+
+# Host headers that may address this server. Anything else means the
+# request arrived via a name that resolves here — the rebinding case.
+_ALLOWED_HOST_NAMES = {"localhost", "127.0.0.1", "[::1]", "::1"}
+
+
+def _host_is_allowed(host_header: str) -> bool:
+    if not host_header:
+        return False
+    name = host_header.rsplit(":", 1)[0] if not host_header.startswith("[") else \
+        host_header.split("]")[0] + "]"
+    return name in _ALLOWED_HOST_NAMES
+
+
+@app.before_request
+def _guard_request():
+    if not _host_is_allowed(request.headers.get("Host", "")):
+        return jsonify({"error": "unrecognised Host header"}), 403
+
+    # The landing page accepts the token as a query parameter and stores
+    # it, so the user only ever pastes the launch URL.
+    if request.path == "/":
+        return None
+
+    supplied = (
+        request.headers.get("X-Dashboard-Token")
+        or request.cookies.get(_TOKEN_COOKIE)
+        or request.args.get("token", "")
+    )
+    if not secrets.compare_digest(supplied, _SESSION_TOKEN):
+        return jsonify({"error": "unauthorised — reopen the dashboard from its launch URL"}), 401
+    return None
 
 # Global database connection
 _db_conn: Optional[sqlite3.Connection] = None
@@ -993,9 +1046,41 @@ def diary_optimise_topics() -> Response:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route("/")
-def index() -> str:
-    """Serve the memory viewer frontend."""
-    return """<!DOCTYPE html>
+def index():
+    """Serve the dashboard, taking the token from the launch URL.
+
+    Rejecting an unauthenticated page load outright would leave the user
+    with a bare 401 and no way forward, so the page itself explains how
+    to open it properly. The token is stored in a host-only, same-site
+    cookie so subsequent API calls carry it without ever landing in
+    browser history.
+    """
+    supplied = (
+        request.args.get("token", "")
+        or request.cookies.get(_TOKEN_COOKIE, "")
+        or request.headers.get("X-Dashboard-Token", "")
+    )
+    if not secrets.compare_digest(supplied, _SESSION_TOKEN):
+        return Response(
+            "<h1>🔒 Jarvis dashboard</h1>"
+            "<p>Open the URL printed in the terminal where you started it — "
+            "it carries a one-time access token for this session.</p>",
+            status=401,
+            mimetype="text/html",
+        )
+
+    page = Response(_INDEX_HTML, mimetype="text/html")
+    page.set_cookie(
+        _TOKEN_COOKIE,
+        _SESSION_TOKEN,
+        httponly=True,
+        samesite="Strict",
+        secure=False,  # loopback HTTP; the token never leaves this machine
+    )
+    return page
+
+
+_INDEX_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -4443,7 +4528,9 @@ def main() -> None:
     print("🧠 Jarvis Memory Viewer")
     print("=" * 60)
     print(f"\n  📂 Database: {_get_db_path()}")
-    print(f"  🌐 URL: http://localhost:{port}")
+    print(f"  🌐 URL: http://localhost:{port}/?token={_SESSION_TOKEN}")
+    print("  🔒 That token is minted per launch — the dashboard shows your")
+    print("     diary and can act as you, so it is not open to the machine.")
     print("\n  Press Ctrl+C to stop\n")
     print("=" * 60 + "\n")
 
