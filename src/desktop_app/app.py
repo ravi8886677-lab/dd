@@ -938,8 +938,14 @@ class MemoryViewerWindow(QMainWindow):
         # agree on it whether the server runs in-process or as a subprocess.
         import secrets as _secrets
 
+        # Held on the window, not exported. Putting it in os.environ made
+        # every subprocess inherit it — including third-party MCP servers,
+        # which are spawned with {**os.environ, ...}. Any of those could
+        # then POST /api/mcp, the one endpoint that writes a command
+        # Jarvis later executes. It was also readable from
+        # /proc/<pid>/environ by any same-user process, which is the exact
+        # threat the token exists to close.
         self.dashboard_token = _secrets.token_urlsafe(32)
-        os.environ["JARVIS_DASHBOARD_TOKEN"] = self.dashboard_token
 
         self.setWindowTitle("🧠 Jarvis Memory")
         self.setGeometry(150, 150, 1200, 900)
@@ -1044,7 +1050,12 @@ class MemoryViewerWindow(QMainWindow):
             if is_frozen:
                 # Bundled app: run Flask server in a thread
                 try:
+                    from desktop_app import memory_viewer as _mv
                     from desktop_app.memory_viewer import app as flask_app
+
+                    # Same process, so hand the module the window's token
+                    # directly rather than via the environment.
+                    _mv._SESSION_TOKEN = self.dashboard_token
                 except Exception as import_err:
                     debug_log(f"failed to import memory_viewer: {import_err}", "desktop")
                     return False
@@ -1099,6 +1110,9 @@ class MemoryViewerWindow(QMainWindow):
                 print(f"   -> Python: {python_exe}", flush=True)
                 print(f"   -> PYTHONPATH: {env.get('PYTHONPATH', 'not set')}", flush=True)
 
+                # Given to this child only, rather than exported into the
+                # environment every other subprocess inherits.
+                env = {**env, "JARVIS_DASHBOARD_TOKEN": self.dashboard_token}
                 self.server_process = subprocess.Popen(
                     [python_exe, "-m", "desktop_app.memory_viewer"],
                     stdout=subprocess.PIPE,

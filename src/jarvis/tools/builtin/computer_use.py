@@ -1,8 +1,20 @@
-"""computerUse — see the screen, then click and type on it.
+"""computerUse — click and type on the user's desktop.
 
-Screenshot → vision model → coordinates → `pyautogui`. No OCR engine:
-current vision models return click points directly, so the heavyweight
-grounding stack other frameworks carry is not needed.
+`pyautogui` drives the mouse and keyboard, behind a confirmation gate.
+
+## What is missing: eyes
+
+The intended pipeline is screenshot → vision model → coordinates →
+click, which needs no OCR engine because current vision models return
+click points directly. The last three steps exist. The first does not:
+nothing in `jarvis/llm/` sends images, so `action="screenshot"` can only
+report the screen size, and the model has no way to see what is on it.
+
+Until an image path exists, coordinates must come from the user. The
+screenshot response says so explicitly, because the earlier wording
+("use the attached view") invited the model to invent a coordinate and
+click it. This tool is therefore usable for "click at 500,400" and not
+yet for "click the Play button".
 
 ## Why confirmation is enforced rather than requested
 
@@ -101,6 +113,21 @@ _ACTIONS = ("click", "double_click", "right_click", "type", "key", "scroll", "mo
 # that — but these are worth naming in the proposal so the human sees
 # what they are approving.
 _NOTABLE_KEYS = {"enter", "return", "delete", "backspace", "tab"}
+
+
+def _announce(message: str) -> None:
+    """Show the user something the gate depends on.
+
+    Deliberately not ``context.user_print`` — that is suppressed under
+    ``voice_debug``, and a confirmation code nobody can read locks the
+    tool permanently instead of failing loudly.
+    """
+    import sys
+
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except Exception:
+        pass
 
 
 def _describe(action: Dict[str, Any]) -> str:
@@ -209,9 +236,17 @@ class ComputerUseTool(Tool):
                 error_message="That confirmation expired. Propose the action again.",
             )
         if not secrets.compare_digest(supplied, code):
+            # Burn the proposal. There are only 9000 codes, and leaving it
+            # live allowed unlimited guesses inside the TTL — which a model
+            # acting on an injected "click here" can spend in one loop.
+            _pending = None
+            _announce("  🚫 Wrong confirmation code — that request was cancelled.")
             return ToolExecutionResult(
                 success=False, reply_text=None,
-                error_message="That confirmation code is not correct. Nothing was done.",
+                error_message=(
+                    "That confirmation code was wrong, so the request was cancelled. "
+                    "Nothing was done. Propose the action again if the user still wants it."
+                ),
             )
 
         # Bind the approval to what was actually shown to the user, so an
@@ -270,8 +305,12 @@ class ComputerUseTool(Tool):
         # itself.
         note = ""
         if action == "key" and str(args.get("key", "")).lower() in _NOTABLE_KEYS:
-            note = "  ⚠️ This key can submit or delete things."
-        context.user_print(
+            note = "  ⚠️ This key can submit or delete things.\n"
+        # Printed directly rather than through context.user_print: that
+        # helper is silenced when voice_debug is set, and a gate the user
+        # cannot see is a gate that can never be opened. The code has to
+        # reach a human on every configuration.
+        _announce(
             f"\n  🖱️ Jarvis wants to: {description}\n"
             f"{note}"
             f"  🔐 To allow it, tell Jarvis this code: {code}\n"
@@ -302,11 +341,16 @@ class ComputerUseTool(Tool):
                     f"it does not work over SSH or in a container."
                 ),
             )
+        # No image is attached, because nothing in the LLM stack accepts
+        # one yet — see the module docstring. Saying "use the attached
+        # view" invited the model to invent a coordinate and click it.
         return ToolExecutionResult(
             success=True,
             reply_text=(
-                f"Screen is {width}x{height} pixels, origin top-left. Use the attached "
-                f"view to choose coordinates within that range."
+                f"Screen is {width}x{height} pixels, origin top-left. NOTE: you cannot "
+                f"see this screen — no image is available. Do NOT guess coordinates. "
+                f"Ask the user where the target is, or ask them to read out its position, "
+                f"and use the number they give you."
             ),
         )
 

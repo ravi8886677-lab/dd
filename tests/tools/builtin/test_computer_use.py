@@ -34,8 +34,14 @@ def _ctx(mode="risky"):
     return ctx
 
 
-def _shown(ctx) -> str:
-    return "\n".join(str(c.args[0]) for c in ctx.user_print.call_args_list)
+def _shown(capsys) -> str:
+    """What actually reached the user's screen.
+
+    The gate announces on stderr rather than through context.user_print,
+    which is silenced under voice_debug — a code nobody can read would
+    lock the tool instead of failing loudly.
+    """
+    return capsys.readouterr().err
 
 
 @pytest.mark.unit
@@ -51,17 +57,16 @@ class TestNothingHappensWithoutAHuman:
         mock_pg.assert_not_called()
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_the_code_is_shown_to_the_user_not_returned_to_the_model(self, mock_pg):
+    def test_the_code_is_shown_to_the_user_not_returned_to_the_model(self, mock_pg, capsys):
         """The gate only works if the model cannot read the code.
 
         If it appeared in the tool result, the model could quote it back
         to itself and approve its own action.
         """
-        ctx = _ctx()
-        result = ComputerUseTool().run({"action": "click", "x": 5, "y": 6}, ctx)
+        result = ComputerUseTool().run({"action": "click", "x": 5, "y": 6}, _ctx())
 
         code = cu._pending[0]
-        assert code in _shown(ctx), "user was never shown the code"
+        assert code in _shown(capsys), "user was never shown the code"
         assert code not in (result.reply_text or ""), "code leaked into the model's context"
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
@@ -197,12 +202,11 @@ class TestHeadlessAndUnknownInput:
         mock_pg.assert_not_called()
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_destructive_key_is_flagged_to_the_user(self, mock_pg):
+    def test_a_destructive_key_is_flagged_to_the_user(self, mock_pg, capsys):
         """The human is the safeguard, so tell them what they are approving."""
-        ctx = _ctx()
-        ComputerUseTool().run({"action": "key", "key": "delete"}, ctx)
+        ComputerUseTool().run({"action": "key", "key": "delete"}, _ctx())
 
-        assert "⚠️" in _shown(ctx)
+        assert "⚠️" in _shown(capsys)
 
 
 @pytest.mark.unit
@@ -296,7 +300,7 @@ class TestTrustWindow:
         tool.run({"action": "click", "x": 1, "y": 2}, _ctx())
         tool.run({"action": "click", "x": 1, "y": 2, "confirmation_code": cu._pending[0]}, ctx)
 
-        assert "not ask again" in _shown(ctx)
+        assert "not ask again" in "\n".join(str(c.args[0]) for c in ctx.user_print.call_args_list)
 
 
 @pytest.mark.unit
@@ -348,4 +352,29 @@ class TestConfirmModes:
         )
 
         assert "PROPOSED" in (result.reply_text or "")
+        mock_pg.assert_not_called()
+
+
+@pytest.mark.unit
+class TestGateCannotBeBruteForced:
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_a_wrong_code_burns_the_proposal(self, mock_pg):
+        """9000 codes with unlimited retries inside the TTL is not a gate.
+
+        A model acting on an injected "click here" could spend the whole
+        space in one reply loop, so one wrong guess cancels the request.
+        """
+        tool = ComputerUseTool()
+        tool.run({"action": "click", "x": 5, "y": 6}, _ctx())
+        real_code = cu._pending[0]
+
+        tool.run({"action": "click", "x": 5, "y": 6, "confirmation_code": "0000"}, _ctx())
+
+        assert cu._pending is None, "proposal survived a wrong guess"
+
+        # Even the genuine code is now worthless.
+        result = tool.run(
+            {"action": "click", "x": 5, "y": 6, "confirmation_code": real_code}, _ctx(),
+        )
+        assert result.success is False
         mock_pg.assert_not_called()

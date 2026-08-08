@@ -49,12 +49,26 @@ _TOKEN_COOKIE = "jarvis_dashboard_token"
 _ALLOWED_HOST_NAMES = {"localhost", "127.0.0.1", "[::1]", "::1"}
 
 
+def _token_matches(supplied: str) -> bool:
+    """Constant-time compare that tolerates any input.
+
+    ``secrets.compare_digest`` raises TypeError on non-ASCII strings, so
+    a token containing one byte of Unicode turned an auth failure into a
+    500 with a traceback. Reject those as simply wrong.
+    """
+    try:
+        return secrets.compare_digest(supplied or "", _SESSION_TOKEN)
+    except TypeError:
+        return False
+
+
 def _host_is_allowed(host_header: str) -> bool:
     if not host_header:
         return False
     name = host_header.rsplit(":", 1)[0] if not host_header.startswith("[") else \
         host_header.split("]")[0] + "]"
-    return name in _ALLOWED_HOST_NAMES
+    # Host names are case-insensitive, so "LOCALHOST:5050" is the same host.
+    return name.lower() in _ALLOWED_HOST_NAMES
 
 
 @app.before_request
@@ -72,7 +86,7 @@ def _guard_request():
         or request.cookies.get(_TOKEN_COOKIE)
         or request.args.get("token", "")
     )
-    if not secrets.compare_digest(supplied, _SESSION_TOKEN):
+    if not _token_matches(supplied):
         return jsonify({"error": "unauthorised — reopen the dashboard from its launch URL"}), 401
     return None
 
@@ -1207,7 +1221,7 @@ def index():
         or request.cookies.get(_TOKEN_COOKIE, "")
         or request.headers.get("X-Dashboard-Token", "")
     )
-    if not secrets.compare_digest(supplied, _SESSION_TOKEN):
+    if not _token_matches(supplied):
         return Response(
             "<h1>🔒 Jarvis dashboard</h1>"
             "<p>Open the URL printed in the terminal where you started it — "
