@@ -284,6 +284,39 @@ _chat_lock = threading.Lock()
 _chat_memory = None
 
 
+def _flush_chat_to_diary(memory) -> bool:
+    """Persist pending browser conversation to the diary and graph.
+
+    Mirrors what the terminal front end does on /reset and on exit. Never
+    raises: losing a diary entry is bad, but taking the dashboard down
+    with it is worse.
+    """
+    try:
+        from jarvis.llm import Tier, resolve_model
+        from jarvis.memory.conversation import update_diary_from_dialogue_memory
+        from jarvis.memory.db import Database
+
+        if not memory.has_pending_chunks():
+            return False
+
+        cfg = load_settings()
+        db = Database(_get_db_path(), cfg.sqlite_vss_path)
+        try:
+            summary_id = update_diary_from_dialogue_memory(
+                db=db, dialogue_memory=memory, cfg=cfg,
+                source_app="stdin",
+                timeout_sec=cfg.llm_chat_timeout_sec,
+                force=True,
+                graph_picker_model=resolve_model(cfg, Tier.FAST),
+            )
+        finally:
+            db.close()
+        return summary_id is not None
+    except Exception as e:
+        debug_log(f"dashboard diary flush failed: {e}", "memory_viewer")
+        return False
+
+
 def _get_chat_memory():
     global _chat_memory
     if _chat_memory is None:
@@ -325,6 +358,18 @@ def chat() -> Response:
 
     if not reply:
         return jsonify({"error": "the assistant returned no reply"}), 502
+
+    # A browser tab closes without telling the server, so there is no
+    # shutdown hook to flush on. An idle check after each turn bounds how
+    # much a closed tab can lose to the inactivity window.
+    with _chat_lock:
+        try:
+            memory = _get_chat_memory()
+            if memory.should_update_diary():
+                _flush_chat_to_diary(memory)
+        except Exception as e:
+            debug_log(f"post-turn diary check failed: {e}", "memory_viewer")
+
     return jsonify({"reply": reply})
 
 
@@ -565,11 +610,26 @@ def settings_test() -> Response:
 
 @app.route("/api/chat/reset", methods=["POST"])
 def chat_reset() -> Response:
-    """Start a fresh conversation, keeping what was said for the diary."""
+    """Write the conversation to the diary, then start a fresh one.
+
+    The flush has to happen before the boundary is drawn, and it has to
+    happen at all: the UI tells the user "the previous one was saved",
+    and until this existed that was simply untrue — closing the tab
+    discarded everything said in the browser. chat.spec.md states the
+    contract as "nothing said is lost on exit"; the terminal front end
+    honoured it and this one did not.
+    """
     with _chat_lock:
         memory = _get_chat_memory()
+        try:
+            saved = _flush_chat_to_diary(memory)
+        except Exception as e:
+            # The user still gets their fresh conversation; they are told
+            # the save failed rather than left with a broken button.
+            debug_log(f"diary flush raised during reset: {e}", "memory_viewer")
+            saved = False
         memory.start_new_conversation()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "saved": saved})
 
 
 @app.route("/api/stats")
@@ -3862,11 +3922,15 @@ _INDEX_HTML = """<!DOCTYPE html>
         });
 
         document.getElementById('chat-reset').addEventListener('click', async () => {
-            await fetch('/api/chat/reset', {method: 'POST'});
+            const res = await fetch('/api/chat/reset', {method: 'POST'});
+            let saved = false;
+            try { saved = (await res.json()).saved; } catch (e) { /* keep false */ }
             chatLog.innerHTML = '<div class="empty-state">'
                 + '<div class="empty-icon">💬</div>'
                 + '<div class="empty-title">Fresh conversation</div>'
-                + '<p>The previous one was saved to the diary.</p></div>';
+                + (saved
+                    ? '<p>The previous one was saved to the diary.</p>'
+                    : '<p>Nothing new to save.</p>') + '</div>';
             document.querySelector('.hud-core')?.classList.remove('talking');
             setOrbState('idle');
         });
