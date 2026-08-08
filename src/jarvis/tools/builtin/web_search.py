@@ -940,7 +940,10 @@ class WebSearchTool(Tool):
                     f"state any such fact, you have failed. Keep the reply to two "
                     f"short sentences at most."
                 )
-            elif all_results:
+            else:
+                # ``all_results`` is non-empty exactly when
+                # ``search_produced_nothing`` is False — they are negations of
+                # the same condition — so there is no third case to handle.
                 content_missing = (
                     fetch_attempted_any and not fetched_content and not instant_results
                 )
@@ -996,12 +999,6 @@ class WebSearchTool(Tool):
                         f"Use this information to reply to the user's query:\n\n"
                     )
                 reply_text = envelope + "\n".join(all_results)
-            else:
-                reply_text = (
-                    f"The web search for '{search_query}' returned no results. "
-                    f"This could be due to network issues or search service limitations. "
-                    f"Let the user know you couldn't find results and suggest they try different search terms or check manually."
-                )
 
             if getattr(cfg, "voice_debug", False):
                 try:

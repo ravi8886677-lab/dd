@@ -37,6 +37,7 @@ from .memory.db import Database
 from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memory
 from .memory.graph_ops import (
     install_warm_profile_invalidation,
+    migrate_legacy_graph_shape,
     uninstall_warm_profile_invalidation,
 )
 from .output.tts import create_tts_engine
@@ -347,18 +348,7 @@ def main(smoke_test: bool = False) -> None:
         lambda: _global_dialogue_memory
     )
 
-    # Knowledge graph: wipe + re-seed if the on-disk shape predates the
-    # User/Directives/World taxonomy. Non-destructive to the diary —
-    # users can re-import via the memory viewer.
-    try:
-        from .memory.graph import GraphMemoryStore
-        _graph_store_boot = GraphMemoryStore(cfg.db_path)
-        if _graph_store_boot.migrate_legacy_shape():
-            print("🧹 Wiped legacy knowledge graph; re-seeded User / Directives / World branches", flush=True)
-            print("   📥 Open the memory viewer and use 'Import from Diary' to repopulate.", flush=True)
-        _graph_store_boot.close()
-    except Exception as e:
-        debug_log(f"graph legacy-shape migration failed (non-fatal): {e}", "memory")
+    migrate_legacy_graph_shape(cfg.db_path)
 
     # Check location detection status
     if cfg.location_enabled:

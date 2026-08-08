@@ -14,6 +14,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -73,6 +74,15 @@ def captured_diary(monkeypatch):
     monkeypatch.setattr(
         "jarvis.memory.conversation.update_daily_conversation_summary",
         _fake_summariser,
+    )
+
+    # A successful summary is followed by knowledge-graph extraction,
+    # which calls the configured LLM endpoint for real. On a dev machine
+    # running Ollama that turns every test here into a live call with a
+    # 30s budget — not what `unit` promises.
+    monkeypatch.setattr(
+        "jarvis.memory.graph_ops.update_graph_from_dialogue",
+        lambda **kwargs: SimpleNamespace(stored=[], skipped=0),
     )
 
 
@@ -193,6 +203,61 @@ def test_one_shot_query_answers_and_exits(chat_cfg, recorded_queries, captured_d
 
     assert code == 0
     assert [q["text"] for q in recorded_queries] == ["just this"]
+
+
+@pytest.mark.unit
+def test_one_shot_puts_only_the_answer_on_stdout(chat_cfg, recorded_queries, captured_diary, capsys):
+    """README advertises this form for scripts, so `$(...)` must capture the answer.
+
+    Startup notices, the engine's planning narration and the shutdown
+    lines all belong on stderr; anything of theirs on stdout ends up
+    inside the caller's variable.
+    """
+    from jarvis.chat.cli import run_chat_session
+
+    run_chat_session(chat_cfg, stdin=io.StringIO(""), one_shot="what is it")
+
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "answer to what is it"
+    for noise in ("MCP", "Saving conversation", "Goodbye", "Jarvis text chat"):
+        assert noise not in captured.out
+
+
+@pytest.mark.unit
+def test_missing_stdin_ends_the_session_cleanly(chat_cfg, recorded_queries, captured_diary, monkeypatch):
+    """A detached launch (pythonw, closed fd 0) leaves sys.stdin as None."""
+    from jarvis.chat import cli
+
+    monkeypatch.setattr(cli.sys, "stdin", None)
+
+    assert cli.run_chat_session(chat_cfg) == 0
+    assert recorded_queries == []
+
+
+@pytest.mark.unit
+def test_session_attributes_memory_to_stdin_even_if_the_flag_is_unset(
+    chat_cfg, recorded_queries, captured_diary,
+):
+    """The diary and logMeal both derive their label from cfg.use_stdin.
+
+    run_chat_session is a public entry point, so it must not depend on
+    main() having set the flag — otherwise one conversation is split
+    across two attributions.
+    """
+    import dataclasses
+
+    from jarvis.chat.cli import run_chat_session
+    from jarvis.memory.db import Database
+
+    cfg = dataclasses.replace(chat_cfg, use_stdin=False)
+    run_chat_session(cfg, stdin=io.StringIO("remember this\n/exit\n"))
+
+    db = Database(cfg.db_path, None)
+    try:
+        today = datetime.now(timezone.utc).date().isoformat()
+        assert db.get_conversation_summary(today, "stdin") is not None
+    finally:
+        db.close()
 
 
 @pytest.mark.unit

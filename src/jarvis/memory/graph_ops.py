@@ -30,6 +30,8 @@ from .graph import (
     MemoryNode,
     SPLIT_THRESHOLD,
     normalise_fact,
+    register_graph_mutation_listener,
+    unregister_graph_mutation_listener,
 )
 
 
@@ -1208,6 +1210,37 @@ def format_warm_profile_block(profile: dict[str, str]) -> str:
     return "\n\n".join(sections)
 
 
+def migrate_legacy_graph_shape(db_path: str) -> bool:
+    """Re-seed the graph when its on-disk shape predates the taxonomy.
+
+    Shared startup step for every front end. Non-destructive to the diary
+    — the user can re-import from it — and never fatal: a graph that will
+    not migrate is not a reason to refuse to start.
+
+    Returns True when a wipe and re-seed happened.
+    """
+    try:
+        store = GraphMemoryStore(db_path)
+        try:
+            migrated = store.migrate_legacy_shape()
+        finally:
+            store.close()
+    except Exception as exc:
+        debug_log(f"graph legacy-shape migration failed (non-fatal): {exc}", "memory")
+        return False
+
+    if migrated:
+        print(
+            "🧹 Wiped legacy knowledge graph; re-seeded User / Directives / World branches",
+            flush=True,
+        )
+        print(
+            "   📥 Open the memory viewer and use 'Import from Diary' to repopulate.",
+            flush=True,
+        )
+    return migrated
+
+
 _WARM_PROFILE_BRANCHES = {BRANCH_USER, BRANCH_DIRECTIVES}
 
 
@@ -1221,9 +1254,7 @@ def install_warm_profile_invalidation(dialogue_memory_ref) -> Optional[object]:
     the warm profile does not include world facts.
 
     Returns the registered listener so the caller can hand it back to
-    ``uninstall_warm_profile_invalidation`` on shutdown, or ``None`` if
-    registration failed (non-fatal — a stale warm profile is a
-    personalisation miss, not a crash).
+    ``uninstall_warm_profile_invalidation`` on shutdown.
     """
     def _invalidate(*, action, node_id, branch):
         del action, node_id  # Only the branch matters for warm-profile filtering.
@@ -1238,13 +1269,8 @@ def install_warm_profile_invalidation(dialogue_memory_ref) -> Optional[object]:
         except Exception as exc:
             debug_log(f"warm profile invalidation failed (non-fatal): {exc}", "memory")
 
-    try:
-        from .graph import register_graph_mutation_listener
-        register_graph_mutation_listener(_invalidate)
-        return _invalidate
-    except Exception as exc:
-        debug_log(f"warm profile mutation listener wiring failed (non-fatal): {exc}", "memory")
-        return None
+    register_graph_mutation_listener(_invalidate)
+    return _invalidate
 
 
 def uninstall_warm_profile_invalidation(listener) -> None:
@@ -1256,8 +1282,4 @@ def uninstall_warm_profile_invalidation(listener) -> None:
     """
     if listener is None:
         return
-    try:
-        from .graph import unregister_graph_mutation_listener
-        unregister_graph_mutation_listener(listener)
-    except Exception as exc:
-        debug_log(f"warm profile listener removal failed (non-fatal): {exc}", "memory")
+    unregister_graph_mutation_listener(listener)

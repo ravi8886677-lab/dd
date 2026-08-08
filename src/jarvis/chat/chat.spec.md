@@ -65,6 +65,25 @@ Input is read through `input()` when stdin is an interactive terminal, so
 the user gets line editing and history; a piped or injected stream is
 read with `readline()` instead.
 
+## Named divergence from the voice path: per-utterance language
+
+The voice path passes `run_reply_engine` the ISO-639-1 code Whisper
+detected on the utterance. Tools use it to pick locale-appropriate
+resources — most visibly `webSearch`, whose Wikipedia fallback reads
+`context.language or "en"` to choose a host.
+
+The text chat passes no language, because there is no detector on this
+path: the signal came from the speech recogniser, and running a language
+classifier over typed input would be a new LLM call on every turn for a
+hint only one tool consumes. So a Turkish question typed here reaches
+`en.wikipedia.org`, while the same question spoken reaches
+`tr.wikipedia.org`.
+
+This is the one behaviour that differs between the front ends. It is a
+gap rather than a decision: closing it needs a cheap deterministic
+detector (script/stopword heuristics, no LLM) feeding the same parameter.
+Everything else about tool locale selection is shared.
+
 ## Memory
 
 Memory written from this front end is attributed to `source_app="stdin"`,

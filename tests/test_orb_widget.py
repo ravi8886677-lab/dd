@@ -155,6 +155,56 @@ class TestStateReadsDifferently:
 
 
 @pytest.mark.unit
+class TestStateIsReadCrossProcess:
+    """The daemon usually runs in another process, so the orb must poll.
+
+    `JarvisStateManager.set_state` writes a file for cross-process
+    readers and emits `state_changed` only for same-process ones. In dev
+    mode `app.py` starts the daemon with `subprocess.Popen`, so the
+    signal never arrives in the UI process — a widget that only listens
+    to it stays frozen at ASLEEP through every reply.
+    """
+
+    def test_orb_follows_state_written_by_another_process(self, qapp, monkeypatch, tmp_path):
+        from src.desktop_app import face_widget
+        from src.desktop_app.orb_widget import ParticleOrbWidget
+
+        state_file = tmp_path / "jarvis_state"
+        monkeypatch.setattr(
+            face_widget, "_get_jarvis_state_file", lambda: str(state_file)
+        )
+        face_widget._jarvis_state_instance = None
+
+        orb = ParticleOrbWidget()
+
+        # Stand in for the daemon process: write the file directly, with
+        # no signal, exactly as a separate process would.
+        state_file.write_text(JarvisState.SPEAKING.value)
+        orb._tick()
+
+        assert orb.motion is MOTION[JarvisState.SPEAKING], (
+            "orb ignored a state change made by another process"
+        )
+
+    def test_orb_recovers_from_an_unreadable_state_file(self, qapp, monkeypatch, tmp_path):
+        """Garbage on disk must not crash the paint loop."""
+        from src.desktop_app import face_widget
+        from src.desktop_app.orb_widget import ParticleOrbWidget
+
+        state_file = tmp_path / "jarvis_state"
+        monkeypatch.setattr(
+            face_widget, "_get_jarvis_state_file", lambda: str(state_file)
+        )
+        face_widget._jarvis_state_instance = None
+
+        orb = ParticleOrbWidget()
+        state_file.write_text("not-a-state")
+        orb._tick()  # must not raise
+
+        assert isinstance(orb.motion, OrbMotion)
+
+
+@pytest.mark.unit
 def test_frames_are_reproducible():
     """Same state and clock produce the same frame, so renders are testable."""
     a = project(unit_sphere_points(60), motion=MOTION[JarvisState.SPEAKING], t=1.234, radius=80.0)
