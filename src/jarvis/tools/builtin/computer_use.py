@@ -75,6 +75,25 @@ _TRUST_WINDOW_SEC = 900.0
 # Enter is a sent email or a deleted file.
 _ALWAYS_CONFIRM = {"type", "key"}
 
+# How much to confirm. Set ``computer_use_confirm`` in config.json:
+#
+#   "risky"  (default) — ask once, then trust ordinary actions for a
+#                        window; typing and key presses always ask.
+#   "always"           — ask for every single action.
+#   "never"            — ask for nothing.
+#
+# "never" is a real choice for a trusted single-user machine, and it is
+# how sandboxed demos appear to behave — but the sandbox is doing the
+# work there. On a real desktop nothing else catches a misread
+# coordinate before it lands on Send or Delete, and the assistant reads
+# attacker-controlled web pages, so an injected "click here" executes.
+_MODES = ("always", "risky", "never")
+
+
+def _mode(context: ToolContext) -> str:
+    raw = str(getattr(context.cfg, "computer_use_confirm", "risky") or "risky").lower()
+    return raw if raw in _MODES else "risky"
+
 _ACTIONS = ("click", "double_click", "right_click", "type", "key", "scroll", "move")
 
 # Keystrokes that are destructive or hard to undo when the model has
@@ -165,7 +184,11 @@ class ComputerUseTool(Tool):
         # Inside a trust window, ordinary actions run straight away. The
         # user has already said yes to this session; asking again for
         # every scroll teaches them to approve without reading.
-        if not supplied and self._covered_by_trust(action, args):
+        if not supplied and _mode(context) == "never":
+            payload = self._payload(args, action)
+            return self._execute(payload, _describe(payload), context)
+
+        if not supplied and _mode(context) == "risky" and self._covered_by_trust(action, args):
             return self._execute(self._payload(args, action), _describe(self._payload(args, action)), context)
 
         if not supplied:
@@ -206,7 +229,7 @@ class ComputerUseTool(Tool):
         _pending = None
         # This approval also covers ordinary actions for a while, so the
         # user is not re-reading codes throughout one task.
-        if pending_action["action"] not in _ALWAYS_CONFIRM:
+        if _mode(context) == "risky" and pending_action["action"] not in _ALWAYS_CONFIRM:
             _trusted_until = time.time() + _TRUST_WINDOW_SEC
             context.user_print(
                 f"  🔓 Approved. Clicking and scrolling will not ask again for "

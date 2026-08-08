@@ -116,6 +116,7 @@ class Settings:
     # Profiles & Behavior
     active_profiles: list[str]
     use_stdin: bool
+    computer_use_confirm: str
     voice_debug: bool
 
     # Screen Capture
@@ -502,6 +503,8 @@ def get_default_config() -> Dict[str, Any]:
         # Profiles & Behavior
         "active_profiles": ["developer", "business", "life"],
         "use_stdin": False,
+        # "risky" (default) | "always" | "never" — see computer_use.py
+        "computer_use_confirm": "risky",
 
         # Screen Capture
         "allowlist_bundles": [
@@ -727,6 +730,7 @@ def load_settings() -> Settings:
     else:
         embedding_model = ollama_embed_model
     use_stdin = bool(merged.get("use_stdin", False))
+    computer_use_confirm = str(merged.get("computer_use_confirm", "risky") or "risky").strip().lower()
     active_profiles = _ensure_list(merged.get("active_profiles"))
     tts_enabled = bool(merged.get("tts_enabled", True))
     tts_engine = str(merged.get("tts_engine", "piper")).lower()
@@ -907,6 +911,7 @@ def load_settings() -> Settings:
         # Profiles & Behavior
         active_profiles=active_profiles,
         use_stdin=use_stdin,
+        computer_use_confirm=computer_use_confirm,
         voice_debug=voice_debug,
 
         # Screen Capture

@@ -26,9 +26,11 @@ def _clear_state():
     cu._trusted_until = 0.0
 
 
-def _ctx():
+def _ctx(mode="risky"):
     ctx = Mock(spec=ToolContext)
     ctx.user_print = Mock()
+    ctx.cfg = Mock()
+    ctx.cfg.computer_use_confirm = mode
     return ctx
 
 
@@ -295,3 +297,55 @@ class TestTrustWindow:
         tool.run({"action": "click", "x": 1, "y": 2, "confirmation_code": cu._pending[0]}, ctx)
 
         assert "not ask again" in _shown(ctx)
+
+
+@pytest.mark.unit
+class TestConfirmModes:
+    """`computer_use_confirm` chooses how much is gated."""
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_never_executes_immediately(self, mock_pg):
+        """Opt-out for a trusted single-user machine."""
+        pg = Mock()
+        mock_pg.return_value = pg
+
+        result = ComputerUseTool().run(
+            {"action": "click", "x": 7, "y": 8}, _ctx("never"),
+        )
+
+        assert result.success is True
+        assert "PROPOSED" not in (result.reply_text or "")
+        pg.click.assert_called_once_with(7, 8)
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_never_also_covers_typing(self, mock_pg):
+        pg = Mock()
+        mock_pg.return_value = pg
+
+        ComputerUseTool().run({"action": "type", "text": "hi"}, _ctx("never"))
+
+        assert pg.write.call_args[0][0] == "hi"
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_always_asks_again_after_an_approval(self, mock_pg):
+        """No trust window in this mode — every action is proposed."""
+        pg = Mock()
+        mock_pg.return_value = pg
+        tool = ComputerUseTool()
+        ctx = _ctx("always")
+
+        tool.run({"action": "click", "x": 1, "y": 2}, ctx)
+        tool.run({"action": "click", "x": 1, "y": 2, "confirmation_code": cu._pending[0]}, ctx)
+        result = tool.run({"action": "click", "x": 3, "y": 4}, ctx)
+
+        assert "PROPOSED" in (result.reply_text or "")
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_an_unknown_mode_falls_back_to_gated(self, mock_pg):
+        """A typo in config must not silently disable the gate."""
+        result = ComputerUseTool().run(
+            {"action": "click", "x": 1, "y": 2}, _ctx("nevr"),
+        )
+
+        assert "PROPOSED" in (result.reply_text or "")
+        mock_pg.assert_not_called()
