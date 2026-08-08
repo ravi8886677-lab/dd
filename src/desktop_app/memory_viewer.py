@@ -1098,24 +1098,25 @@ _INDEX_HTML = """<!DOCTYPE html>
                        'Inter', 'Ubuntu', 'Cantarell', 'Noto Sans', sans-serif;
             --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Mono',
                          'Consolas', 'DejaVu Sans Mono', 'Liberation Mono', monospace;
-            /* Deep space theme with amber accents */
-            --bg-primary: #0a0b0f;
-            --bg-secondary: #12141a;
-            --bg-tertiary: #1a1d26;
-            --bg-card: #161920;
-            --bg-hover: #1e222c;
+            /* HUD theme: deep navy ground, cyan instrumentation. Kept as
+               tokens so the whole surface re-skins from this one block. */
+            --bg-primary: #040a14;
+            --bg-secondary: #071324;
+            --bg-tertiary: #0a1b30;
+            --bg-card: #08182b;
+            --bg-hover: #0d2440;
 
-            --accent-primary: #f59e0b;
-            --accent-secondary: #fbbf24;
-            --accent-glow: rgba(245, 158, 11, 0.15);
-            --accent-muted: #92400e;
+            --accent-primary: #22d3ee;
+            --accent-secondary: #67e8f9;
+            --accent-glow: rgba(34, 211, 238, 0.15);
+            --accent-muted: #0e5f74;
 
-            --text-primary: #f4f4f5;
-            --text-secondary: #a1a1aa;
-            --text-muted: #71717a;
+            --text-primary: #e8f7fc;
+            --text-secondary: #8fb6c8;
+            --text-muted: #5c7f93;
 
-            --border-color: #27272a;
-            --border-glow: rgba(245, 158, 11, 0.3);
+            --border-color: #10395a;
+            --border-glow: rgba(34, 211, 238, 0.32);
 
             --success: #22c55e;
             --warning: #f59e0b;
@@ -2533,7 +2534,7 @@ _INDEX_HTML = """<!DOCTYPE html>
             <div id="chat-content" class="tab-pane active">
                 <div class="chat-shell">
                     <div class="orb-stage">
-                        <canvas id="orb" width="620" height="420"></canvas>
+                        <canvas id="orb" width="640" height="640"></canvas>
                         <div class="orb-state" id="orb-state">idle</div>
                     </div>
                     <div class="chat-log" id="chat-log">
@@ -3151,8 +3152,43 @@ _INDEX_HTML = """<!DOCTYPE html>
         function drawOrb(t) {
             const m = ORB_MOTION[orbState] || ORB_MOTION.idle;
             const w = orbCanvas.width, h = orbCanvas.height;
-            const cx = w / 2, cy = h / 2, radius = Math.min(w, h) * 0.38;
+            const cx = w / 2, cy = h / 2, radius = Math.min(w, h) * 0.235;
             orbCtx.clearRect(0, 0, w, h);
+
+            // Instrument rings, drawn behind the sphere.
+            const rings = [
+                {r: 1.42, from: 0.00, sweep: 1.15, dir:  1, width: 1.6, alpha: 0.55},
+                {r: 1.42, from: 3.14, sweep: 0.85, dir:  1, width: 1.6, alpha: 0.40},
+                {r: 1.24, from: 1.20, sweep: 2.40, dir: -1, width: 1.0, alpha: 0.30},
+                {r: 1.62, from: 2.10, sweep: 0.55, dir: -1, width: 2.4, alpha: 0.45},
+                {r: 1.62, from: 5.10, sweep: 0.55, dir: -1, width: 2.4, alpha: 0.45}
+            ];
+            for (const ring of rings) {
+                const spinR = t * m.spin * 1.8 * ring.dir;
+                orbCtx.beginPath();
+                orbCtx.arc(cx, cy, radius * ring.r,
+                           ring.from + spinR, ring.from + ring.sweep + spinR);
+                orbCtx.strokeStyle = `rgba(103,232,249,${Math.min(1, ring.alpha * 1.7) * m.brightness})`;
+                orbCtx.lineWidth = ring.width * 1.5;
+                orbCtx.shadowColor = 'rgba(34,211,238,0.9)';
+                orbCtx.shadowBlur = 14;
+                orbCtx.stroke();
+                orbCtx.shadowBlur = 0;
+            }
+            // Tick marks on the outer track.
+            orbCtx.strokeStyle = `rgba(34,211,238,${0.65 * m.brightness})`;
+            orbCtx.shadowColor = 'rgba(34,211,238,0.8)';
+            orbCtx.shadowBlur = 8;
+            orbCtx.lineWidth = 1;
+            for (let i = 0; i < 48; i++) {
+                const a = (i / 48) * Math.PI * 2 - t * m.spin * 0.5;
+                const inner = radius * 1.72, outer = radius * (i % 4 === 0 ? 1.82 : 1.77);
+                orbCtx.beginPath();
+                orbCtx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
+                orbCtx.lineTo(cx + Math.cos(a) * outer, cy + Math.sin(a) * outer);
+                orbCtx.stroke();
+            }
+            orbCtx.shadowBlur = 0;
 
             const swell = 1 + m.breathe * Math.sin(t * 1.9);
             const spun = m.spin * t, cs = Math.cos(spun), sn = Math.sin(spun);
@@ -3173,11 +3209,11 @@ _INDEX_HTML = """<!DOCTYPE html>
             drawn.sort((a, b) => a[2] - b[2]);  // far side first
 
             for (const [px, py, depth] of drawn) {
-                const size = 0.5 + 1.7 * Math.pow(depth, 1.3);
-                const alpha = (0.04 + 0.96 * Math.pow(depth, 2.2)) * m.brightness;
-                const cr = Math.round(0x92 + (0xfb - 0x92) * depth);
-                const cg = Math.round(0x40 + (0xbf - 0x40) * depth);
-                const cb = Math.round(0x0e + (0x24 - 0x0e) * depth);
+                const size = 0.7 + 2.0 * Math.pow(depth, 1.3);
+                const alpha = (0.12 + 0.88 * Math.pow(depth, 1.8)) * m.brightness;
+                const cr = Math.round(0x0e + (0x67 - 0x0e) * depth);
+                const cg = Math.round(0x5f + (0xe8 - 0x5f) * depth);
+                const cb = Math.round(0x74 + (0xf9 - 0x74) * depth);
                 orbCtx.fillStyle = `rgba(${cr},${cg},${cb},${alpha})`;
                 orbCtx.beginPath();
                 orbCtx.arc(px, py, size, 0, Math.PI * 2);

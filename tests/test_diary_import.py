@@ -22,7 +22,15 @@ _MOCK_MODULES = [
     "psutil",
 ]
 for _mod in _MOCK_MODULES:
-    if _mod not in sys.modules:
+    if _mod in sys.modules:
+        continue
+    try:
+        # Substitute only what is genuinely absent. Mocking a module that
+        # is installed leaks into every test collected afterwards — a
+        # widget whose base class is a MagicMock is not the widget under
+        # test, and the failure surfaces far from here.
+        __import__(_mod)
+    except ImportError:
         sys.modules[_mod] = MagicMock()
 
 # Ensure requests.exceptions.Timeout is a proper exception class

@@ -160,48 +160,51 @@ class TestStateIsReadCrossProcess:
 
     `JarvisStateManager.set_state` writes a file for cross-process
     readers and emits `state_changed` only for same-process ones. In dev
-    mode `app.py` starts the daemon with `subprocess.Popen`, so the
-    signal never arrives in the UI process — a widget that only listens
-    to it stays frozen at ASLEEP through every reply.
+    mode `app.py` starts the daemon with `subprocess.Popen`, so that
+    signal never reaches the UI process — a widget that only listens to
+    it stays frozen at ASLEEP through every reply.
+
+    A stub manager stands in for the real one: what matters is that each
+    frame re-reads `state`, not how the value got there.
     """
 
-    def test_orb_follows_state_written_by_another_process(self, qapp, monkeypatch, tmp_path):
-        from src.desktop_app import face_widget
-        from src.desktop_app.orb_widget import ParticleOrbWidget
+    class _StubManager:
+        def __init__(self):
+            self.state = JarvisState.ASLEEP
 
-        state_file = tmp_path / "jarvis_state"
-        monkeypatch.setattr(
-            face_widget, "_get_jarvis_state_file", lambda: str(state_file)
-        )
-        face_widget._jarvis_state_instance = None
+    def test_orb_follows_state_set_without_a_signal(self, qapp, monkeypatch):
+        from src.desktop_app import orb_widget
 
-        orb = ParticleOrbWidget()
+        manager = self._StubManager()
+        monkeypatch.setattr(orb_widget, "get_jarvis_state", lambda: manager)
+        widget = orb_widget.ParticleOrbWidget()
 
-        # Stand in for the daemon process: write the file directly, with
-        # no signal, exactly as a separate process would.
-        state_file.write_text(JarvisState.SPEAKING.value)
-        orb._tick()
+        # Stand in for the daemon process: change state, emit nothing.
+        manager.state = JarvisState.SPEAKING
+        widget._tick()
 
-        assert orb.motion is MOTION[JarvisState.SPEAKING], (
-            "orb ignored a state change made by another process"
+        assert widget.motion is MOTION[JarvisState.SPEAKING], (
+            "orb ignored a state change made without a Qt signal"
         )
 
-    def test_orb_recovers_from_an_unreadable_state_file(self, qapp, monkeypatch, tmp_path):
-        """Garbage on disk must not crash the paint loop."""
-        from src.desktop_app import face_widget
-        from src.desktop_app.orb_widget import ParticleOrbWidget
+    def test_a_failing_read_keeps_the_last_state(self, qapp, monkeypatch):
+        """A transient read error must not crash the animation loop."""
+        from src.desktop_app import orb_widget
 
-        state_file = tmp_path / "jarvis_state"
-        monkeypatch.setattr(
-            face_widget, "_get_jarvis_state_file", lambda: str(state_file)
-        )
-        face_widget._jarvis_state_instance = None
+        manager = self._StubManager()
+        monkeypatch.setattr(orb_widget, "get_jarvis_state", lambda: manager)
+        widget = orb_widget.ParticleOrbWidget()
+        widget._state = JarvisState.SPEAKING
 
-        orb = ParticleOrbWidget()
-        state_file.write_text("not-a-state")
-        orb._tick()  # must not raise
+        class _Broken:
+            @property
+            def state(self):
+                raise OSError("state unavailable")
 
-        assert isinstance(orb.motion, OrbMotion)
+        widget._state_manager = _Broken()
+        widget._tick()  # must not raise
+
+        assert widget.motion is MOTION[JarvisState.SPEAKING]
 
 
 @pytest.mark.unit
