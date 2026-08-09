@@ -25,6 +25,16 @@ from .builtin.tool_search import ToolSearchTool
 from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
+from .external.mcp_gate import GateOutcome, check_confirmation
+from .external.mcp_trust import (
+    TrustStore,
+    classify_risk,
+    requires_confirmation,
+    resolve_policy,
+)
+
+# Jarvis's own argument on MCP tool calls, never forwarded to a server.
+_CONFIRMATION_ARG = "confirmation_code"
 from ..debug import debug_log
 
 
@@ -158,6 +168,9 @@ class ToolSpec:
     name: str  # canonical tool identifier (camelCase)
     description: str  # Human-readable description (matches MCP format)
     inputSchema: Optional[Dict[str, Any]] = None  # JSON Schema for arguments (matches MCP format)
+    # Server-supplied MCP annotations (readOnlyHint and friends). Drives
+    # the confirmation gate; ``None`` for built-in tools.
+    annotations: Optional[Dict[str, Any]] = None
 
 
 def discover_mcp_tools(mcps_config: Dict[str, Any]) -> Tuple[Dict[str, ToolSpec], Dict[str, str]]:
@@ -174,9 +187,28 @@ def discover_mcp_tools(mcps_config: Dict[str, Any]) -> Tuple[Dict[str, ToolSpec]
         discovered_tools = {}
         errors: Dict[str, str] = {}
 
+        trust_store = TrustStore()
+
         for server_name in mcps_config.keys():
             try:
                 tools = client.list_tools(server_name)
+                # A tool whose definition moved since the user accepted it
+                # is withheld rather than offered: the description reaches
+                # the model as instructions, so a silent edit is an edit to
+                # what Jarvis was told to do.
+                tools, withheld = trust_store.review(server_name, tools)
+                for change in withheld:
+                    print(
+                        f"  🛑 {server_name}: withholding '{change.tool_name}' — its "
+                        "description changed since you accepted it",
+                        flush=True,
+                    )
+                    print(
+                        f"     ↩️  Review and allow: python -m jarvis.mcp_trust_cli "
+                        f"accept {server_name} {change.tool_name}",
+                        flush=True,
+                    )
+
                 for tool_info in tools:
                     tool_name = tool_info.get("name")
                     if not tool_name:
@@ -191,7 +223,8 @@ def discover_mcp_tools(mcps_config: Dict[str, Any]) -> Tuple[Dict[str, ToolSpec]
                     discovered_tools[full_tool_name] = ToolSpec(
                         name=full_tool_name,
                         description=description,
-                        inputSchema=input_schema
+                        inputSchema=input_schema,
+                        annotations=tool_info.get("annotations"),
                     )
 
             except BaseException as e:
@@ -262,12 +295,35 @@ def generate_tools_json_schema(allowed_tools: Optional[List[str]] = None, mcp_to
                     "function": {
                         "name": spec.name,
                         "description": spec.description,
-                        "parameters": spec.inputSchema or {"type": "object", "properties": {}, "required": []},
+                        "parameters": _with_confirmation_field(spec.inputSchema),
                     }
                 }
                 tools.append(tool_def)
 
     return tools
+
+
+def _with_confirmation_field(input_schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Advertise the optional ``confirmation_code`` argument on an MCP tool.
+
+    Offered on every MCP tool rather than only the gated ones: which
+    tools are gated depends on the user's policy and on annotations that
+    can change between runs, and a model that has no way to express an
+    approval cannot relay one the user just gave. The field is optional,
+    so it never blocks an ungated call, and it is stripped before the
+    call reaches the server.
+    """
+    schema = dict(input_schema or {"type": "object", "properties": {}, "required": []})
+    properties = dict(schema.get("properties") or {})
+    properties[_CONFIRMATION_ARG] = {
+        "type": "string",
+        "description": (
+            "Only for tools that ask for one. The code shown on the user's screen; "
+            "without it such a call is proposed, not run."
+        ),
+    }
+    schema["properties"] = properties
+    return schema
 
 
 def generate_tools_description(allowed_tools: Optional[List[str]] = None, mcp_tools: Optional[Dict[str, ToolSpec]] = None) -> str:
@@ -347,6 +403,39 @@ def _normalize_time_range(args: Optional[Dict[str, Any]]) -> Tuple[str, str]:
     return since or (now - timedelta(days=1)).isoformat(), until or now.isoformat()
 
 
+def _gate_mcp_call(
+    cfg: Settings,
+    full_tool_name: str,
+    server_name: str,
+    mcp_tool_name: str,
+    arguments: Dict[str, Any],
+    supplied_code: Optional[str],
+) -> Optional[ToolExecutionResult]:
+    """Apply the confirmation gate, or return ``None`` to let the call run.
+
+    The risk comes from the server's own annotations, which are advisory:
+    they can raise risk freely, but a read-only claim is only honoured
+    for a tool whose definition still matches what the user accepted. A
+    rug-pulled tool is withheld at discovery, so one that relabels itself
+    as harmless mid-conversation cannot talk its way past the gate.
+    """
+    policy = resolve_policy(cfg)
+    spec = get_cached_mcp_tools().get(full_tool_name)
+    risk = classify_risk({"annotations": getattr(spec, "annotations", None)})
+
+    if not requires_confirmation(policy, risk):
+        return None
+
+    outcome, message = check_confirmation(
+        server_name, mcp_tool_name, arguments, supplied_code
+    )
+    if outcome is GateOutcome.APPROVED:
+        return None
+    if outcome is GateOutcome.PROPOSED:
+        return ToolExecutionResult(success=True, reply_text=message)
+    return ToolExecutionResult(success=False, reply_text=None, error_message=message)
+
+
 def run_tool_with_retries(
     db,
     cfg: Settings,
@@ -371,8 +460,19 @@ def run_tool_with_retries(
                 if MCPClient is None:
                     return ToolExecutionResult(success=False, reply_text=None, error_message="MCP client not available. Install 'mcp' package.")
 
+                # ``confirmation_code`` is Jarvis's own argument. Strip it
+                # before the call so it is never forwarded to the server.
+                arguments = dict(tool_args or {})
+                supplied_code = arguments.pop(_CONFIRMATION_ARG, None)
+
+                gate_result = _gate_mcp_call(
+                    cfg, raw_name, server_name, mcp_tool_name, arguments, supplied_code
+                )
+                if gate_result is not None:
+                    return gate_result
+
                 client = MCPClient(mcps_config)
-                result = client.invoke_tool(server_name=server_name, tool_name=mcp_tool_name, arguments=tool_args or {})
+                result = client.invoke_tool(server_name=server_name, tool_name=mcp_tool_name, arguments=arguments)
                 is_error = bool(result.get("isError", False))
                 text = result.get("text") or None
                 return ToolExecutionResult(success=(not is_error), reply_text=text, error_message=(text if is_error else None))

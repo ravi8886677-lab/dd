@@ -222,16 +222,7 @@ class MCPClient:
             # Extract tools from the ListToolsResult object
             tools_list = getattr(tools_result, "tools", tools_result) if hasattr(tools_result, "tools") else tools_result
             
-            result = []
-            for t in tools_list:
-                # Handle Tool objects with attributes
-                tool_info = {
-                    "name": getattr(t, "name", None),
-                    "description": getattr(t, "description", None),
-                    "inputSchema": getattr(t, "inputSchema", None),
-                }
-                result.append(tool_info)
-            return result
+            return [_tool_to_dict(t) for t in tools_list]
 
     async def invoke_tool_async(self, server_name: str, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         async with self._session(server_name) as session:
@@ -256,16 +247,7 @@ class MCPClient:
             raise MCPServerSessionError(str(e)) from e
 
         tools_list = getattr(res, "tools", res) if hasattr(res, "tools") else res
-        result: List[Dict[str, Any]] = []
-        for t in tools_list:
-            result.append(
-                {
-                    "name": getattr(t, "name", None),
-                    "description": getattr(t, "description", None),
-                    "inputSchema": getattr(t, "inputSchema", None),
-                }
-            )
-        return result
+        return [_tool_to_dict(t) for t in tools_list]
 
     def invoke_tool(self, server_name: str, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Invoke a tool against the named server.
@@ -305,6 +287,44 @@ class MCPClient:
                 f"Unsupported MCP transport '{transport}'. Only 'stdio' is supported currently."
             )
         return cfg
+
+
+def _as_plain_data(value: Any) -> Any:
+    """Reduce an SDK model to plain JSON-able data.
+
+    Annotations arrive as pydantic models. They are fingerprinted and
+    compared across runs, so they have to reduce to the same structure
+    every time rather than to a repr that carries object identity.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(exclude_none=True)
+        except Exception:  # noqa: BLE001
+            pass
+    if isinstance(value, dict):
+        return {k: _as_plain_data(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_as_plain_data(v) for v in value]
+    return value
+
+
+def _tool_to_dict(tool: Any) -> Dict[str, Any]:
+    """Convert an SDK ``Tool`` to the internal dict shape.
+
+    ``annotations`` drives the confirmation gate and ``outputSchema``
+    describes structured results, so both travel with the tool rather
+    than being discarded at discovery.
+    """
+    return {
+        "name": getattr(tool, "name", None),
+        "description": getattr(tool, "description", None),
+        "inputSchema": getattr(tool, "inputSchema", None),
+        "outputSchema": _as_plain_data(getattr(tool, "outputSchema", None)),
+        "annotations": _as_plain_data(getattr(tool, "annotations", None)),
+    }
 
 
 def _result_to_dict(res: Any) -> Dict[str, Any]:
