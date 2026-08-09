@@ -102,3 +102,47 @@ def test_text_still_has_a_font_stack_to_fall_back_on(dashboard_html):
             )
         else:
             assert "," in stack, f"font stack has no fallback: {stack}"
+
+
+def test_every_css_variable_used_is_also_defined():
+    """An unresolvable var() voids the whole declaration, silently.
+
+    When `--border` went undefined, every border keyed on it rendered as
+    none — which made a failed MCP server look identical to a working
+    one in the Connections tab. Nothing errors; the styling just stops.
+    """
+    import re
+
+    from src.desktop_app import memory_viewer
+
+    source = memory_viewer._INDEX_HTML
+    used = set(re.findall(r"var\((--[a-z0-9-]+)\)", source))
+    defined = set(re.findall(r"^\s*(--[a-z0-9-]+)\s*:", source, re.M))
+
+    assert not (used - defined), (
+        f"CSS variables used but never defined: {sorted(used - defined)}"
+    )
+
+
+def test_css_rules_key_off_classes_that_elements_actually_carry():
+    """A rule keyed on a class nothing carries is dead styling.
+
+    The chat code toggles `talking` on `.hud-core`; rules written
+    against `.chat-shell.talking` never matched anything after the
+    three-column rebuild, so the orb never shrank while Jarvis spoke.
+    """
+    import re
+
+    from src.desktop_app import memory_viewer
+
+    source = memory_viewer._INDEX_HTML
+    styled = set(re.findall(r"\.([a-z][a-z0-9-]+)\.talking", source))
+    for class_name in styled:
+        assert f'class="{class_name}' in source or f"classList" in source, (
+            f".{class_name}.talking is styled but no element carries "
+            f"'{class_name}'"
+        )
+        assert re.search(rf"querySelector\('\.{re.escape(class_name)}'\)", source), (
+            f".{class_name}.talking is styled but the chat code never "
+            f"toggles 'talking' on .{class_name}"
+        )

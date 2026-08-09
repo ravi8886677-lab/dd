@@ -172,3 +172,76 @@ class TestSettingsTestDoesNotLeakTheKey:
         # nothing is listening in the test environment, hence 502.
         assert response.status_code in (200, 400, 502)
         assert b"private address" not in response.data
+
+
+@pytest.mark.unit
+class TestTheNoAuthDevFlag:
+    """A convenience switch must not become a remote-code-execution path.
+
+    `/api/mcp` writes a command Jarvis later spawns, so anything that can
+    reach the dashboard unauthenticated can run code as the user. The
+    flag exists to make a local demo painless; it does not get to switch
+    off the defence against a *webpage* driving the dashboard.
+    """
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "maybe"])
+    def test_a_falsey_value_does_not_switch_auth_off(self, viewer, monkeypatch, value):
+        """`NO_AUTH=0` reading as "on" is how people disable auth by accident."""
+        monkeypatch.setenv("JARVIS_DASHBOARD_NO_AUTH", value)
+        assert viewer._no_auth_enabled() is False
+        assert viewer._token_matches("wrong-token") is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+    def test_an_explicit_opt_in_is_honoured(self, viewer, monkeypatch, value):
+        monkeypatch.setenv("JARVIS_DASHBOARD_NO_AUTH", value)
+        assert viewer._no_auth_enabled() is True
+        assert viewer._token_matches("anything") is True
+
+    def test_the_flag_is_off_when_unset(self, viewer, monkeypatch):
+        monkeypatch.delenv("JARVIS_DASHBOARD_NO_AUTH", raising=False)
+        assert viewer._no_auth_enabled() is False
+
+    def test_the_host_check_survives_the_flag(self, viewer, monkeypatch):
+        """The Host check is the rebinding defence, not authentication.
+
+        Without it any website the user visits can point a name at
+        127.0.0.1 and drive the dashboard from their browser. No demo
+        convenience is worth handing that out.
+        """
+        monkeypatch.setenv("JARVIS_DASHBOARD_NO_AUTH", "1")
+        assert viewer._host_is_allowed("evil.example.com") is False
+        assert viewer._host_is_allowed("") is False
+        assert viewer._host_is_allowed("localhost:5071") is True
+
+    def test_a_rebinding_request_is_still_refused_with_the_flag_on(
+        self, viewer, monkeypatch
+    ):
+        monkeypatch.setenv("JARVIS_DASHBOARD_NO_AUTH", "1")
+        viewer.app.config["TESTING"] = True
+        with viewer.app.test_client() as c:
+            response = c.get("/api/memories", headers={"Host": "evil.example.com"})
+        assert response.status_code == 403
+
+    def test_the_flag_does_let_a_local_browser_in_without_a_token(
+        self, viewer, monkeypatch
+    ):
+        """The point of the flag: a local demo with no launch URL."""
+        monkeypatch.setenv("JARVIS_DASHBOARD_NO_AUTH", "1")
+        viewer.app.config["TESTING"] = True
+        with viewer.app.test_client() as c:
+            response = c.get("/api/stats", headers={"Host": "localhost:5071"})
+        assert response.status_code != 401
+
+    def test_mcp_registration_is_still_shut_to_a_foreign_host(
+        self, viewer, monkeypatch
+    ):
+        """The endpoint that ends in code execution gets checked explicitly."""
+        monkeypatch.setenv("JARVIS_DASHBOARD_NO_AUTH", "1")
+        viewer.app.config["TESTING"] = True
+        with viewer.app.test_client() as c:
+            response = c.post(
+                "/api/mcp",
+                json={"name": "evil", "command": "sh", "args": ["-c", "id"]},
+                headers={"Host": "evil.example.com"},
+            )
+        assert response.status_code == 403
