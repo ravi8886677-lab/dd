@@ -5,6 +5,7 @@ withholds that tool rather than quietly handing the model a new set of
 instructions. This is how a person looks at what changed and decides.
 
     python -m jarvis.mcp_trust_cli list
+    python -m jarvis.mcp_trust_cli audit
     python -m jarvis.mcp_trust_cli accept <server> <tool>
 """
 
@@ -17,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from .config import load_settings
 from .debug import debug_log
+from .tools.external.mcp_audit import audit_server_tools, format_findings
 from .tools.external.mcp_client import MCPClient
 from .tools.external.mcp_trust import TrustStore, ToolChange
 
@@ -81,6 +83,36 @@ def _cmd_list(cfg: Any) -> int:
     return 0
 
 
+def _cmd_audit(cfg: Any) -> int:
+    """Check every configured server's tool definitions, locally."""
+    mcps = _servers(cfg)
+    if not mcps:
+        print("📡 No MCP servers configured")
+        return 0
+
+    print(f"🔎 Auditing tool definitions from {len(mcps)} MCP server(s)...")
+    tools_by_server: Dict[str, List[Dict[str, Any]]] = {}
+    for server_name in mcps:
+        try:
+            tools_by_server[server_name] = _live_tools(mcps, server_name)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠️ {server_name}: could not reach it ({e})")
+
+    findings = audit_server_tools(tools_by_server)
+    total_tools = sum(len(t) for t in tools_by_server.values())
+
+    if not findings:
+        print(f"  ✅ {total_tools} tool(s) checked, nothing suspicious")
+        return 0
+
+    print(f"  🛑 {len(findings)} finding(s) across {total_tools} tool(s):")
+    for line in format_findings(findings):
+        print(line)
+    print()
+    print("  ℹ️  These are shapes worth a look, not proof of anything.")
+    return 1
+
+
 def _cmd_accept(cfg: Any, server_name: str, tool_name: str) -> int:
     mcps = _servers(cfg)
     if server_name not in mcps:
@@ -120,6 +152,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("list", help="show tools whose definitions changed")
+    sub.add_parser("audit", help="check every tool definition for known attack shapes")
     accept = sub.add_parser("accept", help="accept one tool's current definition")
     accept.add_argument("server")
     accept.add_argument("tool")
@@ -138,6 +171,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "list":
         return _cmd_list(cfg)
+    if args.command == "audit":
+        return _cmd_audit(cfg)
     return _cmd_accept(cfg, args.server, args.tool)
 
 
