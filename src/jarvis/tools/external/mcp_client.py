@@ -169,18 +169,21 @@ class MCPClient:
         raw_args = server_cfg.get("args") or []
         args = [os.path.expanduser(str(a)) if isinstance(a, str) else a for a in raw_args]
         user_env = server_cfg.get("env") or {}
-        # Ensure the resolved command's directory is on PATH so that
-        # shebangs like #!/usr/bin/env node can find sibling binaries.
-        # We must pass the full environment because StdioServerParameters
-        # replaces (not merges) the parent env when env is not None.
+        # The environment is always built explicitly. ``env=None`` does not
+        # mean "inherit": the SDK substitutes ``get_default_environment()``,
+        # which carries only HOME, PATH, SHELL and TERM. A server launched
+        # that way loses proxy settings, NODE_EXTRA_CA_CERTS, registry
+        # credentials and every other variable npx and uv consult, and the
+        # usual symptom is a launch that hangs until the setup timeout with
+        # nothing on stderr to explain it.
+        #
+        # The resolved command's directory is prepended to PATH so shebangs
+        # like #!/usr/bin/env node find sibling binaries.
         cmd_dir = os.path.dirname(command)
         current_path = os.environ.get("PATH", "")
+        env = {**os.environ, **user_env}
         if cmd_dir and cmd_dir not in current_path.split(os.pathsep):
-            env = {**os.environ, **user_env, "PATH": cmd_dir + os.pathsep + current_path}
-        elif user_env:
-            env = {**os.environ, **user_env}
-        else:
-            env = None  # inherit parent env as-is
+            env["PATH"] = cmd_dir + os.pathsep + current_path
         params = StdioServerParameters(command=command, args=args, env=env)
         # Suppress MCP server stderr noise (npm warnings, usage banners, etc.)
         # from polluting the daemon's log output.
