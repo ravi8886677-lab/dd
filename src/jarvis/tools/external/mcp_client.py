@@ -1,21 +1,81 @@
 from __future__ import annotations
 
 import asyncio
+import glob as _glob
 import os
+import shlex as _shlex
 import shutil
+import sys as _sys
 from typing import Any, Dict, Optional, List
 from contextlib import asynccontextmanager
 
 from mcp import ClientSession  # type: ignore
 from mcp.client.stdio import stdio_client, StdioServerParameters  # type: ignore
+from mcp.client.streamable_http import streamablehttp_client  # type: ignore
 
 from ...debug import debug_log
 from .mcp_supply_chain import validate_server_launch
 
 
-import glob as _glob
-import shlex as _shlex
-import sys as _sys
+class RemoteEndpointError(RuntimeError):
+    """A remote MCP server's URL is missing or unsafe to connect to."""
+
+
+# Transport names that mean "talk to it over HTTP". Streamable HTTP is the
+# only network transport in the spec; the older SSE transport is
+# deprecated and deliberately absent.
+_REMOTE_TRANSPORTS = {"http", "https", "streamable_http", "streamable-http"}
+
+# Hosts where plain HTTP cannot be observed by anything off this machine.
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def is_remote_transport(transport: Optional[str]) -> bool:
+    """Whether this transport name means a network connection."""
+    return str(transport or "").strip().lower() in _REMOTE_TRANSPORTS
+
+
+def remote_token_key(server_name: str) -> str:
+    """Credential-store key holding the bearer token for a remote server."""
+    return f"mcp_token:{server_name}"
+
+
+def _validate_remote_url(server_name: str, url: str) -> None:
+    """Raise ``RemoteEndpointError`` unless this URL is safe to send a token to."""
+    from urllib.parse import urlparse
+
+    if not url:
+        raise RemoteEndpointError(
+            f"MCP server '{server_name}' uses an HTTP transport but has no "
+            '"url". Add one, e.g. "url": "https://mcp.example.com/mcp".'
+        )
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise RemoteEndpointError(
+            f"MCP server '{server_name}' has an unsupported URL scheme "
+            f"'{parsed.scheme}'. Only http and https are used to reach an MCP "
+            "server."
+        )
+    if not parsed.hostname:
+        raise RemoteEndpointError(
+            f"MCP server '{server_name}' has a URL with no host: {url!r}"
+        )
+    if parsed.username or parsed.password:
+        # These leak into logs, proxies and the Referer of anything the
+        # server fetches. A token belongs in the credential store.
+        raise RemoteEndpointError(
+            f"MCP server '{server_name}' embeds credentials in its URL. Remove "
+            "them; store the token with the credential store instead."
+        )
+    if parsed.scheme == "http" and parsed.hostname.lower() not in _LOOPBACK_HOSTS:
+        raise RemoteEndpointError(
+            f"MCP server '{server_name}' uses plain http to "
+            f"'{parsed.hostname}'. The bearer token would cross the network in "
+            "clear text — use https, or point at localhost for a server on "
+            "this machine."
+        )
+
 
 
 class MCPServerSessionError(RuntimeError):
@@ -181,11 +241,74 @@ class _StdioConnection:
                 pass
 
 
+class _RemoteConnection:
+    """Adapts ``streamablehttp_client`` to the ``(read, write)`` shape.
+
+    The HTTP transport yields a third element, a callable returning the
+    session id. Nothing above this layer uses it, and normalising here
+    means the runtime's worker loop does not care which transport it got.
+    """
+
+    def __init__(self, inner_cm) -> None:
+        self._cm = inner_cm
+
+    async def __aenter__(self):
+        streams = await self._cm.__aenter__()
+        return streams[0], streams[1]
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return await self._cm.__aexit__(exc_type, exc, tb)
+
+
 class MCPClient:
     """Lightweight manager to connect to external MCP servers and call tools."""
 
     def __init__(self, mcps_config: Dict[str, Any]) -> None:
         self.server_configs: Dict[str, Dict[str, Any]] = mcps_config or {}
+
+    def _connect(self, server_cfg: Dict[str, Any], server_name: str = "?"):
+        """Build a connection for whichever transport this server uses."""
+        transport = str(server_cfg.get("transport") or "stdio").strip().lower()
+        if transport == "stdio":
+            return self._connect_stdio(server_cfg, server_name)
+        if is_remote_transport(transport):
+            return self._connect_http(server_cfg, server_name)
+        raise NotImplementedError(
+            f"MCP server '{server_name}' uses transport '{transport}', which is "
+            "not supported. Use 'stdio' for a local server or 'http' for a "
+            "hosted one."
+        )
+
+    def _connect_http(self, server_cfg: Dict[str, Any], server_name: str = "?"):
+        """Build an async context manager for the Streamable HTTP transport.
+
+        The URL is validated before anything is opened, so an unsafe
+        endpoint never receives a request — in particular never receives
+        the bearer token.
+        """
+        url = str(server_cfg.get("url") or "").strip()
+        _validate_remote_url(server_name, url)
+
+        headers: Dict[str, str] = {
+            str(k): str(v) for k, v in (server_cfg.get("headers") or {}).items()
+        }
+
+        # The credential store is the authority for the token. A stale
+        # Authorization header left in config.json must not win over it,
+        # or rotating the token in the keychain would silently do nothing.
+        from ...utils import secret_store
+
+        token = secret_store.get_secret(remote_token_key(server_name))
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        timeout = server_cfg.get("timeout_sec")
+        kwargs: Dict[str, Any] = {"headers": headers or None}
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
+            kwargs["timeout"] = float(timeout)
+
+        debug_log(f"connecting to MCP server '{server_name}' at {url}", "mcp")
+        return _RemoteConnection(streamablehttp_client(url, **kwargs))
 
     def _connect_stdio(self, server_cfg: Dict[str, Any], server_name: str = "?"):
         """Build an async context manager for the stdio transport.
@@ -244,14 +367,9 @@ class MCPClient:
 
     @asynccontextmanager
     async def _session(self, server_name: str):
-        cfg = self.server_configs.get(server_name)
-        if not cfg:
-            raise ValueError(f"Unknown MCP server '{server_name}'. Check config.mcps.")
-        transport = str(cfg.get("transport") or "stdio").lower()
-        if transport != "stdio":
-            raise NotImplementedError(f"Unsupported MCP transport '{transport}'. Only 'stdio' is supported currently.")
+        cfg = self._require_known_cfg(server_name)
 
-        async with self._connect_stdio(cfg, server_name) as (read, write):
+        async with self._connect(cfg, server_name) as (read, write):
             # Disable anyio TaskGroup cancellation propagation issues by scoping session strictly here
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -282,7 +400,7 @@ class MCPClient:
         session that services discovery also services subsequent
         ``invoke_tool`` calls — avoids paying subprocess startup twice.
         """
-        cfg = self._require_stdio_cfg(server_name)
+        cfg = self._require_known_cfg(server_name)
         from .mcp_runtime import get_runtime, _WorkerDeadError
 
         runtime = get_runtime()
@@ -309,7 +427,7 @@ class MCPClient:
         callers can distinguish that from tool-level errors carried in
         the returned dict's ``isError`` field.
         """
-        cfg = self._require_stdio_cfg(server_name)
+        cfg = self._require_known_cfg(server_name)
         from .mcp_runtime import get_runtime, _WorkerDeadError
 
         runtime = get_runtime()
@@ -319,17 +437,16 @@ class MCPClient:
             raise MCPServerSessionError(str(e)) from e
         return _result_to_dict(res)
 
-    def _require_stdio_cfg(self, server_name: str) -> Dict[str, Any]:
-        """Return the server config, validating presence and transport."""
+    def _require_known_cfg(self, server_name: str) -> Dict[str, Any]:
+        """Return the server config, validating that we can reach it.
+
+        Transport support is decided in ``_connect``; this only checks the
+        server is configured at all, so both transports take one path.
+        """
         cfg = self.server_configs.get(server_name)
         if not cfg:
             raise ValueError(
                 f"Unknown MCP server '{server_name}'. Check config.mcps."
-            )
-        transport = str(cfg.get("transport") or "stdio").lower()
-        if transport != "stdio":
-            raise NotImplementedError(
-                f"Unsupported MCP transport '{transport}'. Only 'stdio' is supported currently."
             )
         return cfg
 
