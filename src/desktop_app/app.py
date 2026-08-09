@@ -1333,6 +1333,14 @@ class JarvisSystemTray:
         except Exception as _confirm_err:  # noqa: BLE001
             self.confirm_dialog = None
             debug_log(f"confirmation presenter unavailable: {_confirm_err}", "desktop")
+            # debug_log alone would put this in the Log Viewer, which is
+            # the hidden window this change exists to route around. If the
+            # dialog is missing the gates are unopenable again, so say so
+            # somewhere visible — but not yet: `showMessage` is a no-op on
+            # a tray icon that has not been shown, and `show()` is still
+            # a few lines below. Deferred rather than fired here, or the
+            # one warning that matters would go nowhere at all.
+            self._confirm_presenter_failed = True
 
         # Set up status checking timer
         self.status_timer = QTimer()
@@ -1341,6 +1349,21 @@ class JarvisSystemTray:
 
         # Show tray icon
         self.tray_icon.show()
+
+        # Now that the icon is visible, a balloon will actually render.
+        # This is the only warning a user gets that approvals are dead,
+        # so it must not be spent while the icon is still hidden.
+        if getattr(self, "_confirm_presenter_failed", False):
+            try:
+                self.tray_icon.showMessage(
+                    "Jarvis: approvals unavailable",
+                    "Actions needing confirmation cannot be approved. "
+                    "See Logs in this menu for details.",
+                    QSystemTrayIcon.MessageIcon.Critical,
+                    10000,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         # Register cleanup on app exit
         self.app.aboutToQuit.connect(self.cleanup_on_exit)
