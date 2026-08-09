@@ -118,7 +118,12 @@ request to stop being asked.
 
 A gated call runs when **YOLO mode** is on and does not when it is off.
 YOLO (`jarvis/approval.py`) is a window the user opens by hand for 15 or
-30 minutes, from the tray menu or the dashboard. Outside it, a gated
+30 minutes, from the tray menu or the dashboard's `/api/yolo`. That
+endpoint grants only on POST: `fetchWebPage` issues GETs, so keeping the
+state-changing verb off GET means a tool pointed at the URL could at most
+read. It could not authenticate either — the session token is given to
+the viewer process, not the daemon — but an endpoint that hands out
+permission does not lean on one control alone. Outside it, a gated
 call returns a `NOT DONE:` message naming the action and telling the
 model to ask the user to switch YOLO on. Read-only tools are unaffected
 either way.

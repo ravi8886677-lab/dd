@@ -565,6 +565,51 @@ def _key_hint(key: str) -> str:
     return f"…{key[-4:]}" if len(key) >= 4 else ""
 
 
+@app.route("/api/yolo")
+def yolo_state() -> Response:
+    """Current YOLO state, for the button's label and countdown."""
+    from jarvis import approval
+
+    return jsonify({
+        "active": approval.is_active(),
+        "remaining_sec": int(approval.remaining_sec()),
+        "label": approval.describe_remaining(),
+        "choices": list(approval.GRANT_CHOICES_MINUTES),
+    })
+
+
+@app.route("/api/yolo", methods=["POST"])
+def yolo_set() -> Response:
+    """Open or close the YOLO window.
+
+    POST rather than GET on purpose. Jarvis's own `fetchWebPage` issues
+    GETs, so keeping the state-changing verb off GET means that even if a
+    tool were pointed at this URL it could only read. It could not
+    authenticate either — the session token is given to this process, not
+    to the daemon — but a privilege-granting endpoint should not lean on
+    one control alone.
+    """
+    from jarvis import approval
+
+    payload = request.get_json(silent=True) or {}
+    if payload.get("off"):
+        approval.revoke()
+        return jsonify({"active": False, "label": approval.describe_remaining()})
+
+    minutes = payload.get("minutes")
+    if not isinstance(minutes, (int, float)) or isinstance(minutes, bool):
+        return jsonify({"error": "minutes must be a number"}), 400
+    if not approval.grant(minutes):
+        return jsonify({"error": "that is not a usable duration"}), 400
+
+    debug_log(f"YOLO granted for {minutes} minutes from the dashboard", "memory_viewer")
+    return jsonify({
+        "active": approval.is_active(),
+        "remaining_sec": int(approval.remaining_sec()),
+        "label": approval.describe_remaining(),
+    })
+
+
 @app.route("/api/settings")
 def settings_get() -> Response:
     """Current LLM settings. The key itself is never returned.
@@ -1726,6 +1771,57 @@ _INDEX_HTML = """<!DOCTYPE html>
         .orb-stage canvas { height: 100%; }
         .hud-core.talking .orb-state { font-size: 10px; padding-top: 6px; }
 
+
+        /* ── YOLO bar ─────────────────────────────────────────────── */
+        .yolo-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            padding: 10px 14px;
+            margin-bottom: 10px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+        }
+        .yolo-state {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            font-family: var(--font-ui);
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        .yolo-dot {
+            width: 9px; height: 9px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            flex: none;
+        }
+        .yolo-bar.on { border-color: var(--success); }
+        .yolo-bar.on .yolo-dot {
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success);
+        }
+        .yolo-bar.on #yolo-label { color: var(--success-light); }
+        .yolo-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .yolo-btn {
+            padding: 6px 12px;
+            font-family: var(--font-ui);
+            font-size: 12px;
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: border-color 0.15s ease, color 0.15s ease;
+        }
+        .yolo-btn:hover {
+            border-color: var(--accent-primary);
+            color: var(--accent-secondary);
+        }
+        .yolo-btn.off:hover { border-color: var(--error); color: var(--error-light); }
         /* ── Settings ─────────────────────────────────────────────── */
         .settings-grid {
             display: grid;
@@ -3393,6 +3489,13 @@ _INDEX_HTML = """<!DOCTYPE html>
     </header>
 
     <main class="main-container">
+        <div class="yolo-bar">
+            <div class="yolo-state">
+                <span class="yolo-dot" id="yolo-dot"></span>
+                <span id="yolo-label">YOLO mode: off</span>
+            </div>
+            <div class="yolo-actions" id="yolo-actions"></div>
+        </div>
         <div class="tabs">
             <button class="tab active" data-tab="chat">
                 <span>💬</span> Chat
@@ -3800,6 +3903,75 @@ _INDEX_HTML = """<!DOCTYPE html>
                             card.remove();
                             showToast('Memory deleted', 'success');
                             loadStats();
+
+        // ── YOLO mode ────────────────────────────────────────────────
+        // The window is granted here, by a person clicking, and nowhere
+        // else. Jarvis reads web pages and tool descriptions written by
+        // other people; if a tool could grant, that text could grant.
+        let yoloTimer = null;
+
+        async function refreshYolo() {
+            try {
+                const res = await fetch('/api/yolo');
+                const state = await res.json();
+                renderYolo(state);
+            } catch (e) {
+                // A dashboard that cannot read the state should not claim
+                // the window is open.
+                renderYolo({ active: false, label: 'unavailable', choices: [15, 30] });
+            }
+        }
+
+        function renderYolo(state) {
+            const bar = document.querySelector('.yolo-bar');
+            const label = document.getElementById('yolo-label');
+            const actions = document.getElementById('yolo-actions');
+            if (!bar || !label || !actions) return;
+
+            bar.classList.toggle('on', !!state.active);
+            label.textContent = state.active
+                ? 'YOLO mode: on — ' + state.label
+                : 'YOLO mode: off — risky actions will ask first';
+
+            actions.innerHTML = '';
+            if (state.active) {
+                const off = document.createElement('button');
+                off.className = 'yolo-btn off';
+                off.textContent = '🔒 Turn off';
+                off.onclick = () => setYolo({ off: true });
+                actions.appendChild(off);
+            }
+            (state.choices || [15, 30]).forEach((mins) => {
+                const btn = document.createElement('button');
+                btn.className = 'yolo-btn';
+                btn.textContent = (state.active ? '↻ ' : '🚀 ') + mins + ' min';
+                btn.onclick = () => setYolo({ minutes: mins });
+                actions.appendChild(btn);
+            });
+
+            if (yoloTimer) clearInterval(yoloTimer);
+            if (state.active) {
+                // Keep the countdown honest without polling constantly.
+                yoloTimer = setInterval(refreshYolo, 5000);
+            }
+        }
+
+        async function setYolo(body) {
+            try {
+                const res = await fetch('/api/yolo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                renderYolo(await res.json());
+            } catch (e) {
+                console.error('could not change YOLO mode', e);
+            }
+            refreshYolo();
+        }
+
+        refreshYolo();
+
                         } else {
                             showToast('Failed to delete', 'error');
                         }

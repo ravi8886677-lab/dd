@@ -245,3 +245,69 @@ class TestTheNoAuthDevFlag:
                 headers={"Host": "evil.example.com"},
             )
         assert response.status_code == 403
+
+
+@pytest.mark.unit
+class TestTheYoloEndpoint:
+    """Granting is a privilege, so the endpoint that does it is checked.
+
+    Jarvis's own `fetchWebPage` issues GETs, so the state-changing verb
+    stays off GET. It could not authenticate either — the session token
+    goes to the viewer process, not the daemon — but an endpoint that
+    hands out permission should not lean on one control alone.
+    """
+
+    def test_reading_the_state_needs_the_token(self, client):
+        assert client.get("/api/yolo").status_code == 401
+
+    def test_granting_needs_the_token(self, client):
+        assert client.post("/api/yolo", json={"minutes": 30}).status_code == 401
+
+    def test_granting_is_refused_from_a_foreign_host(self, viewer, auth_client):
+        response = auth_client.post(
+            "/api/yolo", json={"minutes": 30}, headers={"Host": "evil.example.com"}
+        )
+        assert response.status_code == 403
+
+    def test_a_get_cannot_grant(self, viewer, auth_client):
+        from jarvis import approval
+
+        approval.revoke()
+        auth_client.get("/api/yolo?minutes=30")
+        assert approval.is_active() is False
+
+    def test_granting_and_revoking_work(self, viewer, auth_client):
+        from jarvis import approval
+
+        approval.revoke()
+        try:
+            response = auth_client.post("/api/yolo", json={"minutes": 15})
+            assert response.status_code == 200
+            assert approval.is_active() is True
+
+            auth_client.post("/api/yolo", json={"off": True})
+            assert approval.is_active() is False
+        finally:
+            approval.revoke()
+
+    @pytest.mark.parametrize("bad", ["30", None, True, "yes"])
+    def test_a_non_numeric_duration_is_refused(self, viewer, auth_client, bad):
+        from jarvis import approval
+
+        approval.revoke()
+        try:
+            response = auth_client.post("/api/yolo", json={"minutes": bad})
+            assert response.status_code == 400
+            assert approval.is_active() is False
+        finally:
+            approval.revoke()
+
+    def test_an_absurd_duration_is_clamped(self, viewer, auth_client):
+        from jarvis import approval
+
+        approval.revoke()
+        try:
+            auth_client.post("/api/yolo", json={"minutes": 60 * 24 * 7})
+            assert approval.remaining_sec() <= approval.MAX_GRANT_MINUTES * 60
+        finally:
+            approval.revoke()
