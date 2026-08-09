@@ -119,6 +119,9 @@ class Settings:
     active_profiles: list[str]
     use_stdin: bool
     computer_use_confirm: str
+    # How much of an external MCP tool call needs a human: off /
+    # destructive / unannotated / all. See mcp_security.spec.md.
+    mcp_confirm: str
     voice_debug: bool
 
     # Screen Capture
@@ -337,6 +340,99 @@ def _save_json(path: Path, data: Dict[str, Any]) -> bool:
         return False
 
 
+def _load_catalogue_by_name() -> Dict[str, Any]:
+    """Load the MCP catalogue without importing the desktop package.
+
+    ``desktop_app/__init__`` imports the tray application, which needs
+    Qt. The catalogue itself is plain data, and a headless install must
+    still be able to re-pin its servers, so the module is loaded straight
+    from its file.
+    """
+    import importlib.util
+
+    module_path = Path(__file__).resolve().parent.parent / "desktop_app" / "mcp_catalogue.py"
+    if not module_path.exists():
+        return {}
+    spec = importlib.util.spec_from_file_location("_jarvis_mcp_catalogue", module_path)
+    if spec is None or spec.loader is None:
+        return {}
+    module = importlib.util.module_from_spec(spec)
+    # Registered before execution because ``dataclass`` resolves the
+    # defining module by name while the class body is being built.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:  # noqa: BLE001
+        sys.modules.pop(spec.name, None)
+        return {}
+    return getattr(module, "CATALOGUE_BY_NAME", {}) or {}
+
+
+def _package_base(spec: str) -> str:
+    """The package name in a spec, without its version."""
+    if spec.startswith("@"):
+        body = spec[1:]
+        return "@" + body.split("@", 1)[0]
+    for separator in ("==", ">=", "~=", "@"):
+        if separator in spec:
+            return spec.split(separator, 1)[0]
+    return spec
+
+
+def _repin_catalogue_servers(cfg_json: Dict[str, Any]) -> list:
+    """Rewrite floating catalogue entries in ``mcps`` to their pinned args.
+
+    Only touches a server whose command and package name match a
+    catalogue entry, so a hand-written config is never rewritten under
+    the user. Returns the ``(name, spec)`` pairs that changed.
+    """
+    mcps = cfg_json.get("mcps")
+    if not isinstance(mcps, dict) or not mcps:
+        return []
+
+    try:
+        from .tools.external.mcp_supply_chain import (
+            UnpinnedServerError,
+            describe_package_specs,
+            validate_server_launch,
+        )
+        catalogue_by_name = _load_catalogue_by_name()
+    except Exception:  # noqa: BLE001
+        return []
+    if not catalogue_by_name:
+        return []
+
+    changed = []
+    for name, entry in mcps.items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            validate_server_launch(name, entry)
+            continue  # already acceptable
+        except UnpinnedServerError:
+            pass
+
+        catalogue_entry = catalogue_by_name.get(name)
+        if catalogue_entry is None:
+            continue
+        if str(entry.get("command") or "") != catalogue_entry.command:
+            continue
+
+        pinned_args = list(catalogue_entry.args)
+        old_pkgs = describe_package_specs(
+            str(entry.get("command") or ""), entry.get("args") or []
+        )
+        new_pkgs = describe_package_specs(catalogue_entry.command, pinned_args)
+        if not old_pkgs or not new_pkgs:
+            continue
+        if _package_base(old_pkgs[0]) != _package_base(new_pkgs[0]):
+            continue
+
+        entry["args"] = pinned_args
+        changed.append((name, new_pkgs[0]))
+    return changed
+
+
 # The migration level a freshly-migrated config carries. Bump this in the
 # same change that adds a migration block below.
 CONFIG_VERSION = 4
@@ -402,17 +498,31 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
         cfg_json["_config_version"] = 3
         modified = True
 
-    # Migration v4: move plaintext credentials into the OS credential
-    # store. Every MCP server subprocess inherits this user's ability to
-    # read config.json, so a key sitting there in plain text is readable
-    # by third-party code Jarvis itself launched. A key only leaves the
-    # file once the credential store has handed it back, so a machine
-    # with nowhere to put secrets keeps working unchanged.
+    # Migration v4: pin any catalogue server the wizard previously wrote
+    # with a floating version. Those entries predate the launch guard and
+    # would now be refused, taking the user's whole MCP tool set away with
+    # one error line each. The catalogue already holds the pinned args, so
+    # the entry is rewritten to match rather than being disabled.
     if migration_version < 4:
-        if migrate_plaintext_secrets(cfg_json):
-            print("🔐 Moved API keys into your OS credential store", flush=True)
-            print("   config.json no longer holds them in plain text", flush=True)
+        repinned = _repin_catalogue_servers(cfg_json)
+        for name, spec in repinned:
+            print(f"📌 Pinned MCP server '{name}' to {spec}", flush=True)
+        if repinned:
+            print("   A floating version re-downloads on every launch, so it "
+                  "is no longer accepted.", flush=True)
         cfg_json["_config_version"] = CONFIG_VERSION
+        modified = True
+
+    # Credentials are swept on every load, not once at a version bump.
+    # The Settings window writes API keys straight back into config.json,
+    # so a key set after the upgrade would otherwise sit there in plain
+    # text for good. Every MCP server subprocess inherits this user's
+    # ability to read that file. A key only leaves it once the credential
+    # store has handed the same value back, so a machine with nowhere to
+    # put secrets keeps working unchanged.
+    if migrate_plaintext_secrets(cfg_json):
+        print("🔐 Moved API keys into your OS credential store", flush=True)
+        print("   config.json no longer holds them in plain text", flush=True)
         modified = True
 
     # Save migrated config
@@ -525,6 +635,7 @@ def get_default_config() -> Dict[str, Any]:
         "use_stdin": False,
         # "risky" (default) | "always" | "never" — see computer_use.py
         "computer_use_confirm": "risky",
+        "mcp_confirm": "destructive",
 
         # Screen Capture
         "allowlist_bundles": [
@@ -755,6 +866,7 @@ def load_settings() -> Settings:
         embedding_model = ollama_embed_model
     use_stdin = bool(merged.get("use_stdin", False))
     computer_use_confirm = str(merged.get("computer_use_confirm", "risky") or "risky").strip().lower()
+    mcp_confirm = str(merged.get("mcp_confirm", "destructive") or "destructive").strip().lower()
     active_profiles = _ensure_list(merged.get("active_profiles"))
     tts_enabled = bool(merged.get("tts_enabled", True))
     tts_engine = str(merged.get("tts_engine", "piper")).lower()
@@ -939,6 +1051,7 @@ def load_settings() -> Settings:
         active_profiles=active_profiles,
         use_stdin=use_stdin,
         computer_use_confirm=computer_use_confirm,
+        mcp_confirm=mcp_confirm,
         voice_debug=voice_debug,
 
         # Screen Capture

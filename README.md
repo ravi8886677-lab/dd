@@ -501,7 +501,7 @@ An MCP server is code you installed, and its tool descriptions are read by the m
 "args": ["some-server==1.4.2"]            // uvx
 ```
 
-Local paths, `node`, `python` and `docker` commands are not affected. If you really want a floating version, add `"allow_unpinned": true` to that server's entry.
+Local paths, `node`, `python` and `docker` commands are not affected. If you really want a floating version, add `"allow_unpinned": true` to that server's entry. Servers you installed through the setup wizard are re-pinned automatically on upgrade, so they keep working.
 
 **2. Tools that change get withheld.** Jarvis remembers what each tool looked like when you added it. If a description later changes, that tool is withheld rather than quietly handed to the model with new instructions. Review and restore it with:
 
@@ -519,7 +519,9 @@ python -m jarvis.mcp_trust_cli accept <server> <tool>  # allow it again
 | `unannotated` | the above, plus any tool that declares nothing |
 | `all` | every MCP tool call |
 
-**4. You can audit definitions.** Checks every configured server for text hidden in invisible characters, descriptions imitating system prompts, references to credential files, and one server steering calls to another's tools. Runs entirely on your machine:
+**4. Servers don't get your shell secrets.** An MCP server is third-party code, so variables whose names say they hold a credential (`*_TOKEN`, `*_API_KEY`, `*_SECRET`, `*_PASSWORD`, …) are withheld from it. Proxy settings, custom CA paths and the rest still pass through. A server that genuinely needs a token gets it from its own `env` block in `config.json`, which always wins.
+
+**5. You can audit definitions.** Checks every configured server for text hidden in invisible characters, descriptions imitating system prompts, references to credential files, and one server steering calls to another's tools. Runs entirely on your machine:
 
 ```bash
 python -m jarvis.mcp_trust_cli audit

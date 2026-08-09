@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from mcp import ClientSession  # type: ignore
 from mcp.client.stdio import stdio_client, StdioServerParameters  # type: ignore
 
+from ...debug import debug_log
 from .mcp_supply_chain import validate_server_launch
 
 
@@ -42,6 +43,47 @@ _EXTRA_PATH_GLOBS: List[str] = [
     os.path.expanduser("~/.nvm/versions/node/*/bin"),   # nvm
     os.path.expanduser("~/.fnm/node-versions/*/installation/bin"),  # fnm
 ]
+
+
+# Environment variables whose names say they hold a credential. An MCP
+# server is third-party code, and inheriting the user's whole shell
+# hands every one of them a copy of any cloud key or token exported
+# there. A server that genuinely needs one declares it in its own
+# ``env`` block, which is merged on top of this and so always wins —
+# that block is the sanctioned way to pass a secret to a server.
+_SECRET_NAME_PATTERNS = (
+    "_TOKEN", "TOKEN_", "_SECRET", "SECRET_", "_KEY", "APIKEY", "API_KEY",
+    "_PASSWORD", "PASSWORD_", "_CREDENTIAL", "CREDENTIAL_", "_PASSWD",
+    "_PRIVATE_KEY", "_ACCESS_KEY", "_SESSION_TOKEN", "_AUTH",
+)
+
+# Names that match the patterns above but carry no secret.
+_SECRET_NAME_ALLOWED = {"SSH_AUTH_SOCK", "GPG_AGENT_INFO"}
+
+
+def _looks_like_a_secret(name: str) -> bool:
+    upper = name.upper()
+    if upper in _SECRET_NAME_ALLOWED:
+        return False
+    return any(pattern in upper for pattern in _SECRET_NAME_PATTERNS)
+
+
+def _inheritable_environment() -> Dict[str, str]:
+    """The parent environment minus anything that looks like a credential."""
+    kept: Dict[str, str] = {}
+    withheld: List[str] = []
+    for name, value in os.environ.items():
+        if _looks_like_a_secret(name):
+            withheld.append(name)
+        else:
+            kept[name] = value
+    if withheld:
+        debug_log(
+            "withheld credential-shaped variables from MCP server environment: "
+            + ", ".join(sorted(withheld)),
+            "mcp",
+        )
+    return kept
 
 
 def _get_user_shell() -> str:
@@ -181,7 +223,7 @@ class MCPClient:
         # like #!/usr/bin/env node find sibling binaries.
         cmd_dir = os.path.dirname(command)
         current_path = os.environ.get("PATH", "")
-        env = {**os.environ, **user_env}
+        env = {**_inheritable_environment(), **user_env}
         if cmd_dir and cmd_dir not in current_path.split(os.pathsep):
             env["PATH"] = cmd_dir + os.pathsep + current_path
         params = StdioServerParameters(command=command, args=args, env=env)

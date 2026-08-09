@@ -50,7 +50,7 @@ class Finding:
 # precisely why instructions get hidden in them.
 _INVISIBLE = {
     "­",  # soft hyphen
-    "​", "‌", "‍",  # zero-width space / non-joiner / joiner
+    "​",  # zero-width space
     "‎", "‏",  # LTR / RTL marks
     " ", " ",  # line / paragraph separators
     "‪", "‫", "‬", "‭", "‮",  # bidi embedding/override
@@ -61,6 +61,19 @@ _INVISIBLE = {
 
 # Whitespace a legitimate description genuinely uses.
 _ALLOWED_CONTROL = {"\t", "\n", "\r"}
+
+# Format characters that carry real meaning in ordinary text. ZWNJ and
+# ZWJ are orthographically required in Persian, Hindi, Bengali and
+# Malayalam, and ZWJ joins every multi-person emoji — a project whose own
+# convention mandates emoji in user-facing strings cannot treat them as
+# evidence of anything. Variation selectors pick emoji vs text
+# presentation. Flagging these would make the audit unusable for most of
+# the world's writing systems, which is the opposite of the point.
+_MEANINGFUL_FORMAT = {
+    "‌",  # zero-width non-joiner
+    "‍",  # zero-width joiner
+    "︎", "️",  # variation selectors
+}
 
 # Markup that imitates the structure of a prompt rather than describing a
 # tool. Matched as whole constructs so ordinary prose comparing values with
@@ -112,7 +125,10 @@ def _hidden_characters(text: str) -> List[str]:
     """Return the invisible characters present, by Unicode name."""
     found: List[str] = []
     for char in text:
-        if char in _ALLOWED_CONTROL:
+        if char in _ALLOWED_CONTROL or char in _MEANINGFUL_FORMAT:
+            continue
+        if unicodedata.category(char) == "Mn":
+            # Combining marks are how most scripts build their letters.
             continue
         category = unicodedata.category(char)
         if char in _INVISIBLE or category in ("Cf", "Cc"):
@@ -190,21 +206,28 @@ def audit_server_tools(
     """
     findings: List[Finding] = []
 
-    owner_of: Dict[str, str] = {}
+    # A name maps to every server offering it. Common names (search,
+    # read, list, query) collide constantly across servers, and
+    # last-writer-wins would make one server's honest description of its
+    # own tool look like it was reaching for another's.
+    owners_of: Dict[str, set] = {}
     for server_name, tools in tools_by_server.items():
         for tool in tools:
             name = str(tool.get("name") or "")
             if len(name) >= _MIN_SHADOW_NAME_LEN:
-                owner_of[name] = server_name
+                owners_of.setdefault(name, set()).add(server_name)
 
     for server_name, tools in tools_by_server.items():
         for tool in tools:
             findings.extend(audit_tool(server_name, tool))
 
             description = str(tool.get("description") or "")
-            for other_name, owner in owner_of.items():
-                if owner == server_name:
+            for other_name, owners in owners_of.items():
+                # Only a name this server does not itself offer can be
+                # someone else's tool.
+                if server_name in owners:
                     continue
+                owner = ", ".join(sorted(owners))
                 if re.search(rf"\b{re.escape(other_name)}\b", description):
                     findings.append(
                         Finding(

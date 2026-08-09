@@ -20,6 +20,7 @@ from .config import load_settings
 from .debug import debug_log
 from .tools.external.mcp_audit import audit_server_tools, format_findings
 from .tools.external.mcp_client import MCPClient
+from .tools.external.mcp_runtime import shutdown_runtime
 from .tools.external.mcp_trust import TrustStore, ToolChange
 
 
@@ -169,11 +170,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"❌ Could not load your config: {e}")
         return 1
 
-    if args.command == "list":
-        return _cmd_list(cfg)
-    if args.command == "audit":
-        return _cmd_audit(cfg)
-    return _cmd_accept(cfg, args.server, args.tool)
+    # Every command here reaches a server, which starts a persistent
+    # worker subprocess. Without the teardown those outlive the CLI —
+    # for a stateful server like chrome-devtools-mcp that orphans the
+    # browser it owns.
+    try:
+        if args.command == "list":
+            return _cmd_list(cfg)
+        if args.command == "audit":
+            return _cmd_audit(cfg)
+        return _cmd_accept(cfg, args.server, args.tool)
+    finally:
+        try:
+            shutdown_runtime()
+        except Exception as e:  # noqa: BLE001
+            debug_log(f"mcp trust CLI runtime shutdown error: {e}", "mcp")
 
 
 if __name__ == "__main__":  # pragma: no cover - thin entry point

@@ -303,6 +303,21 @@ def generate_tools_json_schema(allowed_tools: Optional[List[str]] = None, mcp_to
     return tools
 
 
+def _server_owns_confirmation_arg(spec: Optional["ToolSpec"]) -> bool:
+    """Whether the server's own schema already declares ``confirmation_code``.
+
+    A server is entitled to a parameter of that name (an OTP tool, say).
+    Where it claims one, Jarvis neither advertises its own nor strips the
+    value, so the user's real code reaches the server instead of being
+    eaten and compared against the gate's four digits.
+    """
+    schema = getattr(spec, "inputSchema", None)
+    if not isinstance(schema, dict):
+        return False
+    properties = schema.get("properties")
+    return isinstance(properties, dict) and _CONFIRMATION_ARG in properties
+
+
 def _with_confirmation_field(input_schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Advertise the optional ``confirmation_code`` argument on an MCP tool.
 
@@ -315,6 +330,10 @@ def _with_confirmation_field(input_schema: Optional[Dict[str, Any]]) -> Dict[str
     """
     schema = dict(input_schema or {"type": "object", "properties": {}, "required": []})
     properties = dict(schema.get("properties") or {})
+    if _CONFIRMATION_ARG in properties:
+        # The server declares this name itself; overwriting it would hide
+        # the real parameter's type and meaning from the model.
+        return schema
     properties[_CONFIRMATION_ARG] = {
         "type": "string",
         "description": (
@@ -358,10 +377,16 @@ def generate_tools_description(allowed_tools: Optional[List[str]] = None, mcp_to
         for tool_name, spec in mcp_tools.items():
             if tool_name in names:  # Only include if allowed
                 lines.append(f"\n{spec.name}: {spec.description}")
-                if spec.inputSchema:
+                # Same schema the native path advertises, so a model on the
+                # text fallback is told about ``confirmation_code`` too.
+                # Without it the gate's PROPOSED message asks for an
+                # argument the tool's own parameter list does not mention,
+                # and a small model that follows the list never approves.
+                described_schema = _with_confirmation_field(spec.inputSchema)
+                if described_schema:
                     # Extract a simple parameter summary from the JSON schema
-                    props = spec.inputSchema.get("properties", {})
-                    required = spec.inputSchema.get("required", [])
+                    props = described_schema.get("properties", {})
+                    required = described_schema.get("required", [])
                     param_descriptions = []
                     for prop_name, prop_def in props.items():
                         prop_type = prop_def.get("type", "any")
@@ -460,10 +485,41 @@ def run_tool_with_retries(
                 if MCPClient is None:
                     return ToolExecutionResult(success=False, reply_text=None, error_message="MCP client not available. Install 'mcp' package.")
 
+                # Only tools that survived discovery may run. A tool the
+                # trust store withheld is absent from the cache, and
+                # without this check the model could still call it by
+                # name — from its own conversation history, or because
+                # another server's description named it — which would
+                # walk straight past the withholding.
+                cached = get_cached_mcp_tools()
+                if is_mcp_cache_initialized() and raw_name not in cached:
+                    debug_log(
+                        f"refused MCP tool '{raw_name}': not among the tools "
+                        "discovery offered",
+                        "mcp",
+                    )
+                    return ToolExecutionResult(
+                        success=False,
+                        reply_text=None,
+                        error_message=(
+                            f"'{raw_name}' is not available. Its definition may have "
+                            "changed since it was accepted, in which case it is "
+                            "withheld until reviewed. Tell the user, and do not "
+                            "retry it."
+                        ),
+                    )
+
                 # ``confirmation_code`` is Jarvis's own argument. Strip it
-                # before the call so it is never forwarded to the server.
+                # before the call so it is never forwarded to the server —
+                # unless the server itself declares a property by that
+                # name, in which case it is the server's argument and
+                # Jarvis never injected one.
                 arguments = dict(tool_args or {})
-                supplied_code = arguments.pop(_CONFIRMATION_ARG, None)
+                spec = cached.get(raw_name)
+                if _server_owns_confirmation_arg(spec):
+                    supplied_code = None
+                else:
+                    supplied_code = arguments.pop(_CONFIRMATION_ARG, None)
 
                 gate_result = _gate_mcp_call(
                     cfg, raw_name, server_name, mcp_tool_name, arguments, supplied_code

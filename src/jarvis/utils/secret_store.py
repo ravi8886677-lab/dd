@@ -64,6 +64,13 @@ CREDENTIAL_KEYS = (
 _keyring_cache: Any = None
 _keyring_probed = False
 _backend_dead = False
+# Resolved secrets, cached for the process. ``load_settings()`` runs on a
+# hot path — ``debug_log`` calls it behind a 2-second TTL, and there are
+# call sites all over the codebase — while each lookup is a synchronous
+# DBus round trip on Linux and can raise a blocking "allow access"
+# dialog on macOS. Reading the keychain once per key per process is the
+# difference between that and doing it thousands of times.
+_secret_cache: Dict[str, Optional[str]] = {}
 
 
 class _Unavailable(Exception):
@@ -112,6 +119,7 @@ def reset_cache() -> None:
     _keyring_cache = None
     _keyring_probed = False
     _backend_dead = False
+    _secret_cache.clear()
 
 
 def _load_keyring() -> Any:
@@ -156,16 +164,31 @@ def is_available() -> bool:
         return False
 
 
-def get_secret(name: str) -> Optional[str]:
-    """Return a stored secret, or ``None`` if unset or unavailable."""
+def get_secret(name: str, use_cache: bool = True) -> Optional[str]:
+    """Return a stored secret, or ``None`` if unset or unavailable.
+
+    Cached per process. ``use_cache=False`` forces a real read, which is
+    what the write path needs to verify what it just stored.
+    """
+    if use_cache and name in _secret_cache:
+        return _secret_cache[name]
+
     backend = _backend()
     if backend is None:
+        if use_cache:
+            _secret_cache[name] = None
         return None
     try:
         value = _guarded(lambda: backend.get_password(_SERVICE, name), f"read {name}")
     except _Unavailable:
+        if use_cache:
+            _secret_cache[name] = None
         return None
-    return value or None
+
+    resolved = value or None
+    if use_cache:
+        _secret_cache[name] = resolved
+    return resolved
 
 
 def set_secret(name: str, value: str) -> bool:
@@ -187,13 +210,14 @@ def set_secret(name: str, value: str) -> bool:
     except _Unavailable:
         return False
 
-    if get_secret(name) != value:
+    if get_secret(name, use_cache=False) != value:
         debug_log(
             f"credential store accepted '{name}' but did not return it; "
             "treating the write as failed",
             "config",
         )
         return False
+    _secret_cache[name] = value
     return True
 
 
@@ -207,6 +231,7 @@ def delete_secret(name: str) -> bool:
     except _Unavailable:
         # Deleting something absent is the normal case on most backends.
         pass
+    _secret_cache[name] = None
     return True
 
 

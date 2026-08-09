@@ -35,18 +35,37 @@ class UnpinnedServerError(RuntimeError):
 _NPM_LAUNCHERS = {"npx", "npx.cmd", "pnpx", "pnpx.cmd", "bunx", "bunx.cmd"}
 _PYPI_LAUNCHERS = {"uvx", "uvx.exe", "pipx", "pipx.exe"}
 
-# npx flags that take a value which is *not* a package spec.
-_NPM_VALUE_FLAGS_TO_SKIP = {"-c", "--call", "-w", "--workspace", "--userconfig"}
+# npx flags that take a value which is *not* a package spec. An unknown
+# flag is assumed to be a boolean, so its following token is read as the
+# package. That errs towards refusing a launch we cannot parse rather
+# than waving through one we misread, but it means a value-taking flag
+# missing from this set produces a confusing refusal — hence the list is
+# kept generous.
+_NPM_VALUE_FLAGS_TO_SKIP = {
+    "-c", "--call", "-w", "--workspace", "--userconfig", "--loglevel",
+    "--registry", "--cache", "--prefix", "--shell", "--node-arg",
+    "--otp", "--before", "--engine-strict", "--scripts-prepend-node-path",
+    "--node-options", "--npm-path", "--proxy", "--https-proxy", "--noproxy",
+    "--userconfig-path", "--globalconfig", "--fetch-timeout", "--fetch-retries",
+}
 # npx flags whose value *is* a package spec.
 _NPM_PACKAGE_FLAGS = {"-p", "--package"}
 
 # uvx flags whose value is a package spec.
-_PYPI_PACKAGE_FLAGS = {"--from", "--with"}
+_PYPI_PACKAGE_FLAGS = {"--from", "--with", "--with-requirements"}
 # uvx flags that take a value which is not a package spec. ``-p`` is
 # ``--python`` for uvx, unlike npx where it means ``--package``.
 _PYPI_VALUE_FLAGS_TO_SKIP = {
     "-p", "--python", "--index-url", "--extra-index-url",
-    "--index", "--cache-dir", "--constraints", "-c",
+    "--index", "--cache-dir", "--constraints", "-c", "--index-strategy",
+    "--keyring-provider", "--exclude-newer", "--resolution", "--prerelease",
+    "--config-file", "--project", "--directory", "--refresh-package",
+}
+
+# Launchers that take a subcommand before the package spec.
+_SUBCOMMAND_LAUNCHERS = {
+    "pipx": {"run"},
+    "pipx.exe": {"run"},
 }
 
 # An exact npm version: 1.2.3, with optional prerelease/build metadata.
@@ -117,11 +136,23 @@ def _collect_npm_specs(args: Sequence[str]) -> List[str]:
     """Return the npm package specs ``npx`` would install for ``args``."""
     specs: List[str] = []
     saw_explicit_package = False
+    after_separator = False
     index = 0
     while index < len(args):
         token = str(args[index])
 
-        if token == "--":
+        # ``npx [options] -- <pkg>`` is documented usage: the separator
+        # ends npx's own options, and the package follows it. Stopping
+        # here would report no packages at all, and no packages means
+        # nothing to pin — one stray ``--`` would switch the guard off.
+        if token == "--" and not after_separator:
+            after_separator = True
+            index += 1
+            continue
+
+        if after_separator:
+            if not saw_explicit_package:
+                specs.append(token)
             break
 
         flag, _, inline_value = token.partition("=")
@@ -156,16 +187,33 @@ def _collect_npm_specs(args: Sequence[str]) -> List[str]:
     return specs
 
 
-def _collect_pypi_specs(args: Sequence[str]) -> List[str]:
-    """Return the PyPI requirements ``uvx`` would install for ``args``."""
+def _collect_pypi_specs(args: Sequence[str], launcher: str = "uvx") -> List[str]:
+    """Return the PyPI requirements ``uvx``/``pipx`` would install for ``args``."""
     specs: List[str] = []
     saw_explicit_package = False
+    after_separator = False
+    subcommands = _SUBCOMMAND_LAUNCHERS.get(launcher, set())
     index = 0
     while index < len(args):
         token = str(args[index])
 
-        if token == "--":
+        # See ``_collect_npm_specs``: the separator precedes the package,
+        # it does not mean there is none.
+        if token == "--" and not after_separator:
+            after_separator = True
+            index += 1
+            continue
+
+        if after_separator:
+            if not saw_explicit_package:
+                specs.append(token)
             break
+
+        # ``pipx run <spec>`` puts a subcommand where uvx puts the spec.
+        if token in subcommands:
+            subcommands = set()
+            index += 1
+            continue
 
         flag, _, inline_value = token.partition("=")
         if flag in _PYPI_PACKAGE_FLAGS:
@@ -208,7 +256,7 @@ def describe_package_specs(command: str, args: Sequence[str]) -> List[str]:
     if launcher in _NPM_LAUNCHERS:
         return _collect_npm_specs(args or [])
     if launcher in _PYPI_LAUNCHERS:
-        return _collect_pypi_specs(args or [])
+        return _collect_pypi_specs(args or [], launcher)
     return []
 
 

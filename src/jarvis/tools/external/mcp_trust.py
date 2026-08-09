@@ -119,6 +119,14 @@ def classify_risk(tool: Dict[str, Any]) -> Risk:
         return Risk.LOW
     if _hint(annotations, "openWorldHint"):
         return Risk.HIGH
+
+    # An explicit ``readOnlyHint: false`` is not silence. The spec's
+    # default for ``destructiveHint`` is true whenever a tool is not
+    # read-only, so a server that says only "this is not read-only" has
+    # declared a destructive tool and is treated as one.
+    if isinstance(annotations, dict) and annotations.get("readOnlyHint") is False:
+        return Risk.HIGH
+
     return Risk.UNKNOWN
 
 
