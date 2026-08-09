@@ -326,3 +326,67 @@ def test_logging_from_a_failing_backend_does_not_recurse(monkeypatch):
         assert depth["max"] <= 1, f"recursed {depth['max']} levels deep"
     finally:
         secret_store.reset_cache()
+
+
+# ---------------------------------------------------------------------------
+# A write that cannot be confirmed must not leave a copy behind
+# ---------------------------------------------------------------------------
+
+class _DeniedOnRead(_FakeKeyring):
+    """Writes land silently; reads prompt and are refused.
+
+    This is macOS's actual shape: storing an item usually needs no
+    approval, while reading one back does. Denying that prompt fails the
+    verification *after* the value is already in the keychain.
+    """
+
+    def get_password(self, service, name):
+        raise RuntimeError("User denied keychain access")
+
+
+def test_an_unconfirmable_write_is_rolled_back(monkeypatch):
+    backend = _DeniedOnRead()
+    monkeypatch.setattr(secret_store, "_load_keyring", lambda: backend)
+    secret_store.reset_cache()
+    try:
+        assert secret_store.set_secret("llm_api_key", "sk-abc123") is False
+        assert backend._store == {}, (
+            "a copy of the key was left in a store the user was never told about"
+        )
+    finally:
+        secret_store.reset_cache()
+
+
+def test_migration_leaves_nothing_behind_when_the_read_back_is_denied(monkeypatch):
+    """The plaintext must survive *and* no orphan may be created.
+
+    Both copies existing is worse than either alone: `resolve_secret`
+    falls back to the store when config.json is empty, so an orphan
+    silently resurrects a key the user later thought they had removed.
+    """
+    backend = _DeniedOnRead()
+    monkeypatch.setattr(secret_store, "_load_keyring", lambda: backend)
+    secret_store.reset_cache()
+    try:
+        cfg = {"llm_api_key": "sk-LLM", "embedding_api_key": "sk-EMB"}
+        assert secret_store.migrate_plaintext_secrets(cfg) is False
+        assert cfg["llm_api_key"] == "sk-LLM"
+        assert cfg["embedding_api_key"] == "sk-EMB"
+        assert backend._store == {}
+    finally:
+        secret_store.reset_cache()
+
+
+def test_rollback_survives_a_delete_that_also_fails(monkeypatch):
+    """Best effort: a store refusing deletes must not raise out of set_secret."""
+
+    class RefusesEverything(_DeniedOnRead):
+        def delete_password(self, service, name):
+            raise RuntimeError("no")
+
+    monkeypatch.setattr(secret_store, "_load_keyring", lambda: RefusesEverything())
+    secret_store.reset_cache()
+    try:
+        assert secret_store.set_secret("llm_api_key", "sk-abc123") is False
+    finally:
+        secret_store.reset_cache()

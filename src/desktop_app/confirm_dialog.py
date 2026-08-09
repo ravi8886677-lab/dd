@@ -66,8 +66,13 @@ class ConfirmationDialog(QDialog):
 
         self.setWindowTitle("Jarvis needs your approval")
         self.setMinimumWidth(460)
+        # Deliberately Dialog rather than Tool: a Qt.Tool window is an
+        # NSPanel on macOS and hides itself when the owning app
+        # deactivates. This app lives in the tray and is deactivated
+        # almost always, so Tool would make the code disappear the moment
+        # the user clicked back into the window they need to type it in.
         self.setWindowFlags(
-            Qt.WindowType.Tool
+            Qt.WindowType.Dialog
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.CustomizeWindowHint
             | Qt.WindowType.WindowTitleHint
@@ -165,14 +170,17 @@ class ConfirmationDialog(QDialog):
                 pass
         elif sys.platform == "darwin":
             try:
-                import objc  # type: ignore
-                from AppKit import NSApp  # type: ignore
+                import ctypes
 
-                for window in NSApp().windows():
-                    if window.windowNumber() and int(window.windowNumber()) == handle:
-                        window.setSharingType_(0)  # NSWindowSharingNone
-                        break
-                del objc
+                from objc import objc_object  # type: ignore
+
+                # winId() is a pointer to the NSView, not a window number.
+                # Go through the view to reach its NSWindow; comparing the
+                # handle against windowNumber() never matches.
+                view = objc_object(c_void_p=ctypes.c_void_p(handle))
+                ns_window = view.window()
+                if ns_window is not None:
+                    ns_window.setSharingType_(0)  # NSWindowSharingNone
             except Exception:  # noqa: BLE001
                 pass
 

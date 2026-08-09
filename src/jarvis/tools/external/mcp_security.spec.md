@@ -300,6 +300,15 @@ and can read that file.
 - A key leaves `config.json` only once the store returns the same value.
   A machine with no working backend keeps its plaintext key rather than
   losing the user's only copy.
+- A write that cannot be read back is rolled back. On macOS storing an
+  item usually needs no approval while reading one back does, so denying
+  that prompt fails verification with the value already in the keychain.
+  The rollback goes through the backend handle directly, because the
+  failed read has already latched the store off for the session and
+  `delete_secret` would quietly do nothing. Leaving the orphan would put
+  a copy of the key in a store the user was never told about, and
+  `resolve_secret` prefers the store when config.json is empty — so it
+  would silently resurrect a key they later thought they had removed.
 - The sweep runs on every config load, not once at a version bump. The
   Settings window writes API keys straight back into `config.json`, so a
   version-gated migration would cover only keys that predated the

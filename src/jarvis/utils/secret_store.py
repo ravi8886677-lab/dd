@@ -211,14 +211,41 @@ def set_secret(name: str, value: str) -> bool:
         return False
 
     if get_secret(name, use_cache=False) != value:
+        # The value may well be stored: on macOS a write usually needs no
+        # approval while reading one back does, so denying that prompt
+        # fails here with the item already in the keychain. Leaving it
+        # would put a copy of the user's key in a store they were never
+        # told about — and `resolve_secret` falls back to the store when
+        # config.json is empty, so it would silently resurrect a key they
+        # later thought they had removed.
+        _rollback_write(backend, name)
         debug_log(
             f"credential store accepted '{name}' but did not return it; "
-            "treating the write as failed",
+            "treating the write as failed and removing what was written",
             "config",
         )
         return False
     _secret_cache[name] = value
     return True
+
+
+def _rollback_write(backend: Any, name: str) -> None:
+    """Remove a value that was written but could not be read back.
+
+    Goes through the handle the caller already holds rather than
+    ``delete_secret``: a failed read-back has latched the store off for
+    the session, so ``_backend()`` now returns ``None`` and the delete
+    would quietly do nothing. Best effort — a store that refuses the
+    delete leaves the orphan, which is no worse than not trying.
+    """
+    if backend is None:
+        return
+    try:
+        backend.delete_password(_SERVICE, name)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as e:  # noqa: BLE001
+        debug_log(f"could not roll back the write of '{name}': {e!r}", "config")
 
 
 def delete_secret(name: str) -> bool:
