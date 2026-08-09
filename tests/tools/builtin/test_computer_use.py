@@ -18,14 +18,10 @@ from src.jarvis.tools.builtin.computer_use import ComputerUseTool
 
 @pytest.fixture(autouse=True)
 def _clear_state():
-    """Both the pending proposal and the trust window are module state."""
-    cu._pending = None
-    cu.confirm_ui.dismiss("")
-    cu._trusted_until = 0.0
+    """The YOLO window is process state and must not leak between tests."""
+    cu.approval.revoke()
     yield
-    cu._pending = None
-    cu.confirm_ui.dismiss("")
-    cu._trusted_until = 0.0
+    cu.approval.revoke()
 
 
 def _no_actions(mock_pg) -> None:
@@ -51,360 +47,138 @@ def _ctx(mode="risky"):
 def _shown(capsys) -> str:
     """What actually reached the user's screen.
 
-    The gate announces on stderr rather than through context.user_print,
-    which is silenced under voice_debug — a code nobody can read would
-    lock the tool instead of failing loudly.
+    The tool announces on stderr rather than through context.user_print,
+    which is silenced under voice_debug.
     """
     return capsys.readouterr().err
 
 
 @pytest.mark.unit
-class TestNothingHappensWithoutAHuman:
+class TestNothingHappensWithoutYolo:
+    """A real mouse move needs the user to have opened the window."""
+
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_bare_click_only_proposes(self, mock_pg):
+    def test_a_click_does_nothing_while_yolo_is_off(self, mock_pg):
         result = ComputerUseTool().run(
-            {"action": "click", "x": 100, "y": 200, "target": "Play"}, _ctx(),
+            {"action": "click", "x": 10, "y": 10}, _ctx()
         )
-
-        assert result.success is True
-        assert "PROPOSED" in result.reply_text
         _no_actions(mock_pg)
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_the_code_is_shown_to_the_user_not_returned_to_the_model(self, mock_pg, capsys):
-        """The gate only works if the model cannot read the code.
-
-        If it appeared in the tool result, the model could quote it back
-        to itself and approve its own action.
-        """
-        result = ComputerUseTool().run({"action": "click", "x": 5, "y": 6}, _ctx())
-
-        code = cu._pending[0]
-        assert code in _shown(capsys), "user was never shown the code"
-        assert code not in (result.reply_text or ""), "code leaked into the model's context"
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_wrong_code_does_nothing(self, mock_pg):
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 5, "y": 6}, _ctx())
-
-        result = tool.run(
-            {"action": "click", "x": 5, "y": 6, "confirmation_code": "0000"}, _ctx(),
-        )
-
         assert result.success is False
-        _no_actions(mock_pg)
+        assert "YOLO" in (result.error_message or "")
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_code_with_nothing_pending_does_nothing(self, mock_pg):
+    def test_typing_does_nothing_while_yolo_is_off(self, mock_pg):
+        result = ComputerUseTool().run({"action": "type", "text": "hello"}, _ctx())
+        _no_actions(mock_pg)
+        assert result.success is False
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_the_model_is_told_it_cannot_enable_it_itself(self, mock_pg):
         result = ComputerUseTool().run(
-            {"action": "click", "x": 5, "y": 6, "confirmation_code": "1234"}, _ctx(),
+            {"action": "click", "x": 10, "y": 10}, _ctx()
         )
-
-        assert result.success is False
-        _no_actions(mock_pg)
+        assert "cannot turn it on yourself" in (result.error_message or "").lower()
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_an_expired_code_does_nothing(self, mock_pg):
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 5, "y": 6}, _ctx())
-        code, desc, act, _issued = cu._pending
-        cu._pending = (code, desc, act, 0.0)  # issued long ago
-
-        result = tool.run(
-            {"action": "click", "x": 5, "y": 6, "confirmation_code": code}, _ctx(),
+    def test_no_argument_can_stand_in_for_the_grant(self, mock_pg):
+        """There is no per-call escape hatch for the model to invent."""
+        result = ComputerUseTool().run(
+            {"action": "click", "x": 10, "y": 10, "confirmation_code": "1234",
+             "yolo": True, "approved": True},
+            _ctx(),
         )
-
-        assert result.success is False
-        assert "expired" in (result.error_message or "").lower()
         _no_actions(mock_pg)
+        assert result.success is False
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_the_user_is_told_on_screen_what_was_refused(self, mock_pg, capsys):
+        ComputerUseTool().run({"action": "click", "x": 10, "y": 10}, _ctx())
+        assert "YOLO" in _shown(capsys)
 
 
 @pytest.mark.unit
-class TestApprovalCannotBeRedirected:
+class TestWithYoloOn:
+    """Inside the window, Jarvis gets on with it."""
+
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_code_for_one_click_cannot_authorise_another(self, mock_pg):
-        """The user approved a specific action, not a licence to click.
-
-        Without this, "click Play at (100,200)" could be approved and
-        then spent on "click Delete at (900,50)".
-        """
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 100, "y": 200, "target": "Play"}, _ctx())
-        code = cu._pending[0]
-
-        result = tool.run(
-            {"action": "click", "x": 900, "y": 50, "target": "Delete",
-             "confirmation_code": code}, _ctx(),
+    def test_a_click_actually_clicks(self, mock_pg):
+        cu.approval.grant(15)
+        result = ComputerUseTool().run(
+            {"action": "click", "x": 10, "y": 20}, _ctx()
         )
-
-        assert result.success is False
-        _no_actions(mock_pg)
+        mock_pg.return_value.click.assert_called_once()
+        assert result.success is True
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_click_code_cannot_authorise_typing(self, mock_pg):
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 10, "y": 10}, _ctx())
-        code = cu._pending[0]
+    def test_typing_actually_types(self, mock_pg):
+        cu.approval.grant(15)
+        ComputerUseTool().run({"action": "type", "text": "hello"}, _ctx())
+        mock_pg.return_value.write.assert_called_once()
 
-        result = tool.run(
-            {"action": "type", "text": "rm -rf /", "confirmation_code": code}, _ctx(),
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_the_window_closing_stops_it_again(self, mock_pg, monkeypatch):
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(cu.approval.time, "time", lambda: clock["now"])
+        cu.approval.grant(15)
+        clock["now"] += 16 * 60
+
+        result = ComputerUseTool().run(
+            {"action": "click", "x": 10, "y": 10}, _ctx()
         )
-
-        assert result.success is False
         _no_actions(mock_pg)
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_code_is_single_use(self, mock_pg):
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 10, "y": 10}, _ctx())
-        code = cu._pending[0]
-
-        first = tool.run({"action": "click", "x": 10, "y": 10, "confirmation_code": code}, _ctx())
-        second = tool.run({"action": "click", "x": 10, "y": 10, "confirmation_code": code}, _ctx())
-
-        assert first.success is True
-        assert second.success is False
+        assert result.success is False
 
 
 @pytest.mark.unit
-class TestConfirmedActions:
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_confirmed_click_actually_clicks(self, mock_pg):
-        pg = Mock()
-        mock_pg.return_value = pg
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 42, "y": 99}, _ctx())
-        code = cu._pending[0]
+class TestConfirmModes:
+    """`computer_use_confirm: never` opts out of the gate entirely."""
 
-        result = tool.run(
-            {"action": "click", "x": 42, "y": 99, "confirmation_code": code}, _ctx(),
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_never_executes_immediately(self, mock_pg):
+        result = ComputerUseTool().run(
+            {"action": "click", "x": 10, "y": 10}, _ctx(mode="never")
         )
-
+        mock_pg.return_value.click.assert_called_once()
         assert result.success is True
-        pg.click.assert_called_once_with(42, 99)
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_confirmed_type_types(self, mock_pg):
-        pg = Mock()
-        mock_pg.return_value = pg
-        tool = ComputerUseTool()
-        tool.run({"action": "type", "text": "hello"}, _ctx())
-        code = cu._pending[0]
+    def test_never_also_covers_typing(self, mock_pg):
+        ComputerUseTool().run({"action": "type", "text": "hi"}, _ctx(mode="never"))
+        mock_pg.return_value.write.assert_called_once()
 
-        tool.run({"action": "type", "text": "hello", "confirmation_code": code}, _ctx())
-
-        assert pg.write.call_args[0][0] == "hello"
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_an_unknown_mode_still_gates(self, mock_pg):
+        result = ComputerUseTool().run(
+            {"action": "click", "x": 10, "y": 10}, _ctx(mode="banana")
+        )
+        _no_actions(mock_pg)
+        assert result.success is False
 
 
 @pytest.mark.unit
 class TestHeadlessAndUnknownInput:
     def test_screenshot_explains_itself_when_there_is_no_display(self):
-        """Over SSH or in a container this cannot work; say so plainly."""
-        with patch("src.jarvis.tools.builtin.computer_use._pyautogui",
-                   side_effect=Exception("no display")):
+        with patch("src.jarvis.tools.builtin.computer_use._pyautogui") as pg:
+            pg.side_effect = RuntimeError("no display")
             result = ComputerUseTool().run({"action": "screenshot"}, _ctx())
-
         assert result.success is False
-        assert "desktop session" in (result.error_message or "")
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_an_unknown_action_does_nothing(self, mock_pg):
-        result = ComputerUseTool().run({"action": "format_disk"}, _ctx())
-
+        result = ComputerUseTool().run({"action": "levitate"}, _ctx())
+        _no_actions(mock_pg)
         assert result.success is False
-        _no_actions(mock_pg)
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_destructive_key_is_flagged_to_the_user(self, mock_pg, capsys):
-        """The human is the safeguard, so tell them what they are approving."""
-        ComputerUseTool().run({"action": "key", "key": "delete"}, _ctx())
-
-        assert "⚠️" in _shown(capsys)
 
 
-@pytest.mark.unit
-class TestTrustWindow:
-    """Confirming every scroll is unusable, and teaches people to approve
-    without reading. One approval covers ordinary actions for a while;
-    anything that can submit or destroy still asks."""
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_approving_once_covers_later_clicks(self, mock_pg):
-        pg = Mock()
-        mock_pg.return_value = pg
-        tool = ComputerUseTool()
-
-        tool.run({"action": "click", "x": 1, "y": 2}, _ctx())
-        code = cu._pending[0]
-        tool.run({"action": "click", "x": 1, "y": 2, "confirmation_code": code}, _ctx())
-
-        # A different click, with no code at all.
-        result = tool.run({"action": "click", "x": 300, "y": 400}, _ctx())
-
-        assert result.success is True
-        assert "PROPOSED" not in (result.reply_text or "")
-        pg.click.assert_called_with(300, 400)
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_scrolling_is_covered_too(self, mock_pg):
-        pg = Mock()
-        mock_pg.return_value = pg
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 1, "y": 2}, _ctx())
-        tool.run({"action": "click", "x": 1, "y": 2, "confirmation_code": cu._pending[0]}, _ctx())
-
-        tool.run({"action": "scroll", "amount": -5}, _ctx())
-
-        pg.scroll.assert_called_once_with(-5)
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_typing_still_asks_inside_the_window(self, mock_pg):
-        """A wrong click is a wrong click; a wrong Enter sends an email."""
-        pg = Mock()
-        mock_pg.return_value = pg
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 1, "y": 2}, _ctx())
-        tool.run({"action": "click", "x": 1, "y": 2, "confirmation_code": cu._pending[0]}, _ctx())
-
-        result = tool.run({"action": "type", "text": "transfer everything"}, _ctx())
-
-        assert "PROPOSED" in (result.reply_text or "")
-        pg.write.assert_not_called()
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_key_presses_still_ask_inside_the_window(self, mock_pg):
-        pg = Mock()
-        mock_pg.return_value = pg
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 1, "y": 2}, _ctx())
-        tool.run({"action": "click", "x": 1, "y": 2, "confirmation_code": cu._pending[0]}, _ctx())
-
-        result = tool.run({"action": "key", "key": "enter"}, _ctx())
-
-        assert "PROPOSED" in (result.reply_text or "")
-        pg.press.assert_not_called()
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_an_expired_window_asks_again(self, mock_pg):
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 1, "y": 2}, _ctx())
-        tool.run({"action": "click", "x": 1, "y": 2, "confirmation_code": cu._pending[0]}, _ctx())
-        cu._trusted_until = 0.0  # walked away
-
-        result = tool.run({"action": "click", "x": 5, "y": 5}, _ctx())
-
-        assert "PROPOSED" in (result.reply_text or "")
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_approving_a_type_does_not_open_the_window(self, mock_pg):
-        """Approving one risky action must not silently unlock clicking."""
-        tool = ComputerUseTool()
-        tool.run({"action": "type", "text": "hi"}, _ctx())
-        tool.run({"action": "type", "text": "hi", "confirmation_code": cu._pending[0]}, _ctx())
-
-        result = tool.run({"action": "click", "x": 9, "y": 9}, _ctx())
-
-        assert "PROPOSED" in (result.reply_text or "")
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_the_user_is_told_the_window_opened(self, mock_pg):
-        ctx = _ctx()
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 1, "y": 2}, _ctx())
-        tool.run({"action": "click", "x": 1, "y": 2, "confirmation_code": cu._pending[0]}, ctx)
-
-        assert "not ask again" in "\n".join(str(c.args[0]) for c in ctx.user_print.call_args_list)
-
-
-@pytest.mark.unit
-class TestConfirmModes:
-    """`computer_use_confirm` chooses how much is gated."""
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_never_executes_immediately(self, mock_pg):
-        """Opt-out for a trusted single-user machine."""
-        pg = Mock()
-        mock_pg.return_value = pg
-
-        result = ComputerUseTool().run(
-            {"action": "click", "x": 7, "y": 8}, _ctx("never"),
-        )
-
-        assert result.success is True
-        assert "PROPOSED" not in (result.reply_text or "")
-        pg.click.assert_called_once_with(7, 8)
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_never_also_covers_typing(self, mock_pg):
-        pg = Mock()
-        mock_pg.return_value = pg
-
-        ComputerUseTool().run({"action": "type", "text": "hi"}, _ctx("never"))
-
-        assert pg.write.call_args[0][0] == "hi"
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_always_asks_again_after_an_approval(self, mock_pg):
-        """No trust window in this mode — every action is proposed."""
-        pg = Mock()
-        mock_pg.return_value = pg
-        tool = ComputerUseTool()
-        ctx = _ctx("always")
-
-        tool.run({"action": "click", "x": 1, "y": 2}, ctx)
-        tool.run({"action": "click", "x": 1, "y": 2, "confirmation_code": cu._pending[0]}, ctx)
-        result = tool.run({"action": "click", "x": 3, "y": 4}, ctx)
-
-        assert "PROPOSED" in (result.reply_text or "")
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_an_unknown_mode_falls_back_to_gated(self, mock_pg):
-        """A typo in config must not silently disable the gate."""
-        result = ComputerUseTool().run(
-            {"action": "click", "x": 1, "y": 2}, _ctx("nevr"),
-        )
-
-        assert "PROPOSED" in (result.reply_text or "")
-        _no_actions(mock_pg)
-
-
-@pytest.mark.unit
-class TestGateCannotBeBruteForced:
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_wrong_code_burns_the_proposal(self, mock_pg):
-        """9000 codes with unlimited retries inside the TTL is not a gate.
-
-        A model acting on an injected "click here" could spend the whole
-        space in one reply loop, so one wrong guess cancels the request.
-        """
-        tool = ComputerUseTool()
-        tool.run({"action": "click", "x": 5, "y": 6}, _ctx())
-        real_code = cu._pending[0]
-
-        tool.run({"action": "click", "x": 5, "y": 6, "confirmation_code": "0000"}, _ctx())
-
-        assert cu._pending is None, "proposal survived a wrong guess"
-
-        # Even the genuine code is now worthless.
-        result = tool.run(
-            {"action": "click", "x": 5, "y": 6, "confirmation_code": real_code}, _ctx(),
-        )
-        assert result.success is False
-        _no_actions(mock_pg)
-
-
-@pytest.mark.unit
 class TestCoordinatesAreValidated:
-    """The gate cannot catch this: the user approves "click on Send", and
-    a missing coordinate clicks wherever the pointer already sits."""
+    """YOLO cannot catch this: the window is open, and a missing
+    coordinate clicks wherever the pointer already happens to sit."""
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_a_click_without_coordinates_is_refused(self, mock_pg):
         result = ComputerUseTool().run({"action": "click", "target": "Send"}, _ctx())
 
         assert result.success is False
-        assert cu._pending is None, "a proposal was created for an unusable action"
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_a_partial_coordinate_is_refused(self, mock_pg):
@@ -433,25 +207,27 @@ class TestCoordinatesAreValidated:
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_typing_needs_no_coordinates(self, mock_pg):
+        cu.approval.grant(15)
         result = ComputerUseTool().run({"action": "type", "text": "hello"}, _ctx())
 
-        assert "PROPOSED" in (result.reply_text or "")
+        assert result.success is True
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_valid_coordinate_still_proposes(self, mock_pg):
+    def test_a_valid_coordinate_passes_validation(self, mock_pg):
         pg = Mock()
         pg.size.return_value = (1920, 1080)
         mock_pg.return_value = pg
 
+        cu.approval.grant(15)
         result = ComputerUseTool().run({"action": "click", "x": 500, "y": 400}, _ctx())
 
-        assert "PROPOSED" in (result.reply_text or "")
+        assert result.success is True
 
 
 @pytest.mark.unit
 class TestCoordinatesAreChecked:
-    """The gate cannot catch a bad coordinate: the user approved "click on
-    Send", and a missing x/y still reads as that in the proposal."""
+    """YOLO cannot catch a bad coordinate: inside the window every click
+    runs, so an unusable one has to be refused on its own merits."""
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_a_click_without_coordinates_is_refused(self, mock_pg):
@@ -487,14 +263,19 @@ class TestCoordinatesAreChecked:
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_typing_needs_no_coordinates(self, mock_pg):
         """Only pointer actions have a target; typing goes to focus."""
+        cu.approval.grant(15)
         result = ComputerUseTool().run({"action": "type", "text": "hi"}, _ctx())
 
-        assert "PROPOSED" in (result.reply_text or "")
+        assert result.success is True
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_validation_runs_before_the_confirmation_is_issued(self, mock_pg):
+    def test_validation_runs_before_the_gate(self, mock_pg):
+        """A bad coordinate is a bad coordinate, whatever YOLO is doing.
+
+        Reporting "YOLO is off" here would send the user to switch it on
+        and hit the same wall.
+        """
         """Asking someone to approve an action that cannot execute wastes
         their attention and trains them to approve without reading."""
         ComputerUseTool().run({"action": "click", "target": "Send"}, _ctx())
 
-        assert cu._pending is None

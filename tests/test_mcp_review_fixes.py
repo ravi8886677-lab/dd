@@ -288,40 +288,74 @@ def test_a_discovered_tool_still_runs(monkeypatch):
     assert result.success is True
 
 
-def test_a_server_owning_confirmation_code_keeps_its_argument(monkeypatch):
-    """An OTP tool's real code must not be eaten and compared to the gate's."""
-    from jarvis.tools import registry
+def test_jarvis_adds_no_arguments_of_its_own_to_an_mcp_schema(monkeypatch):
+    """The advertised schema is the server's, untouched.
 
-    cached = {
-        "srv__confirmWire": registry.ToolSpec(
-            name="srv__confirmWire",
-            description="Confirms a transfer",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "amount": {"type": "number"},
-                    "confirmation_code": {"type": "string"},
-                },
-            },
-            annotations={"readOnlyHint": True},
-        )
-    }
-    calls = _install_cache(monkeypatch, cached)
-
-    _run(_Cfg(), "srv__confirmWire", {"amount": 10, "confirmation_code": "999111"})
-
-    assert calls[0][2] == {"amount": 10, "confirmation_code": "999111"}
-
-
-def test_jarvis_does_not_overwrite_a_servers_own_confirmation_field():
-    from jarvis.tools.registry import _with_confirmation_field
+    Jarvis used to inject a `confirmation_code` property and strip it
+    again before the call, which meant a server with a real parameter of
+    that name had its argument eaten. YOLO needs no per-call argument, so
+    the schema is passed through as the server wrote it.
+    """
+    from jarvis.tools.registry import ToolSpec, generate_tools_json_schema
 
     server_schema = {
         "type": "object",
-        "properties": {"confirmation_code": {"type": "string", "description": "OTP"}},
+        "properties": {"amount": {"type": "number"}},
     }
-    result = _with_confirmation_field(server_schema)
-    assert result["properties"]["confirmation_code"]["description"] == "OTP"
+    mcp_tools = {
+        "srv__doThing": ToolSpec(
+            name="srv__doThing", description="Does a thing", inputSchema=server_schema
+        )
+    }
+    schema = generate_tools_json_schema(
+        allowed_tools=["srv__doThing"], mcp_tools=mcp_tools
+    )
+    advertised = schema[0]["function"]["parameters"]
+
+    assert set(advertised["properties"]) == {"amount"}
+
+
+def test_a_servers_own_confirmation_code_argument_is_left_alone(monkeypatch):
+    """An OTP tool's real parameter must survive and reach the server."""
+    from jarvis.tools import registry
+
+    calls = []
+
+    class FakeClient:
+        def __init__(self, cfgs):
+            pass
+
+        def invoke_tool(self, server_name, tool_name, arguments):
+            calls.append(dict(arguments or {}))
+            return {"text": "ok", "isError": False}
+
+    monkeypatch.setattr(registry, "MCPClient", FakeClient)
+    monkeypatch.setattr(
+        registry,
+        "get_cached_mcp_tools",
+        lambda: {
+            "srv__confirmWire": registry.ToolSpec(
+                name="srv__confirmWire", description="Confirms a transfer",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "amount": {"type": "number"},
+                        "confirmation_code": {"type": "string"},
+                    },
+                },
+                annotations={"readOnlyHint": True},
+            )
+        },
+    )
+    monkeypatch.setattr(registry, "is_mcp_cache_initialized", lambda: True)
+
+    registry.run_tool_with_retries(
+        db=None, cfg=_Cfg(), tool_name="srv__confirmWire",
+        tool_args={"amount": 10, "confirmation_code": "999111"},
+        system_prompt="", original_prompt="", redacted_text="",
+    )
+
+    assert calls[0] == {"amount": 10, "confirmation_code": "999111"}
 
 
 # ---------------------------------------------------------------------------
@@ -345,8 +379,8 @@ def test_mcp_confirm_reaches_the_policy_from_config_json(tmp_path, monkeypatch, 
     assert resolve_policy(cfg) is ConfirmPolicy(value)
 
 
-def test_the_confirmation_field_is_advertised_on_the_text_fallback():
-    """The PROPOSED message asks for it, so the text path must document it."""
+def test_the_text_fallback_advertises_no_invented_arguments():
+    """Both schema paths describe the server's parameters and no others."""
     from jarvis.tools.registry import ToolSpec, generate_tools_description
 
     mcp_tools = {
@@ -356,4 +390,5 @@ def test_the_confirmation_field_is_advertised_on_the_text_fallback():
         )
     }
     text = generate_tools_description(allowed_tools=["srv__doThing"], mcp_tools=mcp_tools)
-    assert "confirmation_code" in text
+    assert "confirmation_code" not in text
+    assert "x: string" in text

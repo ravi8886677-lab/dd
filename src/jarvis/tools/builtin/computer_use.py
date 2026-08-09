@@ -61,32 +61,10 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from ...debug import debug_log
-from ... import confirm_ui
+from ... import approval
 from ..base import Tool, ToolContext
 from ..types import ToolExecutionResult
 
-# How long a confirmation code stays valid. Long enough to read a
-# sentence and reply, short enough that a stale approval cannot be used
-# against a screen that has since changed.
-_CONFIRM_TTL_SEC = 120.0
-
-# One pending proposal at a time: (code, description, action, issued_at).
-_pending: Optional[Tuple[str, str, Dict[str, Any], float]] = None
-
-# When the user last approved something. Confirming every click makes the
-# tool unusable — nobody reads a code to scroll — so an approval opens a
-# trust window, the way sudo does. Risky actions ignore it entirely.
-_trusted_until: float = 0.0
-
-# How long one approval covers ordinary actions. Long enough to work
-# through a task, short enough that walking away closes it.
-_TRUST_WINDOW_SEC = 900.0
-
-# Actions that can submit, destroy, or enter text somewhere unintended.
-# These always ask, however recently the user approved something else:
-# the cost of a wrong click is a wrong click, but the cost of a wrong
-# Enter is a sent email or a deleted file.
-_ALWAYS_CONFIRM = {"type", "key"}
 
 # How much to confirm. Set ``computer_use_confirm`` in config.json:
 #
@@ -215,7 +193,7 @@ class ComputerUseTool(Tool):
             "action": {
                 "type": "string",
                 "enum": ("screenshot",) + _ACTIONS,
-                "description": "What to do. 'screenshot' returns the screen size and needs no confirmation.",
+                "description": "What to do. 'screenshot' returns the screen size and always runs.",
             },
             "x": {"type": "integer", "description": "Horizontal pixel position."},
             "y": {"type": "integer", "description": "Vertical pixel position."},
@@ -223,16 +201,11 @@ class ComputerUseTool(Tool):
             "key": {"type": "string", "description": "Key name, e.g. enter, tab, esc."},
             "amount": {"type": "integer", "description": "Scroll amount; negative scrolls down."},
             "target": {"type": "string", "description": "What is being clicked, in plain words, for the user to check."},
-            "confirmation_code": {
-                "type": "string",
-                "description": "The code shown on the user's screen. Without it, the action is only proposed.",
-            },
         },
         "required": ["action"],
     }
 
     def run(self, args: Optional[Dict[str, Any]], context: ToolContext) -> ToolExecutionResult:
-        global _pending, _trusted_until
         args = args or {}
         action = str(args.get("action", "")).strip().lower()
 
@@ -249,135 +222,34 @@ class ComputerUseTool(Tool):
         if complaint:
             return ToolExecutionResult(success=False, reply_text=None, error_message=complaint)
 
-        supplied = str(args.get("confirmation_code", "") or "").strip()
+        payload = self._payload(args, action)
+        description = _describe(payload)
 
-        # Inside a trust window, ordinary actions run straight away. The
-        # user has already said yes to this session; asking again for
-        # every scroll teaches them to approve without reading.
-        if not supplied and _mode(context) == "never":
-            payload = self._payload(args, action)
-            return self._execute(payload, _describe(payload), context)
+        # Everything past here moves a real mouse or types real keys.
+        # `never` means the user has opted out of being asked at all.
+        if _mode(context) == "never" or approval.is_active():
+            return self._execute(payload, description, context)
 
-        if not supplied and _mode(context) == "risky" and self._covered_by_trust(action, args):
-            return self._execute(self._payload(args, action), _describe(self._payload(args, action)), context)
-
-        if not supplied:
-            return self._propose(args, action, context)
-
-        # A code was given: it must match the pending proposal exactly.
-        if _pending is None:
-            return ToolExecutionResult(
-                success=False, reply_text=None,
-                error_message="Nothing is awaiting confirmation. Propose the action first.",
-            )
-
-        code, description, pending_action, issued = _pending
-        if time.time() - issued > _CONFIRM_TTL_SEC:
-            _pending = None
-            confirm_ui.dismiss("Expired — nothing was done.")
-            return ToolExecutionResult(
-                success=False, reply_text=None,
-                error_message="That confirmation expired. Propose the action again.",
-            )
-        if not secrets.compare_digest(supplied, code):
-            # Burn the proposal. There are only 9000 codes, and leaving it
-            # live allowed unlimited guesses inside the TTL — which a model
-            # acting on an injected "click here" can spend in one loop.
-            _pending = None
-            _announce("  🚫 Wrong confirmation code — that request was cancelled.")
-            confirm_ui.dismiss("Wrong code — cancelled.")
-            return ToolExecutionResult(
-                success=False, reply_text=None,
-                error_message=(
-                    "That confirmation code was wrong, so the request was cancelled. "
-                    "Nothing was done. Propose the action again if the user still wants it."
-                ),
-            )
-
-        # Bind the approval to what was actually shown to the user, so an
-        # approved click cannot be swapped for a different one.
-        if self._signature(args, action) != self._signature(pending_action, pending_action["action"]):
-            _pending = None
-            confirm_ui.dismiss("Code was for a different action — cancelled.")
-            return ToolExecutionResult(
-                success=False, reply_text=None,
-                error_message=(
-                    "That code was issued for a different action. Nothing was done; "
-                    "propose this one and ask the user again."
-                ),
-            )
-
-        _pending = None
-        confirm_ui.dismiss("")
-        # This approval also covers ordinary actions for a while, so the
-        # user is not re-reading codes throughout one task.
-        if _mode(context) == "risky" and pending_action["action"] not in _ALWAYS_CONFIRM:
-            _trusted_until = time.time() + _TRUST_WINDOW_SEC
-            context.user_print(
-                f"  🔓 Approved. Clicking and scrolling will not ask again for "
-                f"{int(_TRUST_WINDOW_SEC / 60)} minutes. Typing and key presses "
-                f"still will."
-            )
-        return self._execute(pending_action, description, context)
+        _announce(
+            f"\n  🖱️ Jarvis wanted to: {description}\n"
+            "  🔒 YOLO mode is off, so nothing was done.\n"
+        )
+        debug_log(f"computerUse blocked (YOLO off): {description}", "computer_use")
+        return ToolExecutionResult(
+            success=False,
+            reply_text=None,
+            error_message=(
+                f"NOT DONE: {description}. Controlling the screen needs YOLO mode, "
+                "which is currently off. Tell the user what you were about to do "
+                "and ask them to turn YOLO on from the Jarvis tray menu or the "
+                "dashboard. You cannot turn it on yourself."
+            ),
+        )
 
     def _payload(self, args: Dict[str, Any], action: str) -> Dict[str, Any]:
         payload = {k: args.get(k) for k in ("x", "y", "text", "key", "amount", "target")}
         payload["action"] = action
         return payload
-
-    def _covered_by_trust(self, action: str, args: Dict[str, Any]) -> bool:
-        """Whether this action may run on an earlier approval."""
-        if action in _ALWAYS_CONFIRM:
-            return False
-        return time.time() < _trusted_until
-
-    def _signature(self, action: Dict[str, Any], kind: str) -> tuple:
-        return (
-            kind,
-            action.get("x"), action.get("y"),
-            action.get("text"), action.get("key"), action.get("amount"),
-        )
-
-    def _propose(self, args: Dict[str, Any], action: str, context: ToolContext) -> ToolExecutionResult:
-        global _pending
-
-        payload = self._payload(args, action)
-        description = _describe(payload)
-
-        code = f"{secrets.randbelow(9000) + 1000}"
-        _pending = (code, description, payload, time.time())
-
-        # Printed to the user's terminal only. This never reaches the
-        # model, which is the entire point — the model cannot approve
-        # itself.
-        note = ""
-        if action == "key" and str(args.get("key", "")).lower() in _NOTABLE_KEYS:
-            note = "  ⚠️ This key can submit or delete things.\n"
-        # Printed directly rather than through context.user_print: that
-        # helper is silenced when voice_debug is set, and a gate the user
-        # cannot see is a gate that can never be opened. The code has to
-        # reach a human on every configuration.
-        _announce(
-            f"\n  🖱️ Jarvis wants to: {description}\n"
-            f"{note}"
-            f"  🔐 To allow it, tell Jarvis this code: {code}\n"
-            f"     Ignore it to do nothing. Expires in {int(_CONFIRM_TTL_SEC)}s.\n"
-        )
-        # ...and again in a window the user can see. stderr stays as the
-        # CLI path and as the fallback when no UI has registered.
-        confirm_ui.present_code(code, description, _CONFIRM_TTL_SEC)
-        debug_log(f"computerUse proposed: {description}", "computer_use")
-
-        return ToolExecutionResult(
-            success=True,
-            reply_text=(
-                f"PROPOSED (not done yet): {description}. A confirmation code has been "
-                f"shown on the user's screen. Tell the user what you intend to do and ask "
-                f"them to read you the code. Do not guess it — you cannot see it. When "
-                f"they give it, call computerUse again with the same arguments plus "
-                f"confirmation_code."
-            ),
-        )
 
     def _screenshot(self) -> ToolExecutionResult:
         try:

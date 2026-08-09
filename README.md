@@ -518,11 +518,11 @@ python -m jarvis.mcp_trust_cli list                    # what changed
 python -m jarvis.mcp_trust_cli accept <server> <tool>  # allow it again
 ```
 
-**3. Risky calls ask you first.** Tools a server marks destructive show a short code on your screen and do nothing until you read it back to Jarvis. The model cannot see the code, so it cannot approve itself, and an approval only covers the exact call it was issued for. Set `mcp_confirm` in `config.json`:
+**3. Risky actions need YOLO mode.** Anything consequential (a destructive MCP tool, controlling your screen) only runs while YOLO is on. Turn it on from the tray menu for 15 or 30 minutes and Jarvis just gets on with things; when it lapses, it starts asking again. If you ask for something while it is off, Jarvis tells you what it was about to do and asks you to switch it on. **It cannot switch it on itself** — that is the point, since it reads web pages and tool descriptions that other people wrote. Set `mcp_confirm` in `config.json` to choose what counts as consequential:
 
-| Value | Asks before |
+| Value | Needs YOLO |
 |-------|-------------|
-| `off` | never asks |
+| `off` | nothing |
 | `destructive` *(default)* | tools the server marks destructive or open-world |
 | `unannotated` | the above, plus any tool that declares nothing |
 | `all` | every MCP tool call |

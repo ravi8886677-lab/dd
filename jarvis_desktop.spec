@@ -104,13 +104,7 @@ hiddenimports = [
     'desktop_app.face_widget',
     'desktop_app.diary_dialog',
     'desktop_app.memory_viewer',
-    # Imported lazily inside TrayApp.__init__ rather than at module
-    # level, and the import is wrapped in a try/except that swallows
-    # failure. If modulegraph misses it the confirmation dialog is
-    # simply absent and nothing says so — which is the original bug,
-    # restored by the failure path of its own fix.
-    'desktop_app.confirm_dialog',
-    'jarvis.confirm_ui',
+    'jarvis.approval',
     # Also imported inside function bodies. These evidently do get
     # found today, so this is belt-and-braces rather than a fix —
     # but declaring them costs nothing and keeps the rule uniform.

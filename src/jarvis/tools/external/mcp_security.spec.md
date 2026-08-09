@@ -85,7 +85,7 @@ names. A corrupt store logs and starts fresh rather than taking
 discovery down: a damaged file is far likelier to be disk trouble than
 an attack, and failing shut would strand the user with no tools.
 
-## Gate: confirmation
+## Gate: YOLO mode
 
 `classify_risk` reads the server's annotations. Only a literal `True`
 counts, so `"readOnlyHint": "yes"` does not reach the safe bucket.
@@ -100,14 +100,13 @@ counts, so `"readOnlyHint": "yes"` does not reach the safe bucket.
 
 The MCP spec's own defaults treat an unannotated tool as destructive and
 open-world. Applied literally that puts every tool from every
-unannotated server behind a prompt, and a gate met on every call is one
-people learn to clear without reading, so silence maps to UNKNOWN and
-the user's policy decides what that is worth.
+unannotated server behind a prompt, so silence maps to UNKNOWN and the
+user's policy decides what that is worth.
 
-`mcp_confirm` in `config.json`:
+`mcp_confirm` in `config.json` decides which risks are gated at all:
 
-| Value | Confirms |
-|-------|----------|
+| Value | Gates |
+|-------|-------|
 | `off` | nothing |
 | `destructive` (default) | HIGH |
 | `unannotated` | HIGH and UNKNOWN |
@@ -115,79 +114,45 @@ the user's policy decides what that is worth.
 
 `resolve_policy` reads `cfg` only. A key inside a server entry or a tool
 annotation cannot change it: installing a server is not implicitly a
-request to stop being asked, and a gate the gated party can open is not
-a gate.
+request to stop being asked.
 
-The code is printed to stderr by `_announce`, not through the tool
-layer's `user_print`, which is suppressed under `voice_debug` — a code
-nobody can read would turn the tool off permanently instead of failing
-loudly. An approval is bound to a hash of server, tool and canonicalised
-arguments, so a code issued for one call cannot be spent on another;
-it is single-use and expires after `_CODE_TTL_SEC`.
+A gated call runs when **YOLO mode** is on and does not when it is off.
+YOLO (`jarvis/approval.py`) is a window the user opens by hand for 15 or
+30 minutes, from the tray menu or the dashboard. Outside it, a gated
+call returns a `NOT DONE:` message naming the action and telling the
+model to ask the user to switch YOLO on. Read-only tools are unaffected
+either way.
 
-`confirmation_code` is Jarvis's own argument. It is advertised as an
-optional property on every MCP tool's schema (which tools are gated
-depends on policy and on annotations that move between runs, and a model
-with no way to express an approval cannot relay one) and is stripped in
-`run_tool_with_retries` before the call reaches the server. Both the
-native schema (`generate_tools_json_schema`) and the text fallback
-(`generate_tools_description`) advertise it, because the PROPOSED message
-asks for it and a model on the text path would otherwise be told to send
-an argument its own parameter list omits.
+### The one rule
 
-Where a server's schema already declares a property of that name, it is
-the server's argument: Jarvis neither overwrites the advertised property
-nor strips the value, so an OTP tool's real code reaches the server
-instead of being compared against the gate's four digits.
+**Nothing in the tool layer may call `approval.grant`.** Jarvis reads web
+pages, MCP tool descriptions and tool results, any of which can carry
+text someone else wrote to be read by a model. If enabling YOLO were
+reachable from a tool call, that text could enable it and then act
+freely until the window lapsed. Granting is a human action in the UI,
+and `tests/test_yolo.py` asserts no built-in tool and no part of the
+registry can reach it.
+
+That is the property the old per-action confirmation codes existed to
+provide. The codes are gone — they were invisible in the packaged build
+and tedious everywhere else — but the property they protected is not.
+
+Because a grant is not a per-call argument, there is nothing for the
+model to guess at or forge: `confirmation_code`, `yolo: true` and
+friends in a tool call are ordinary arguments with no meaning to the
+gate. The advertised schema for an MCP tool is now exactly the schema
+the server published, with nothing injected and nothing stripped.
+
+A grant lives in memory only, so a restart closes it. Durations are
+clamped to `MAX_GRANT_MINUTES`; a longer one is a standing permission
+wearing a timer. A non-numeric duration is refused rather than coerced,
+so a stray config or message value cannot become a grant.
 
 Only a tool present in the discovery cache may run. A withheld tool is
 absent from it, and `run_tool_with_retries` refuses any MCP name the
 cache does not carry — otherwise the model could still call one from its
 own conversation history, or because another server's description named
 it, straight past the withholding.
-
-Unlike `computerUse` there is no trust window. Computer use approves a
-burst of clicks that would be unusable one code at a time; an MCP call
-reaching this gate is a discrete, named action with no equivalent flood
-to smooth over.
-
-### Showing the code without handing it to the model
-
-stderr alone is invisible in the packaged app, where it feeds a Log
-Viewer window that is hidden until someone opens it from the tray, so
-`jarvis/confirm_ui.py` lets the desktop layer register a presenter that
-draws the code in a dialog. The stderr line is still printed either way:
-it is the CLI path, the fallback when no presenter is registered, and
-the reason a broken UI cannot wedge the gate. The presenter receives
-only text that already went to stderr and returns nothing, so an
-approval can never originate there.
-
-Drawing the code on screen moves it out of a channel the model cannot
-read into one it can. The builtin `screenshot` tool OCRs the display and
-returns the text as a tool result, so for the life of a proposal a
-visible code is a code the model can fetch and spend on the gate that is
-waiting for it. `confirm_ui.is_showing()` is true for that window, and
-two things refuse while it is:
-
-- the builtin `screenshot` tool, and
-- every MCP tool except the one the proposal was issued for.
-
-The second is not redundant. `screenshot` is not the only thing that can
-read a display: `macos-automator` is a wizard-featured catalogue entry
-that runs arbitrary AppleScript, so it can capture the screen and return
-the text, and a `readOnlyHint` means the gate never asks about it.
-Whether a call is the approval is decided by `pending_target()` — its
-identity — and not by whether it carries a `confirmation_code`, because
-a read-only tool needs no code and could otherwise declare itself the
-approval.
-
-The block sits on the reading side rather than the drawing side because
-OS-level capture exclusion does not exist everywhere: Windows has
-`SetWindowDisplayAffinity` and macOS has `sharingType`, but Linux has no
-equivalent, so exclusion is a second layer and cannot be the first.
-`is_showing()` expires against the clock rather than trusting a
-`dismiss` call, so a gate that dies mid-proposal releases the reading
-tools on its own instead of disabling them for the session.
 
 ## Audit
 
@@ -335,8 +300,9 @@ and can read that file.
 |------|--------|
 | `tests/test_mcp_supply_chain.py` | pin detection per ecosystem, flag parsing, opt-out, and that a refused launch never reaches `stdio_client` |
 | `tests/test_mcp_trust.py` | fingerprint stability, trust on first sight, withholding across restarts, accept, per-server isolation, file mode, corrupt store |
-| `tests/test_mcp_gate.py` | proposal/approval, binding to server + tool + arguments, single use, expiry, and that the server is not called before approval |
+| `tests/test_mcp_gate.py` | that a gated call is blocked with YOLO off and runs with it on, that the window expiring blocks again, and that no invented argument stands in for the grant |
 | `tests/test_mcp_audit.py` | each check, non-English descriptions raising nothing, and ordinary text not tripping the markup or path checks |
+| `tests/test_yolo.py` | the window opening, expiring, being revoked and clamped, and that no tool can grant it |
 | `tests/test_secret_store.py` | round trip, honest unavailability, read-back before trusting a write, migration, `BaseException` backends, no recursion |
 | `tests/test_mcp_catalogue.py` | every shipped catalogue entry passes the launch guard |
 | `tests/test_mcp_review_fixes.py` | the separator and subcommand grammars, annotation edge cases, joiner-using scripts, colliding tool names, withheld tools being uncallable, credential-shaped variables, and `mcp_confirm` reaching the policy from a real config file |

@@ -30,23 +30,6 @@ class ScreenshotTool(Tool):
 
     def run(self, args: Optional[Dict[str, Any]], context: ToolContext) -> ToolExecutionResult:
         """Execute the screenshot tool."""
-        # A confirmation code is only a gate while the model cannot read
-        # it. This tool OCRs the display and hands the text back, so for
-        # the life of a proposal it would be a way for the model to fetch
-        # the code it is being asked to wait for. Refuse instead: the
-        # window is at most a couple of minutes, and the model is already
-        # meant to be asking the user a question during it.
-        from ...confirm_ui import is_showing
-
-        if is_showing():
-            return ToolExecutionResult(
-                success=False,
-                reply_text=None,
-                error_message=(
-                    "Screen reading is unavailable while a confirmation is pending. "
-                    "Ask the user for the code first, then try again."
-                ),
-            )
         context.user_print("📸 Capturing a screenshot for OCR…")
         debug_log("screenshot: capturing OCR...", "screenshot")
         # Inline OCR capture logic (previously in separate helper)

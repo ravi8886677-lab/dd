@@ -64,11 +64,10 @@ def test_lazily_imported_desktop_modules_are_in_hiddenimports():
 
 
 @pytest.mark.skipif(not _SPEC.exists(), reason="spec file not present")
-def test_the_confirmation_path_is_packaged():
-    """The gate is unopenable without these two, and fails quietly."""
+def test_the_approval_module_is_packaged():
+    """Without it the tray cannot grant YOLO and every gated action dies."""
     declared = _declared_hidden_imports()
-    assert "desktop_app.confirm_dialog" in declared
-    assert "jarvis.confirm_ui" in declared
+    assert "jarvis.approval" in declared
 
 
 def _tray_init_source() -> str:
