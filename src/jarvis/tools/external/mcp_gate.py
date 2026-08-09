@@ -30,13 +30,15 @@ from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
 from ...debug import debug_log
+from ... import confirm_ui
 
 # Long enough to read a sentence aloud and answer, short enough that a
 # stale approval cannot be spent much later in a conversation.
 _CODE_TTL_SEC = 180.0
 
-# One pending proposal at a time: (code, signature, description, issued_at).
-_pending: Optional[Tuple[str, str, str, float]] = None
+# One pending proposal at a time:
+# (code, signature, description, issued_at, (server, tool)).
+_pending: Optional[Tuple[str, str, str, float, Tuple[str, str]]] = None
 
 
 class GateOutcome(Enum):
@@ -51,6 +53,20 @@ def reset_pending() -> None:
     """Drop any outstanding proposal."""
     global _pending
     _pending = None
+    confirm_ui.dismiss("")
+
+
+def pending_target() -> Optional[Tuple[str, str]]:
+    """The ``(server, tool)`` a proposal is currently waiting on, if any.
+
+    Used to let the approval call through while everything else is held
+    back. Identity, not a supplied code, decides this: a read-only tool
+    needs no code, so accepting "carries a confirmation_code" as proof
+    would let any call name itself the approval.
+    """
+    if _pending is None:
+        return None
+    return _pending[4]
 
 
 def _announce(message: str) -> None:
@@ -116,7 +132,7 @@ def check_confirmation(
 
     code = (supplied_code or "").strip()
     if not code:
-        return _propose(signature, description)
+        return _propose(signature, description, (server_name, tool_name))
 
     if _pending is None:
         return (
@@ -125,11 +141,12 @@ def check_confirmation(
             "Propose the action again to get a fresh code.",
         )
 
-    pending_code, pending_signature, pending_description, issued_at = _pending
+    pending_code, pending_signature, pending_description, issued_at, _target = _pending
 
     if time.time() - issued_at > _CODE_TTL_SEC:
         _pending = None
         _announce("  ⌛ That confirmation code expired — nothing was done.")
+        confirm_ui.dismiss("Expired — nothing was done.")
         return (
             GateOutcome.REFUSED,
             "That confirmation code had expired, so nothing was done. Propose the "
@@ -141,6 +158,7 @@ def check_confirmation(
         # four-digit code.
         _pending = None
         _announce("  🚫 Wrong confirmation code — that request was cancelled.")
+        confirm_ui.dismiss("Wrong code — cancelled.")
         debug_log(
             f"MCP gate refused '{server_name}__{tool_name}': wrong code", "mcp"
         )
@@ -153,6 +171,7 @@ def check_confirmation(
     if not secrets.compare_digest(signature, pending_signature):
         _pending = None
         _announce("  🚫 That code was issued for a different action — cancelled.")
+        confirm_ui.dismiss("Code was for a different action — cancelled.")
         debug_log(
             f"MCP gate refused '{server_name}__{tool_name}': signature mismatch "
             f"(approved: {pending_description})",
@@ -166,20 +185,27 @@ def check_confirmation(
 
     # Single use: spend it.
     _pending = None
+    confirm_ui.dismiss("")
     debug_log(f"MCP gate approved '{server_name}__{tool_name}'", "mcp")
     return GateOutcome.APPROVED, ""
 
 
-def _propose(signature: str, description: str) -> Tuple[GateOutcome, str]:
+def _propose(
+    signature: str, description: str, target: Tuple[str, str]
+) -> Tuple[GateOutcome, str]:
     global _pending
 
     code = f"{secrets.randbelow(9000) + 1000}"
-    _pending = (code, signature, description, time.time())
+    _pending = (code, signature, description, time.time(), target)
 
     _announce(
         f"\n  ⚠️ Jarvis wants to run: {description}\n"
         f"  🔐 To allow it, tell Jarvis this code: {code}\n"
     )
+    # ...and again somewhere the user is actually looking. The stderr
+    # line above stays: it is the CLI path and the fallback if no UI is
+    # registered, so this call can only ever add a channel.
+    confirm_ui.present_code(code, description, _CODE_TTL_SEC)
     debug_log(f"MCP gate proposed: {description}", "mcp")
 
     return (

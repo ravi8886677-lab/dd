@@ -151,6 +151,44 @@ burst of clicks that would be unusable one code at a time; an MCP call
 reaching this gate is a discrete, named action with no equivalent flood
 to smooth over.
 
+### Showing the code without handing it to the model
+
+stderr alone is invisible in the packaged app, where it feeds a Log
+Viewer window that is hidden until someone opens it from the tray, so
+`jarvis/confirm_ui.py` lets the desktop layer register a presenter that
+draws the code in a dialog. The stderr line is still printed either way:
+it is the CLI path, the fallback when no presenter is registered, and
+the reason a broken UI cannot wedge the gate. The presenter receives
+only text that already went to stderr and returns nothing, so an
+approval can never originate there.
+
+Drawing the code on screen moves it out of a channel the model cannot
+read into one it can. The builtin `screenshot` tool OCRs the display and
+returns the text as a tool result, so for the life of a proposal a
+visible code is a code the model can fetch and spend on the gate that is
+waiting for it. `confirm_ui.is_showing()` is true for that window, and
+two things refuse while it is:
+
+- the builtin `screenshot` tool, and
+- every MCP tool except the one the proposal was issued for.
+
+The second is not redundant. `screenshot` is not the only thing that can
+read a display: `macos-automator` is a wizard-featured catalogue entry
+that runs arbitrary AppleScript, so it can capture the screen and return
+the text, and a `readOnlyHint` means the gate never asks about it.
+Whether a call is the approval is decided by `pending_target()` — its
+identity — and not by whether it carries a `confirmation_code`, because
+a read-only tool needs no code and could otherwise declare itself the
+approval.
+
+The block sits on the reading side rather than the drawing side because
+OS-level capture exclusion does not exist everywhere: Windows has
+`SetWindowDisplayAffinity` and macOS has `sharingType`, but Linux has no
+equivalent, so exclusion is a second layer and cannot be the first.
+`is_showing()` expires against the clock rather than trusting a
+`dismiss` call, so a gate that dies mid-proposal releases the reading
+tools on its own instead of disabling them for the session.
+
 ## Audit
 
 `audit_server_tools` checks definitions for the shapes tool poisoning

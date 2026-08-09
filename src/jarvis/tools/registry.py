@@ -25,7 +25,8 @@ from .builtin.tool_search import ToolSearchTool
 from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
-from .external.mcp_gate import GateOutcome, check_confirmation
+from .. import confirm_ui
+from .external.mcp_gate import GateOutcome, check_confirmation, pending_target
 from .external.mcp_trust import (
     TrustStore,
     classify_risk,
@@ -444,6 +445,30 @@ def _gate_mcp_call(
     rug-pulled tool is withheld at discovery, so one that relabels itself
     as harmless mid-conversation cannot talk its way past the gate.
     """
+    # While a confirmation code is on screen, no other MCP tool may run.
+    # The builtin `screenshot` refuses for the same reason, but it is not
+    # the only thing that can read a display: a server's tool can shell
+    # out to a capture utility and return the text, and a read-only
+    # annotation means the gate below never stops it. Whether a call is
+    # the approval is decided by identity, not by it carrying a code —
+    # a read-only tool needs no code, so "has a confirmation_code" would
+    # let any call declare itself the approval.
+    if confirm_ui.is_showing() and pending_target() != (server_name, mcp_tool_name):
+        debug_log(
+            f"refused MCP tool '{full_tool_name}': a confirmation code is on "
+            "screen and this is not the call it was issued for",
+            "mcp",
+        )
+        return ToolExecutionResult(
+            success=False,
+            reply_text=None,
+            error_message=(
+                "Another action is waiting for a confirmation code, so nothing "
+                "else can run yet. Ask the user for the code, or wait for it to "
+                "expire."
+            ),
+        )
+
     policy = resolve_policy(cfg)
     spec = get_cached_mcp_tools().get(full_tool_name)
     risk = classify_risk({"annotations": getattr(spec, "annotations", None)})

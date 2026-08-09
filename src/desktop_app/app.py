@@ -1317,6 +1317,23 @@ class JarvisSystemTray:
         # Create context menu
         self.create_menu()
 
+        # Route gate confirmation codes to a visible window. Without this
+        # they go only to stderr, which in the packaged app means the
+        # hidden Log Viewer — the gate fails closed and can never be
+        # opened. Held on self so it is not garbage collected.
+        try:
+            # Absolute: app.py is the PyInstaller entry point and runs as
+            # __main__ with no package context, so a relative import
+            # raises ImportError — and the except below would swallow it,
+            # leaving the presenter silently uninstalled in exactly the
+            # build this exists to fix.
+            from desktop_app.confirm_dialog import install_confirmation_presenter
+
+            self.confirm_dialog = install_confirmation_presenter(self)
+        except Exception as _confirm_err:  # noqa: BLE001
+            self.confirm_dialog = None
+            debug_log(f"confirmation presenter unavailable: {_confirm_err}", "desktop")
+
         # Set up status checking timer
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.check_daemon_status)
