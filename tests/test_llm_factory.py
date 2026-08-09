@@ -201,7 +201,7 @@ class TestPerProviderModelResolution:
         cfg.setdefault("_config_version", 2)  # skip migration noise
         cfg_path.write_text(json.dumps(cfg))
         monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
-        from jarvis.config import load_settings
+        from jarvis.config import CONFIG_VERSION, load_settings
         return load_settings()
 
     def test_ollama_chat_model_not_shadowed_by_stale_llm_chat_model(self, tmp_path, monkeypatch):
@@ -271,7 +271,7 @@ class TestConfigMigration:
         monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
 
         # Reload the module so cached config-path defaults reset.
-        from jarvis.config import load_settings
+        from jarvis.config import CONFIG_VERSION, load_settings
 
         settings = load_settings()
 
@@ -283,7 +283,7 @@ class TestConfigMigration:
         assert settings.ollama_base_url == "http://1.2.3.4:11434"
         # Migration is persisted to disk.
         on_disk = json.loads(cfg_path.read_text())
-        assert on_disk["_config_version"] == 3
+        assert on_disk["_config_version"] == CONFIG_VERSION
         assert on_disk["llm_provider"] == "ollama"
         assert on_disk["llm_base_url"] == "http://1.2.3.4:11434"
 
@@ -308,7 +308,7 @@ class TestConfigMigration:
         )
         monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
 
-        from jarvis.config import load_settings
+        from jarvis.config import CONFIG_VERSION, load_settings
 
         settings = load_settings()
 
@@ -326,7 +326,7 @@ class TestConfigMigration:
         cfg_path.write_text(json.dumps({"_config_version": 1}))
         monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
 
-        from jarvis.config import load_settings
+        from jarvis.config import CONFIG_VERSION, load_settings
 
         settings = load_settings()
 
@@ -335,5 +335,5 @@ class TestConfigMigration:
         assert settings.llm_base_url == settings.ollama_base_url
         # Migration runs without touching keys that have no source.
         on_disk = json.loads(cfg_path.read_text())
-        assert on_disk["_config_version"] == 3
+        assert on_disk["_config_version"] == CONFIG_VERSION
         assert on_disk["llm_provider"] == "ollama"

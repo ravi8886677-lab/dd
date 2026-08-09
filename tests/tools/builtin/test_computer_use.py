@@ -20,9 +20,11 @@ from src.jarvis.tools.builtin.computer_use import ComputerUseTool
 def _clear_state():
     """Both the pending proposal and the trust window are module state."""
     cu._pending = None
+    cu.confirm_ui.dismiss("")
     cu._trusted_until = 0.0
     yield
     cu._pending = None
+    cu.confirm_ui.dismiss("")
     cu._trusted_until = 0.0
 
 

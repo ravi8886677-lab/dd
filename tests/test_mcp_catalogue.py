@@ -4,12 +4,49 @@ Tests for the MCP server catalogue.
 Verifies catalogue integrity, entry conversion, and wizard filtering.
 """
 
+import pytest
+
 from desktop_app.mcp_catalogue import (
     CATALOGUE,
     CATALOGUE_BY_NAME,
     MCPEntry,
     get_wizard_entries,
 )
+from jarvis.tools.external.mcp_supply_chain import (
+    UnpinnedServerError,
+    validate_server_launch,
+)
+
+
+class TestCatalogueIsPinned:
+    """Every shipped entry must survive the spawn-time supply-chain guard.
+
+    A catalogue entry that fails this would be offered to the user in the
+    wizard and then refused at launch, so the two must agree.
+    """
+
+    @pytest.mark.parametrize("entry", CATALOGUE, ids=lambda e: e.name)
+    def test_entry_launches_without_installing_unpinned_code(self, entry):
+        validate_server_launch(entry.name, entry.to_config())
+
+    @pytest.mark.parametrize("entry", CATALOGUE, ids=lambda e: e.name)
+    def test_entry_does_not_opt_out_of_the_guard(self, entry):
+        assert "allow_unpinned" not in entry.to_config(), (
+            f"Catalogue entry '{entry.name}' disables the supply-chain guard; "
+            "a curated entry should be pinned instead"
+        )
+
+    def test_guard_would_reject_an_unpinned_entry(self):
+        """Guards the guard: a @latest entry must not slip through."""
+        sloppy = MCPEntry(
+            name="sloppy",
+            display_name="Sloppy",
+            description="unpinned",
+            command="npx",
+            args=["-y", "some-server@latest"],
+        )
+        with pytest.raises(UnpinnedServerError):
+            validate_server_launch(sloppy.name, sloppy.to_config())
 
 
 class TestCatalogueIntegrity:

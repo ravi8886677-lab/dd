@@ -817,7 +817,7 @@ class TestConnectStdioPathInjection:
             fake_stdio_client,
         )
 
-        client = MCPClient({"test": {"command": "npx", "args": ["-y", "server"]}})
+        client = MCPClient({"test": {"command": "npx", "args": ["-y", "server@1.0.0"]}})
         client._connect_stdio(client.server_configs["test"])
 
         env = captured_params["env"]
@@ -859,8 +859,16 @@ class TestConnectStdioPathInjection:
         assert env["MY_TOKEN"] == "secret"
         assert str(tmp_path) in env["PATH"]
 
-    def test_no_env_override_when_command_already_on_path(self, monkeypatch):
-        """When command dir is already on PATH and no user env, env should be None."""
+    def test_parent_env_is_passed_when_command_already_on_path(self, monkeypatch):
+        """A server with no custom env must still inherit the parent environment.
+
+        ``StdioServerParameters(env=None)`` does not mean "inherit" — the
+        SDK substitutes ``get_default_environment()``, which is only
+        HOME, PATH, SHELL and TERM. A server launched that way loses
+        proxy settings, ``NODE_EXTRA_CA_CERTS``, registry auth and
+        everything else npx needs, and simply hangs on a machine where
+        any of those matter.
+        """
         from jarvis.tools.external.mcp_client import MCPClient
 
         # Resolve to a path that's already on the system PATH
@@ -871,6 +879,7 @@ class TestConnectStdioPathInjection:
             "jarvis.tools.external.mcp_client._resolve_command",
             lambda cmd: fake_cmd,
         )
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
 
         captured_params = {}
 
@@ -886,5 +895,8 @@ class TestConnectStdioPathInjection:
         client = MCPClient({"test": {"command": "fake-cmd", "args": []}})
         client._connect_stdio(client.server_configs["test"])
 
-        assert captured_params["env"] is None, "No env override needed when dir already on PATH"
+        env = captured_params["env"]
+        assert env is not None, "env=None hands the server a 4-variable environment"
+        assert env["HTTPS_PROXY"] == "http://proxy.example:8080"
+        assert env["PATH"] == os.environ["PATH"]
 

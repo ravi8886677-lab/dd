@@ -9,6 +9,11 @@ Selection criteria:
   memory/recall, weather, screenshot/OCR, meals).
 - Wizard-featured entries must be zero-config (no API keys).
 - All entries must be from the official @modelcontextprotocol org or widely trusted.
+- Every entry pins an exact package version. ``npx``/``uvx`` fetch and run
+  their package on each launch, so an unpinned entry hands whoever controls
+  that package a fresh code-execution channel every time Jarvis starts.
+  ``tests/test_mcp_catalogue.py`` enforces this against the same guard that
+  runs at spawn time.
 """
 
 from __future__ import annotations
@@ -62,7 +67,7 @@ CATALOGUE: List[MCPEntry] = [
         description="Control Chrome by voice — navigate pages, fill forms, click buttons, "
                     "inspect network traffic, and read console logs. Uses your existing Chrome installation",
         command="npx",
-        args=["-y", "chrome-devtools-mcp@latest"],
+        args=["-y", "chrome-devtools-mcp@1.6.0"],
         wizard_featured=True,
         category="automation",
     ),
@@ -72,7 +77,7 @@ CATALOGUE: List[MCPEntry] = [
         description="Extract and summarise transcripts from any YouTube video — "
                     "just paste a link and ask Jarvis about the content",
         command="npx",
-        args=["-y", "@kimtaeyoon83/mcp-server-youtube-transcript"],
+        args=["-y", "@kimtaeyoon83/mcp-server-youtube-transcript@0.1.1"],
         wizard_featured=True,
         category="media",
     ),
@@ -82,7 +87,7 @@ CATALOGUE: List[MCPEntry] = [
         description="Control your Mac by voice — run AppleScript and JavaScript automations "
                     "to launch apps, manage windows, and automate system tasks",
         command="npx",
-        args=["-y", "@steipete/macos-automator-mcp"],
+        args=["-y", "@steipete/macos-automator-mcp@0.4.6"],
         wizard_featured=True,
         category="automation",
     ),
@@ -94,7 +99,7 @@ CATALOGUE: List[MCPEntry] = [
         description="Manage repositories, issues, pull requests, and code search — "
                     "your coding workflow from voice",
         command="npx",
-        args=["-y", "@modelcontextprotocol/server-github"],
+        args=["-y", "@modelcontextprotocol/server-github@2025.4.8"],
         needs_api_key=True,
         api_key_env_var="GITHUB_PERSONAL_ACCESS_TOKEN",
         api_key_hint="Create a token at https://github.com/settings/tokens",
@@ -105,7 +110,7 @@ CATALOGUE: List[MCPEntry] = [
         display_name="🦊 GitLab",
         description="Manage GitLab projects, merge requests, issues, and pipelines",
         command="npx",
-        args=["-y", "@modelcontextprotocol/server-gitlab"],
+        args=["-y", "@modelcontextprotocol/server-gitlab@2025.4.25"],
         needs_api_key=True,
         api_key_env_var="GITLAB_PERSONAL_ACCESS_TOKEN",
         api_key_hint="Create a token at https://gitlab.com/-/user_settings/personal_access_tokens",
@@ -117,7 +122,7 @@ CATALOGUE: List[MCPEntry] = [
         description="Directions, place search, distance calculations, and geocoding — "
                     "real navigation and points of interest",
         command="npx",
-        args=["-y", "@modelcontextprotocol/server-google-maps"],
+        args=["-y", "@modelcontextprotocol/server-google-maps@0.6.2"],
         needs_api_key=True,
         api_key_env_var="GOOGLE_MAPS_API_KEY",
         api_key_hint="Get a key at https://console.cloud.google.com/google/maps-apis",
@@ -129,32 +134,11 @@ CATALOGUE: List[MCPEntry] = [
         description="Read channels, send messages, search conversations, "
                     "and manage your Slack workspace by voice",
         command="npx",
-        args=["-y", "@modelcontextprotocol/server-slack"],
+        args=["-y", "@modelcontextprotocol/server-slack@2025.4.25"],
         needs_api_key=True,
         api_key_env_var="SLACK_BOT_TOKEN",
         api_key_hint="Create a Slack app at https://api.slack.com/apps and add a Bot token",
         category="comms",
-    ),
-    MCPEntry(
-        name="spotify",
-        display_name="🎵 Spotify",
-        description="Control music playback, search tracks, manage playlists, "
-                    "and discover new music — all by voice",
-        command="npx",
-        args=["-y", "mcp-spotify"],
-        needs_api_key=True,
-        api_key_env_var="SPOTIFY_CLIENT_SECRET",
-        api_key_hint="Create an app at https://developer.spotify.com/dashboard",
-        category="media",
-    ),
-    MCPEntry(
-        name="sqlite",
-        display_name="🗄️ SQLite",
-        description="Query and manage SQLite databases — run SQL, inspect schemas, "
-                    "and analyse data hands-free",
-        command="npx",
-        args=["-y", "@modelcontextprotocol/server-sqlite"],
-        category="dev",
     ),
     MCPEntry(
         name="whatsapp",
@@ -162,7 +146,7 @@ CATALOGUE: List[MCPEntry] = [
         description="Search chats, send messages, share media and voice notes — "
                     "all locally via WhatsApp Web bridge (QR code auth)",
         command="uvx",
-        args=["whatsapp-mcp-server"],
+        args=["whatsapp-mcp-server==0.2.1"],
         api_key_hint="Requires Go, UV, and a one-time QR code scan. "
                      "See https://github.com/lharries/whatsapp-mcp",
         category="comms",
@@ -173,7 +157,7 @@ CATALOGUE: List[MCPEntry] = [
         description="Instant file search across your entire system using Voidtools Everything "
                     "(Windows only)",
         command="npx",
-        args=["-y", "@modelcontextprotocol/server-everything"],
+        args=["-y", "@modelcontextprotocol/server-everything@2026.7.4"],
         category="files",
     ),
 ]

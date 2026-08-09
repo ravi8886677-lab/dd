@@ -1317,6 +1317,31 @@ class JarvisSystemTray:
         # Create context menu
         self.create_menu()
 
+        # Route gate confirmation codes to a visible window. Without this
+        # they go only to stderr, which in the packaged app means the
+        # hidden Log Viewer — the gate fails closed and can never be
+        # opened. Held on self so it is not garbage collected.
+        try:
+            # Absolute: app.py is the PyInstaller entry point and runs as
+            # __main__ with no package context, so a relative import
+            # raises ImportError — and the except below would swallow it,
+            # leaving the presenter silently uninstalled in exactly the
+            # build this exists to fix.
+            from desktop_app.confirm_dialog import install_confirmation_presenter
+
+            self.confirm_dialog = install_confirmation_presenter(self)
+        except Exception as _confirm_err:  # noqa: BLE001
+            self.confirm_dialog = None
+            debug_log(f"confirmation presenter unavailable: {_confirm_err}", "desktop")
+            # debug_log alone would put this in the Log Viewer, which is
+            # the hidden window this change exists to route around. If the
+            # dialog is missing the gates are unopenable again, so say so
+            # somewhere visible — but not yet: `showMessage` is a no-op on
+            # a tray icon that has not been shown, and `show()` is still
+            # a few lines below. Deferred rather than fired here, or the
+            # one warning that matters would go nowhere at all.
+            self._confirm_presenter_failed = True
+
         # Set up status checking timer
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.check_daemon_status)
@@ -1324,6 +1349,21 @@ class JarvisSystemTray:
 
         # Show tray icon
         self.tray_icon.show()
+
+        # Now that the icon is visible, a balloon will actually render.
+        # This is the only warning a user gets that approvals are dead,
+        # so it must not be spent while the icon is still hidden.
+        if getattr(self, "_confirm_presenter_failed", False):
+            try:
+                self.tray_icon.showMessage(
+                    "Jarvis: approvals unavailable",
+                    "Actions needing confirmation cannot be approved. "
+                    "See Logs in this menu for details.",
+                    QSystemTrayIcon.MessageIcon.Critical,
+                    10000,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         # Register cleanup on app exit
         self.app.aboutToQuit.connect(self.cleanup_on_exit)

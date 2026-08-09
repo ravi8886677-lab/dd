@@ -225,7 +225,7 @@ For reference, the underlying config keys are:
 ```
 
 - `llm_base_url`: your server's OpenAI API base URL.
-- `llm_api_key`: only if your server requires one; leave empty otherwise.
+- `llm_api_key`: only if your server requires one; leave empty otherwise. On first run Jarvis moves it into your OS keychain and blanks it here — it is still in use, just no longer in plain text. Typing a new one into `config.json` always takes precedence.
 - `llm_chat_model`: whatever model name your server exposes.
 - `fast_model` (optional): the small, quick model used for real-time work (voice intent, tool routing, quick classifications). Leave empty for automatic: `gemma4:e2b` on Ollama, your chat model on an OpenAI-compatible server. Set it to pin a dedicated small model.
 
@@ -465,7 +465,7 @@ Connect Jarvis to external tools via [MCP servers](https://github.com/topics/mcp
   "mcps": {
     "github": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
       "env": { "GITHUB_TOKEN": "your-token" }
     }
   }
@@ -487,7 +487,55 @@ See [full MCP setup guide](#mcp-integrations) below.
 
 ## MCP Integrations
 
+> **Remote servers:** as well as local servers Jarvis launches for you, it can connect to hosted ones. Point it at a URL instead of a command:
+>
+> ```json
+> { "mcps": { "acme-crm": { "transport": "http", "url": "https://mcp.acme.com/mcp", "auth": "oauth" } } }
+> ```
+>
+> With `"auth": "oauth"` your browser opens at the provider, you approve, and the token is stored in your OS keychain. You never see it and it never touches `config.json`. Without it, Jarvis sends a bearer token from the keychain instead. Plain `http://` is only accepted for `localhost`, since a token would otherwise cross the network in clear text.
+
 > **Session persistence:** each MCP server is launched once and its stdio session is kept open across tool calls. Stateful servers (e.g. browser automation, where the server owns a long-running Chrome process) work correctly. If you have a server you'd rather not keep resident, set `"idle_timeout_sec": 300` on its config entry and Jarvis will free it after that long without activity. If a server's tools legitimately run long (e.g. delegating a task to an external CLI agent), set `"timeout_sec": 600` to raise its 120-second default call timeout.
+
+<details>
+<summary><strong>🔒 How Jarvis protects you from a bad MCP server</strong></summary>
+
+An MCP server is code you installed, and its tool descriptions are read by the model as instructions. Jarvis drives a real mouse and keyboard, so four things sit in the way.
+
+**1. Versions must be pinned.** `npx -y some-server@latest` re-downloads whatever is published at that moment, every time Jarvis starts. Jarvis refuses those and asks for an exact version:
+
+```json
+"args": ["-y", "some-server@1.4.2"]      // npx
+"args": ["some-server==1.4.2"]            // uvx
+```
+
+Local paths, `node`, `python` and `docker` commands are not affected. If you really want a floating version, add `"allow_unpinned": true` to that server's entry. Servers you installed through the setup wizard are re-pinned automatically on upgrade, so they keep working.
+
+**2. Tools that change get withheld.** Jarvis remembers what each tool looked like when you added it. If a description later changes, that tool is withheld rather than quietly handed to the model with new instructions. Review and restore it with:
+
+```bash
+python -m jarvis.mcp_trust_cli list                    # what changed
+python -m jarvis.mcp_trust_cli accept <server> <tool>  # allow it again
+```
+
+**3. Risky calls ask you first.** Tools a server marks destructive show a short code on your screen and do nothing until you read it back to Jarvis. The model cannot see the code, so it cannot approve itself, and an approval only covers the exact call it was issued for. Set `mcp_confirm` in `config.json`:
+
+| Value | Asks before |
+|-------|-------------|
+| `off` | never asks |
+| `destructive` *(default)* | tools the server marks destructive or open-world |
+| `unannotated` | the above, plus any tool that declares nothing |
+| `all` | every MCP tool call |
+
+**4. Servers don't get your shell secrets.** An MCP server is third-party code, so variables whose names say they hold a credential (`*_TOKEN`, `*_API_KEY`, `*_SECRET`, `*_PASSWORD`, …) are withheld from it. Proxy settings, custom CA paths and the rest still pass through. A server that genuinely needs a token gets it from its own `env` block in `config.json`, which always wins.
+
+**5. You can audit definitions.** Checks every configured server for text hidden in invisible characters, descriptions imitating system prompts, references to credential files, and one server steering calls to another's tools. Runs entirely on your machine:
+
+```bash
+python -m jarvis.mcp_trust_cli audit
+```
+
+</details>
 
 <details>
 <summary><strong>Home Assistant</strong> - Smart home voice control</summary>
@@ -521,7 +569,7 @@ See [full MCP setup guide](#mcp-integrations) below.
   "mcps": {
     "google_workspace": {
       "command": "npx",
-      "args": ["-y", "google-workspace-mcp"],
+      "args": ["-y", "google-workspace-mcp@2.3.6"],
       "env": {
         "GOOGLE_CLIENT_ID": "your-client-id",
         "GOOGLE_CLIENT_SECRET": "your-client-secret"
@@ -542,7 +590,7 @@ Setup: [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/goo
   "mcps": {
     "github": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
       "env": { "GITHUB_TOKEN": "your-token" }
     }
   }
@@ -556,38 +604,20 @@ Setup: [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/goo
 
 **Notion:**
 ```json
-{ "mcps": { "notion": { "command": "npx", "args": ["-y", "@makenotion/mcp-server-notion"], "env": { "NOTION_API_KEY": "your-token" } } } }
+{ "mcps": { "notion": { "command": "npx", "args": ["-y", "@notionhq/notion-mcp-server@2.5.1"], "env": { "NOTION_API_KEY": "your-token" } } } }
 ```
 
 **Slack:**
 ```json
-{ "mcps": { "slack": { "command": "npx", "args": ["-y", "slack-mcp-server"], "env": { "SLACK_BOT_TOKEN": "xoxb-...", "SLACK_USER_TOKEN": "xoxp-..." } } } }
+{ "mcps": { "slack": { "command": "npx", "args": ["-y", "slack-mcp-server@1.3.0"], "env": { "SLACK_BOT_TOKEN": "xoxb-...", "SLACK_USER_TOKEN": "xoxp-..." } } } }
 ```
 
 **Discord:**
 ```json
-{ "mcps": { "discord": { "command": "npx", "args": ["-y", "discord-mcp-server"], "env": { "DISCORD_BOT_TOKEN": "your-token" } } } }
+{ "mcps": { "discord": { "command": "npx", "args": ["-y", "discord-mcp-server@1.0.1"], "env": { "DISCORD_BOT_TOKEN": "your-token" } } } }
 ```
 
 **Databases:** [bytebase/dbhub](https://github.com/bytebase/dbhub) (SQL), [mongodb-mcp-server](https://github.com/mongodb-js/mongodb-mcp-server) (MongoDB)
-
-</details>
-
-<details>
-<summary><strong>Composio</strong> - 500+ apps in one integration</summary>
-
-```json
-{
-  "mcps": {
-    "composio": {
-      "command": "npx",
-      "args": ["-y", "@composiohq/rube"],
-      "env": { "COMPOSIO_API_KEY": "your-key" }
-    }
-  }
-}
-```
-Get API key at [composio.dev](https://composio.dev)
 
 </details>
 
@@ -684,6 +714,7 @@ provider can't run out the voice-assistant latency budget.
 - **100% offline** - No cloud services required
 - **Auto-redaction** - Emails, tokens, passwords automatically removed
 - **Local storage** - Everything in `~/.local/share/jarvis`
+- **Keys in your OS keychain** - API keys move out of `config.json` into Keychain, Credential Manager or Secret Service on first run, so the MCP server subprocesses Jarvis launches cannot read them. On a machine with no keychain the key stays in `config.json` rather than being lost.
 
 ## License
 

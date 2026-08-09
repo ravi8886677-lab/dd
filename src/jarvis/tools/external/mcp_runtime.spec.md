@@ -66,10 +66,15 @@ resident for the daemon's lifetime.
 ## Configuration
 
 Each server entry in `config.mcps` is a dict consumed by
-`MCPClient._connect_stdio`. The runtime additionally honours:
+`MCPClient._connect`, which dispatches on `transport` (`stdio` spawns a
+subprocess, `http` opens a Streamable HTTP connection — see
+`mcp_security.spec.md`). The worker loop sees the same `(read, write)`
+pair either way, so everything below applies to both. The runtime
+additionally honours:
 
 | Key | Type | Default | Effect |
 |-----|------|---------|--------|
+| `env` | dict \| null | null | Merged over the parent environment, never replacing it. `_connect_stdio` always passes an explicit environment: `StdioServerParameters(env=None)` does not inherit, it substitutes `get_default_environment()` (HOME, PATH, SHELL, TERM only), which strips proxy settings, `NODE_EXTRA_CA_CERTS` and registry credentials and leaves an npx-based server hanging until the setup timeout with nothing on stderr. |
 | `idle_timeout_sec` | float \| null | null | If set, the worker self-terminates after that many seconds with an empty queue. Stateful servers (browser automation) must leave this unset. |
 | `timeout_sec` | float \| null | 120 (`_DEFAULT_INVOKE_TIMEOUT_SEC`) | Bounds a single `call_tool` round trip and `list_tools` discovery. Servers whose tools legitimately run long (e.g. delegating a task to an external CLI agent) should raise this; a bare `concurrent.futures.TimeoutError` propagates on expiry. Non-finite or non-positive values fall back to the default. |
 

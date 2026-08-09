@@ -61,6 +61,7 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from ...debug import debug_log
+from ... import confirm_ui
 from ..base import Tool, ToolContext
 from ..types import ToolExecutionResult
 
@@ -273,6 +274,7 @@ class ComputerUseTool(Tool):
         code, description, pending_action, issued = _pending
         if time.time() - issued > _CONFIRM_TTL_SEC:
             _pending = None
+            confirm_ui.dismiss("Expired — nothing was done.")
             return ToolExecutionResult(
                 success=False, reply_text=None,
                 error_message="That confirmation expired. Propose the action again.",
@@ -283,6 +285,7 @@ class ComputerUseTool(Tool):
             # acting on an injected "click here" can spend in one loop.
             _pending = None
             _announce("  🚫 Wrong confirmation code — that request was cancelled.")
+            confirm_ui.dismiss("Wrong code — cancelled.")
             return ToolExecutionResult(
                 success=False, reply_text=None,
                 error_message=(
@@ -295,6 +298,7 @@ class ComputerUseTool(Tool):
         # approved click cannot be swapped for a different one.
         if self._signature(args, action) != self._signature(pending_action, pending_action["action"]):
             _pending = None
+            confirm_ui.dismiss("Code was for a different action — cancelled.")
             return ToolExecutionResult(
                 success=False, reply_text=None,
                 error_message=(
@@ -304,6 +308,7 @@ class ComputerUseTool(Tool):
             )
 
         _pending = None
+        confirm_ui.dismiss("")
         # This approval also covers ordinary actions for a while, so the
         # user is not re-reading codes throughout one task.
         if _mode(context) == "risky" and pending_action["action"] not in _ALWAYS_CONFIRM:
@@ -358,6 +363,9 @@ class ComputerUseTool(Tool):
             f"  🔐 To allow it, tell Jarvis this code: {code}\n"
             f"     Ignore it to do nothing. Expires in {int(_CONFIRM_TTL_SEC)}s.\n"
         )
+        # ...and again in a window the user can see. stderr stays as the
+        # CLI path and as the fallback when no UI has registered.
+        confirm_ui.present_code(code, description, _CONFIRM_TTL_SEC)
         debug_log(f"computerUse proposed: {description}", "computer_use")
 
         return ToolExecutionResult(

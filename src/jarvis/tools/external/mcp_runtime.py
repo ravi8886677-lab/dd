@@ -367,7 +367,7 @@ class _ServerWorker:
     async def _run(self) -> None:
         try:
             client = MCPClient({self._server_name: self.config})
-            connection = client._connect_stdio(self.config)
+            connection = client._connect(self.config, self._server_name)
             # Resolve ClientSession through ``mcp_client`` so tests that
             # monkey-patch ``mcp_client.ClientSession`` reach this path.
             client_session_cls = _mcp_client_module.ClientSession
