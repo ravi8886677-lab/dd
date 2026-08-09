@@ -18,6 +18,10 @@ geoip2==4.8.0
 # surface; the exact pin keeps installs on the 1.x contract this
 # codebase targets.
 mcp==1.13.1
+# Local OS credential store (macOS Keychain, Windows Credential
+# Manager, Linux Secret Service) for API keys. Jarvis degrades to
+# config.json when no backend is present.
+keyring==25.7.0
 faiss-cpu>=1.7.4
 
 # Windows has no system IANA timezone database; without this, zoneinfo

@@ -26,6 +26,10 @@ pytest-repeat==0.9.3
 # surface; the exact pin keeps installs on the 1.x contract this
 # codebase targets.
 mcp==1.13.1
+# Local OS credential store (macOS Keychain, Windows Credential
+# Manager, Linux Secret Service) for API keys. Jarvis degrades to
+# config.json when no backend is present.
+keyring==25.7.0
 chatterbox-tts==0.1.2
 piper-tts>=1.3.0
 pygame>=2.1.0

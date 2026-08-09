@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 
+from .utils.secret_store import migrate_plaintext_secrets, resolve_secret
+
 
 # ============================================================================
 # SUPPORTED CHAT MODELS - Single Source of Truth
@@ -335,6 +337,11 @@ def _save_json(path: Path, data: Dict[str, Any]) -> bool:
         return False
 
 
+# The migration level a freshly-migrated config carries. Bump this in the
+# same change that adds a migration block below.
+CONFIG_VERSION = 4
+
+
 def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
     """
     Apply config migrations for version upgrades.
@@ -393,6 +400,19 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
                          "evaluator_model", "planner_model"):
             cfg_json.pop(dead_key, None)
         cfg_json["_config_version"] = 3
+        modified = True
+
+    # Migration v4: move plaintext credentials into the OS credential
+    # store. Every MCP server subprocess inherits this user's ability to
+    # read config.json, so a key sitting there in plain text is readable
+    # by third-party code Jarvis itself launched. A key only leaves the
+    # file once the credential store has handed it back, so a machine
+    # with nowhere to put secrets keeps working unchanged.
+    if migration_version < 4:
+        if migrate_plaintext_secrets(cfg_json):
+            print("🔐 Moved API keys into your OS credential store", flush=True)
+            print("   config.json no longer holds them in plain text", flush=True)
+        cfg_json["_config_version"] = CONFIG_VERSION
         modified = True
 
     # Save migrated config
@@ -712,7 +732,9 @@ def load_settings() -> Settings:
     if llm_provider not in ("ollama", "openai_compatible"):
         llm_provider = "ollama"
     llm_base_url = str(merged.get("llm_base_url", "") or "").strip() or ollama_base_url
-    llm_api_key = str(merged.get("llm_api_key", "") or "").strip()
+    llm_api_key = resolve_secret(
+        "llm_api_key", str(merged.get("llm_api_key", "") or "").strip()
+    )
     if llm_provider == "openai_compatible":
         llm_chat_model = str(merged.get("llm_chat_model", "") or "").strip() or ollama_chat_model
     else:
@@ -722,7 +744,9 @@ def load_settings() -> Settings:
         embedding_provider_raw = ""
     embedding_provider = embedding_provider_raw
     embedding_base_url = str(merged.get("embedding_base_url", "") or "").strip()
-    embedding_api_key = str(merged.get("embedding_api_key", "") or "").strip()
+    embedding_api_key = resolve_secret(
+        "embedding_api_key", str(merged.get("embedding_api_key", "") or "").strip()
+    )
     # Effective embedding provider inherits the chat provider when unset.
     _effective_embed_provider = embedding_provider or llm_provider
     if _effective_embed_provider == "openai_compatible":
@@ -867,7 +891,10 @@ def load_settings() -> Settings:
     location_auto_detect = bool(merged.get("location_auto_detect", True))
     location_cgnat_resolve_public_ip = bool(merged.get("location_cgnat_resolve_public_ip", True))
     web_search_enabled = bool(merged.get("web_search_enabled", True))
-    brave_search_api_key = str(merged.get("brave_search_api_key", "") or "").strip()
+    brave_search_api_key = resolve_secret(
+        "brave_search_api_key",
+        str(merged.get("brave_search_api_key", "") or "").strip(),
+    )
     wikipedia_fallback_enabled = bool(merged.get("wikipedia_fallback_enabled", True))
     dictation_enabled = bool(merged.get("dictation_enabled", True))
     dictation_hotkey = str(merged.get("dictation_hotkey", _default_dictation_hotkey())).strip()
