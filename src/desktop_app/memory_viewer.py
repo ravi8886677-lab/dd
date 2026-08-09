@@ -49,6 +49,22 @@ _TOKEN_COOKIE = "jarvis_dashboard_token"
 _ALLOWED_HOST_NAMES = {"localhost", "127.0.0.1", "[::1]", "::1"}
 
 
+# Values that count as switching the token off. Anything else — including
+# "0", "false" and "no" — leaves it on. A bare truthiness test on the
+# environment variable makes ``JARVIS_DASHBOARD_NO_AUTH=0`` *disable*
+# authentication, which is the opposite of what anyone typing it means.
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _no_auth_enabled() -> bool:
+    """Whether the operator has explicitly asked to skip the token.
+
+    For a local demo where pasting the launch URL is a nuisance. It skips
+    the token only: see ``_host_is_allowed``.
+    """
+    return os.environ.get("JARVIS_DASHBOARD_NO_AUTH", "").strip().lower() in _TRUTHY
+
+
 def _token_matches(supplied: str) -> bool:
     """Constant-time compare that tolerates any input.
 
@@ -56,7 +72,7 @@ def _token_matches(supplied: str) -> bool:
     a token containing one byte of Unicode turned an auth failure into a
     500 with a traceback. Reject those as simply wrong.
     """
-    if os.environ.get("JARVIS_DASHBOARD_NO_AUTH"):
+    if _no_auth_enabled():
         return True
     try:
         return secrets.compare_digest(supplied or "", _SESSION_TOKEN)
@@ -65,8 +81,16 @@ def _token_matches(supplied: str) -> bool:
 
 
 def _host_is_allowed(host_header: str) -> bool:
-    if os.environ.get("JARVIS_DASHBOARD_NO_AUTH"):
-        return True
+    """Whether this request addressed the server by a name that is ours.
+
+    Deliberately not affected by ``JARVIS_DASHBOARD_NO_AUTH``. The token
+    answers "is this the user?"; this answers "did a webpage aim the
+    user's browser at us?", and only the first is a nuisance worth
+    switching off for a demo. Without this check any site the user
+    visits can point a hostname at 127.0.0.1 and drive the dashboard
+    from their own browser — reading the diary and POSTing to
+    ``/api/mcp``, which registers a command Jarvis later spawns.
+    """
     if not host_header:
         return False
     name = host_header.rsplit(":", 1)[0] if not host_header.startswith("[") else \
@@ -1385,10 +1409,19 @@ _INDEX_HTML = """<!DOCTYPE html>
 
             --border-color: rgba(56, 120, 160, 0.28);
             --border-glow: rgba(45, 212, 238, 0.45);
+            /* Alias: the connections and chat styles reach for --border.
+               An unresolvable var() voids the whole declaration, so
+               without this every border it sets renders as none. */
+            --border: rgba(56, 120, 160, 0.28);
 
             --success: #34d399;
             --warning: #fbbf24;
             --error: #f87171;
+            /* Lifted tints, for text sitting on the translucent success
+               and error fills — the base colours are too dark to read
+               against them. */
+            --success-light: #6ee7b7;
+            --error-light: #fca5a5;
 
             --radius-sm: 8px;
             --radius-md: 12px;
@@ -1686,9 +1719,12 @@ _INDEX_HTML = """<!DOCTYPE html>
             background: rgba(8,24,43,0.75);
             text-shadow: 0 0 12px rgba(34,211,238,0.7);
         }
-        .chat-shell.talking .orb-stage { height: 132px; }
+        /* The chat code toggles `talking` on .hud-core, so these key off
+           that. Keyed on a class no element carries, the orb never
+           shrank while Jarvis spoke. */
+        .hud-core.talking .orb-stage { height: 132px; }
         .orb-stage canvas { height: 100%; }
-        .chat-shell.talking .orb-state { font-size: 10px; padding-top: 6px; }
+        .hud-core.talking .orb-state { font-size: 10px; padding-top: 6px; }
 
         /* ── Settings ─────────────────────────────────────────────── */
         .settings-grid {
@@ -5701,8 +5737,14 @@ def main() -> None:
     print("=" * 60)
     print(f"\n  📂 Database: {_get_db_path()}")
     print(f"  🌐 URL: http://localhost:{port}/?token={_SESSION_TOKEN}")
-    print("  🔒 That token is minted per launch — the dashboard shows your")
-    print("     diary and can act as you, so it is not open to the machine.")
+    if _no_auth_enabled():
+        print("\n  ⚠️  JARVIS_DASHBOARD_NO_AUTH is set — no token is required.")
+        print("     Any process on this machine can read your diary and")
+        print("     register an MCP command that Jarvis will run as you.")
+        print("     Unset it for anything but a local demo.")
+    else:
+        print("  🔒 That token is minted per launch — the dashboard shows your")
+        print("     diary and can act as you, so it is not open to the machine.")
     print("\n  Press Ctrl+C to stop\n")
     print("=" * 60 + "\n")
 
