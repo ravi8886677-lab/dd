@@ -174,6 +174,66 @@ Schemas are serialised with `ensure_ascii=False`; the default would turn
 a hidden `U+202E` into the visible literal `‮` and defeat the
 invisible-character check.
 
+## Remote servers
+
+`_connect` dispatches on `transport`. `stdio` spawns a subprocess;
+`http` / `https` / `streamable_http` / `streamable-http` open a
+Streamable HTTP connection. The deprecated SSE transport is deliberately
+absent. Both shapes yield the same `(read, write)` pair, so the
+persistent runtime's sessions, serialisation, idle reaping and
+retry-once-on-death behave identically either way.
+
+A URL is attacker-influenceable in ways a command path is not, so
+`_validate_remote_url` runs before anything opens:
+
+| Input | Result |
+|-------|--------|
+| `https://host/mcp` | allowed |
+| `http://localhost/mcp`, `http://127.0.0.1/mcp`, `http://[::1]/mcp` | allowed — a loopback hop cannot be observed off the machine |
+| `http://remote-host/mcp` | refused — the bearer token would cross the network in clear text |
+| `file://`, `ftp://`, anything else | refused |
+| `https://user:pass@host/mcp` | refused — URL credentials leak into logs, proxies and Referer headers |
+| no host, or no `url` at all | refused, naming the server |
+
+The supply-chain guard has nothing to say about a remote server: there
+is no registry resolution step, so nothing to pin.
+
+## Authentication for remote servers
+
+Two modes, chosen by `auth` on the server entry.
+
+**Static token** (default). Read from the credential store under
+`mcp_token:<server>` and sent as `Authorization: Bearer`. It
+deliberately overrides any `Authorization` header left in `config.json`,
+so rotating the token in the keychain takes effect instead of being
+shadowed by a stale value.
+
+**OAuth** (`"auth": "oauth"`). The user clicks Connect, their own
+browser opens at their own provider, and a token arrives without them
+ever seeing it. PKCE and `state` verification are handled by the SDK's
+provider; this module supplies the pieces it has no opinion about:
+
+- `LoopbackCallback` binds a one-shot listener to `127.0.0.1` on an
+  ephemeral port. Loopback is the desktop OAuth pattern because there is
+  no server to host a redirect on, and a code delivered there cannot be
+  intercepted from off the machine. The registered `redirect_uri` is the
+  exact URI the browser is later sent back to.
+- The handler's access log is silenced: the default would print the
+  request line, and that line contains the authorisation code. The page
+  the user is left on carries no parameters either.
+- `KeychainTokenStorage` persists tokens and the client registration in
+  the OS credential store, keyed per server so two servers cannot share
+  a grant. Without it every restart would send the user back through the
+  browser. This matters more than for an API key: a refresh token is a
+  standing grant on the user's account, and MCP subprocesses can read
+  `config.json`.
+- A corrupt stored token or registration logs and reads as absent, so
+  the next call re-authorises rather than the daemon failing to start.
+- Under OAuth the provider owns the `Authorization` header and refreshes
+  it as it expires, so no static bearer is added alongside it.
+
+`mcp_oauth.forget(server)` clears both entries — the Disconnect action.
+
 ## The server's environment
 
 `_connect_stdio` always builds the environment explicitly. `env=None`
@@ -233,6 +293,8 @@ and can read that file.
 | `tests/test_secret_store.py` | round trip, honest unavailability, read-back before trusting a write, migration, `BaseException` backends, no recursion |
 | `tests/test_mcp_catalogue.py` | every shipped catalogue entry passes the launch guard |
 | `tests/test_mcp_review_fixes.py` | the separator and subcommand grammars, annotation edge cases, joiner-using scripts, colliding tool names, withheld tools being uncallable, credential-shaped variables, and `mcp_confirm` reaching the policy from a real config file |
+| `tests/test_mcp_remote_transport.py` | transport dispatch, URL validation per scheme and host, the token coming from the credential store rather than a config header, and a bad URL being refused before any connection opens |
+| `tests/test_mcp_oauth.py` | token and registration round trips, per-server isolation, corrupt entries reading as absent, the listener binding to loopback, the success page not echoing the code, and OAuth suppressing the static bearer header |
 
 ## Non-goals
 
@@ -241,7 +303,9 @@ and can read that file.
   only fixes *which* code runs.
 - **Proving a package is safe.** A pin makes the code reproducible, not
   trustworthy.
-- **Remote transports.** Only stdio is supported, so OAuth token
-  handling, `iss` validation and audience checks do not arise yet.
+- **RFC 9207 `iss` validation and audience checks.** Both belong to the
+  2026 spec revision; the pinned SDK's provider does not implement them,
+  so a malicious authorisation server response is not fully defended
+  against yet.
 - **Rate limiting the dashboard**, which remains gated by its session
   token alone.

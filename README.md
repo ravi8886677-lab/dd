@@ -487,6 +487,14 @@ See [full MCP setup guide](#mcp-integrations) below.
 
 ## MCP Integrations
 
+> **Remote servers:** as well as local servers Jarvis launches for you, it can connect to hosted ones. Point it at a URL instead of a command:
+>
+> ```json
+> { "mcps": { "acme-crm": { "transport": "http", "url": "https://mcp.acme.com/mcp", "auth": "oauth" } } }
+> ```
+>
+> With `"auth": "oauth"` your browser opens at the provider, you approve, and the token is stored in your OS keychain. You never see it and it never touches `config.json`. Without it, Jarvis sends a bearer token from the keychain instead. Plain `http://` is only accepted for `localhost`, since a token would otherwise cross the network in clear text.
+
 > **Session persistence:** each MCP server is launched once and its stdio session is kept open across tool calls. Stateful servers (e.g. browser automation, where the server owns a long-running Chrome process) work correctly. If you have a server you'd rather not keep resident, set `"idle_timeout_sec": 300` on its config entry and Jarvis will free it after that long without activity. If a server's tools legitimately run long (e.g. delegating a task to an external CLI agent), set `"timeout_sec": 600` to raise its 120-second default call timeout.
 
 <details>

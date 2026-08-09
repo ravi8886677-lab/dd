@@ -293,17 +293,27 @@ class MCPClient:
             str(k): str(v) for k, v in (server_cfg.get("headers") or {}).items()
         }
 
-        # The credential store is the authority for the token. A stale
-        # Authorization header left in config.json must not win over it,
-        # or rotating the token in the keychain would silently do nothing.
-        from ...utils import secret_store
+        from . import mcp_oauth
 
-        token = secret_store.get_secret(remote_token_key(server_name))
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        auth = None
+        if mcp_oauth.uses_oauth(server_cfg):
+            # The provider owns the Authorization header, refreshing the
+            # token as it expires. A second one set here would race it.
+            headers.pop("Authorization", None)
+            auth = mcp_oauth.build_provider(server_name, url)
+        else:
+            # The credential store is the authority for a static token. A
+            # stale Authorization header left in config.json must not win
+            # over it, or rotating the token in the keychain would
+            # silently do nothing.
+            from ...utils import secret_store
+
+            token = secret_store.get_secret(remote_token_key(server_name))
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
 
         timeout = server_cfg.get("timeout_sec")
-        kwargs: Dict[str, Any] = {"headers": headers or None}
+        kwargs: Dict[str, Any] = {"headers": headers or None, "auth": auth}
         if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
             kwargs["timeout"] = float(timeout)
 

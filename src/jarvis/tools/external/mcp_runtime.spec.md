@@ -66,7 +66,11 @@ resident for the daemon's lifetime.
 ## Configuration
 
 Each server entry in `config.mcps` is a dict consumed by
-`MCPClient._connect_stdio`. The runtime additionally honours:
+`MCPClient._connect`, which dispatches on `transport` (`stdio` spawns a
+subprocess, `http` opens a Streamable HTTP connection — see
+`mcp_security.spec.md`). The worker loop sees the same `(read, write)`
+pair either way, so everything below applies to both. The runtime
+additionally honours:
 
 | Key | Type | Default | Effect |
 |-----|------|---------|--------|
