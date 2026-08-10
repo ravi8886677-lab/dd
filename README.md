@@ -518,7 +518,7 @@ python -m jarvis.mcp_trust_cli list                    # what changed
 python -m jarvis.mcp_trust_cli accept <server> <tool>  # allow it again
 ```
 
-**3. Risky actions need YOLO mode.** Anything consequential (a destructive MCP tool, controlling your screen) only runs while YOLO is on. Turn it on from the tray menu, or the bar at the top of the dashboard, for 15 or 30 minutes and Jarvis just gets on with things; when it lapses, it starts asking again. If you ask for something while it is off, Jarvis tells you what it was about to do and asks you to switch it on. **It cannot switch it on itself** — that is the point, since it reads web pages and tool descriptions that other people wrote. Set `mcp_confirm` in `config.json` to choose what counts as consequential:
+**3. Risky actions need YOLO mode.** Anything consequential (a destructive MCP tool, controlling your screen) only runs while YOLO is on. Turn it on from the bar at the top of the dashboard — drag the slider to anything from 5 minutes to 8 hours — or pick a preset from the tray menu and Jarvis just gets on with things; when it lapses, it starts asking again. If you ask for something while it is off, Jarvis tells you what it was about to do and asks you to switch it on. **It cannot switch it on itself** — that is the point, since it reads web pages and tool descriptions that other people wrote. Set `mcp_confirm` in `config.json` to choose what counts as consequential:
 
 | Value | Needs YOLO |
 |-------|-------------|

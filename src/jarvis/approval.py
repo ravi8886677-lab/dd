@@ -35,9 +35,15 @@ from .debug import debug_log
 # Offered in the UI. The user picks one; these are not a policy.
 GRANT_CHOICES_MINUTES = (15, 30)
 
-# A grant is meant to lapse. Anything longer is a standing permission
-# wearing a timer, so it is clamped rather than honoured.
-MAX_GRANT_MINUTES = 60
+# A grant is meant to lapse, so there is still a ceiling — but it is set
+# at a working day rather than an hour, because the point of choosing
+# your own duration is that a long task does not get interrupted.
+MAX_GRANT_MINUTES = 480
+
+# The slider's range and step, in minutes. Exposed so the UI and the
+# validation agree on what is offerable.
+MIN_GRANT_MINUTES = 5
+GRANT_STEP_MINUTES = 5
 
 _lock = threading.Lock()
 _active_until: float = 0.0
@@ -104,15 +110,27 @@ def remaining_sec() -> float:
         return max(0.0, _active_until - time.time())
 
 
+def describe_duration(minutes: float) -> str:
+    """Render a duration the way someone would say it aloud.
+
+    "480 min" is not a thing anyone says, and the slider now reaches
+    eight hours.
+    """
+    total = int(round(minutes))
+    if total < 60:
+        return f"{total} min"
+    hours, rest = divmod(total, 60)
+    return f"{hours}h" if rest == 0 else f"{hours}h {rest}m"
+
+
 def describe_remaining() -> str:
     """A short human phrase for the time left, for UI labels."""
     seconds = remaining_sec()
     if seconds <= 0:
         return "off"
-    minutes = int(seconds // 60)
-    if minutes >= 1:
-        return f"{minutes} min left"
-    return f"{int(seconds)}s left"
+    if seconds < 60:
+        return f"{int(seconds)}s left"
+    return f"{describe_duration(seconds / 60)} left"
 
 
 def add_listener(callback: Callable[[bool, float], None]) -> None:

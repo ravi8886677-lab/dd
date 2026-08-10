@@ -1422,8 +1422,8 @@ class JarvisSystemTray:
         # could switch this on, that text could switch it on and then do
         # as it liked until the window lapsed.
         self.yolo_menu = self.menu.addMenu("🚀 YOLO Mode: off")
-        for minutes in approval.GRANT_CHOICES_MINUTES:
-            action = QAction(f"⏱️ Allow everything for {minutes} minutes")
+        for minutes in (15, 30, 60, 120, 240):
+            action = QAction(f"⏱️ Allow everything for {approval.describe_duration(minutes)}")
             action.triggered.connect(
                 lambda _checked=False, m=minutes: self.enable_yolo(m)
             )

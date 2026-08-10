@@ -139,3 +139,45 @@ def test_granting_needs_a_real_number_not_a_stray_truthy_value():
         approval.revoke()
         approval.grant(bad)  # must not raise
         assert approval.is_active() is False, f"{bad!r} was accepted as a duration"
+
+
+# ---------------------------------------------------------------------------
+# Choosing your own duration
+# ---------------------------------------------------------------------------
+
+def test_the_ceiling_allows_a_working_day():
+    """The slider goes well past half an hour, so the cap has to as well."""
+    assert approval.MAX_GRANT_MINUTES >= 480
+
+
+def test_a_long_grant_is_honoured_up_to_the_ceiling():
+    approval.grant(240)
+    assert approval.remaining_sec() == pytest.approx(240 * 60, rel=0.01)
+
+
+def test_beyond_the_ceiling_still_clamps():
+    approval.grant(approval.MAX_GRANT_MINUTES + 1000)
+    assert approval.remaining_sec() <= approval.MAX_GRANT_MINUTES * 60
+
+
+@pytest.mark.parametrize(
+    "minutes,expected",
+    [
+        (5, "5 min"),
+        (45, "45 min"),
+        (60, "1h"),
+        (90, "1h 30m"),
+        (480, "8h"),
+    ],
+)
+def test_a_duration_reads_as_a_person_would_say_it(minutes, expected):
+    """'480 min' is not a thing anyone says."""
+    assert approval.describe_duration(minutes) == expected
+
+
+def test_the_countdown_uses_hours_once_it_is_long_enough(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(approval.time, "time", lambda: clock["now"])
+
+    approval.grant(120)
+    assert "h" in approval.describe_remaining()

@@ -575,6 +575,9 @@ def yolo_state() -> Response:
         "remaining_sec": int(approval.remaining_sec()),
         "label": approval.describe_remaining(),
         "choices": list(approval.GRANT_CHOICES_MINUTES),
+        "min_minutes": approval.MIN_GRANT_MINUTES,
+        "max_minutes": approval.MAX_GRANT_MINUTES,
+        "step_minutes": approval.GRANT_STEP_MINUTES,
     })
 
 
@@ -1822,6 +1825,18 @@ _INDEX_HTML = """<!DOCTYPE html>
             color: var(--accent-secondary);
         }
         .yolo-btn.off:hover { border-color: var(--error); color: var(--error-light); }
+        .yolo-slider {
+            width: 190px;
+            accent-color: var(--accent-primary);
+            cursor: pointer;
+            background: transparent;
+        }
+        .yolo-duration {
+            min-width: 62px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--accent-secondary);
+        }
         /* ── Settings ─────────────────────────────────────────────── */
         .settings-grid {
             display: grid;
@@ -3494,7 +3509,13 @@ _INDEX_HTML = """<!DOCTYPE html>
                 <span class="yolo-dot" id="yolo-dot"></span>
                 <span id="yolo-label">YOLO mode: off</span>
             </div>
-            <div class="yolo-actions" id="yolo-actions"></div>
+            <div class="yolo-actions">
+                <input type="range" id="yolo-slider" class="yolo-slider"
+                       min="5" max="480" step="5" value="30">
+                <span class="yolo-duration" id="yolo-duration">30 min</span>
+                <button class="yolo-btn" id="yolo-start">🚀 Start</button>
+                <button class="yolo-btn off" id="yolo-stop" style="display:none">🔒 Turn off</button>
+            </div>
         </div>
         <div class="tabs">
             <button class="tab active" data-tab="chat">
@@ -3922,32 +3943,37 @@ _INDEX_HTML = """<!DOCTYPE html>
             }
         }
 
+        function describeDuration(minutes) {
+            // Mirrors approval.describe_duration: "480 min" is not a
+            // thing anyone says, and the slider reaches eight hours.
+            const total = Math.round(minutes);
+            if (total < 60) return total + ' min';
+            const hours = Math.floor(total / 60);
+            const rest = total % 60;
+            return rest === 0 ? hours + 'h' : hours + 'h ' + rest + 'm';
+        }
+
         function renderYolo(state) {
             const bar = document.querySelector('.yolo-bar');
             const label = document.getElementById('yolo-label');
-            const actions = document.getElementById('yolo-actions');
-            if (!bar || !label || !actions) return;
+            const slider = document.getElementById('yolo-slider');
+            const duration = document.getElementById('yolo-duration');
+            const start = document.getElementById('yolo-start');
+            const stop = document.getElementById('yolo-stop');
+            if (!bar || !label || !slider) return;
+
+            if (state.min_minutes) slider.min = state.min_minutes;
+            if (state.max_minutes) slider.max = state.max_minutes;
+            if (state.step_minutes) slider.step = state.step_minutes;
+            duration.textContent = describeDuration(Number(slider.value));
 
             bar.classList.toggle('on', !!state.active);
             label.textContent = state.active
                 ? 'YOLO mode: on — ' + state.label
                 : 'YOLO mode: off — risky actions will ask first';
 
-            actions.innerHTML = '';
-            if (state.active) {
-                const off = document.createElement('button');
-                off.className = 'yolo-btn off';
-                off.textContent = '🔒 Turn off';
-                off.onclick = () => setYolo({ off: true });
-                actions.appendChild(off);
-            }
-            (state.choices || [15, 30]).forEach((mins) => {
-                const btn = document.createElement('button');
-                btn.className = 'yolo-btn';
-                btn.textContent = (state.active ? '↻ ' : '🚀 ') + mins + ' min';
-                btn.onclick = () => setYolo({ minutes: mins });
-                actions.appendChild(btn);
-            });
+            start.textContent = state.active ? '↻ Restart' : '🚀 Start';
+            stop.style.display = state.active ? '' : 'none';
 
             if (yoloTimer) clearInterval(yoloTimer);
             if (state.active) {
@@ -3967,7 +3993,18 @@ _INDEX_HTML = """<!DOCTYPE html>
             } catch (e) {
                 console.error('could not change YOLO mode', e);
             }
-            refreshYolo();
+            document.getElementById('yolo-slider')?.addEventListener('input', (e) => {
+            document.getElementById('yolo-duration').textContent =
+                describeDuration(Number(e.target.value));
+        });
+        document.getElementById('yolo-start')?.addEventListener('click', () => {
+            setYolo({ minutes: Number(document.getElementById('yolo-slider').value) });
+        });
+        document.getElementById('yolo-stop')?.addEventListener('click', () => {
+            setYolo({ off: true });
+        });
+
+        refreshYolo();
         }
 
         refreshYolo();

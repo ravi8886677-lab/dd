@@ -117,8 +117,11 @@ annotation cannot change it: installing a server is not implicitly a
 request to stop being asked.
 
 A gated call runs when **YOLO mode** is on and does not when it is off.
-YOLO (`jarvis/approval.py`) is a window the user opens by hand for 15 or
-30 minutes, from the tray menu or the dashboard's `/api/yolo`. That
+YOLO (`jarvis/approval.py`) is a window the user opens by hand, for any
+duration between `MIN_GRANT_MINUTES` and `MAX_GRANT_MINUTES` (5 minutes
+to 8 hours), via the dashboard's slider or a tray preset. The ceiling
+stays because a grant is meant to lapse, but it is set at a working day
+rather than an hour so a long task is not interrupted. That
 endpoint grants only on POST: `fetchWebPage` issues GETs, so keeping the
 state-changing verb off GET means a tool pointed at the URL could at most
 read. It could not authenticate either — the session token is given to
