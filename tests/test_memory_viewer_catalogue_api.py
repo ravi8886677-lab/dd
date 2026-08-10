@@ -340,3 +340,44 @@ class TestTheRegistryIsBrowsedFromCache:
         resp = client.post("/api/mcp/registry/add", json={"name": "io.github.b/thing"})
 
         assert resp.status_code == 409
+
+    def test_the_catalogue_will_not_claim_a_key_the_registry_took(self, client):
+        """The collision check has to hold from both sides, or the same
+        overwrite just happens in the other direction."""
+        self.cache_file.write_text(json.dumps({
+            "fetched_at": 1.0,
+            "entries": [dict(self.entry, name="io.github.someone/github")],
+        }))
+        client.post("/api/mcp/registry/add", json={"name": "io.github.someone/github"})
+        before = json.loads(client.config_path.read_text())["mcps"]["github"]
+
+        resp = client.post("/api/mcp/catalogue/github")
+
+        assert resp.status_code == 409
+        after = json.loads(client.config_path.read_text())["mcps"]["github"]
+        assert after == before
+
+    def test_a_registry_install_is_revalidated_before_it_is_written(self, client):
+        """The cache is plain JSON in the config directory. Pin checking at
+        fetch time says nothing about what is on disk now."""
+        self.cache_file.write_text(json.dumps({
+            "fetched_at": 1.0,
+            "entries": [dict(self.entry, name="io.github.a/loose",
+                             install={"transport": "stdio", "command": "npx",
+                                      "args": ["-y", "loose@latest"]})],
+        }))
+
+        resp = client.post("/api/mcp/registry/add", json={"name": "io.github.a/loose"})
+
+        assert resp.status_code == 400
+        assert "mcps" not in json.loads(client.config_path.read_text())
+
+    def test_a_malformed_cached_install_does_not_500(self, client):
+        self.cache_file.write_text(json.dumps({
+            "fetched_at": 1.0,
+            "entries": [dict(self.entry, name="io.github.a/bad", install="npx")],
+        }))
+
+        resp = client.post("/api/mcp/registry/add", json={"name": "io.github.a/bad"})
+
+        assert resp.status_code == 400

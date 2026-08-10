@@ -26,6 +26,10 @@ _MODULE_NAME = "_jarvis_mcp_catalogue"
 # the half-built module the first has already published to sys.modules and
 # renders an empty grid.
 _load_lock = threading.Lock()
+# One cache for one module, holding the outcome including failure: a
+# headless install with no catalogue file would otherwise re-stat the path
+# on every connections request, and a broken one would re-exec it.
+_loaded = False
 _module: Any = None
 
 
@@ -40,22 +44,24 @@ def load_module() -> Any:
     degrade to "no curated entries", never stop the dashboard or the config
     migration from running.
     """
-    global _module
+    global _module, _loaded
 
-    if _module is not None:
+    if _loaded:
         return _module
 
     with _load_lock:
         # Another thread may have finished while this one waited.
-        if _module is not None:
+        if _loaded:
             return _module
 
         module_path = _catalogue_path()
         if not module_path.exists():
             debug_log(f"MCP catalogue not found at {module_path}", "mcp")
+            _loaded = True
             return None
         spec = importlib.util.spec_from_file_location(_MODULE_NAME, module_path)
         if spec is None or spec.loader is None:
+            _loaded = True
             return None
         module = importlib.util.module_from_spec(spec)
         # Registered before execution because ``dataclass`` resolves the
@@ -68,8 +74,10 @@ def load_module() -> Any:
         except Exception as e:  # noqa: BLE001
             debug_log(f"MCP catalogue failed to load: {e}", "mcp")
             sys.modules.pop(spec.name, None)
+            _loaded = True
             return None
         _module = module
+        _loaded = True
         return _module
 
 

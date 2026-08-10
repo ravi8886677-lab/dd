@@ -202,3 +202,39 @@ class TestAStaleTabDoesNotLockTheOwnerOut:
         owner.environ_base["HTTP_X_DASHBOARD_TOKEN"] = viewer._SESSION_TOKEN
 
         assert owner.get("/api/mcp").status_code == 200
+
+
+class TestTheBucketStaysBounded:
+    """A refused request must not re-arm the window it was refused by, or a
+    flood keeps itself locked out forever and the list grows without limit
+    under the lock every other request contends for."""
+
+    def test_sustained_guessing_does_not_grow_the_bucket(self, viewer):
+        c = viewer.app.test_client()
+        c.environ_base["HTTP_X_DASHBOARD_TOKEN"] = "wrong"
+        for _ in range(viewer.MAX_AUTH_FAILURES * 5):
+            c.get("/api/stats")
+
+        recorded = len(viewer._rate_events.get("auth", []))
+        assert recorded <= viewer.MAX_AUTH_FAILURES, (
+            f"bucket holds {recorded} events for a {viewer.MAX_AUTH_FAILURES} limit"
+        )
+
+    def test_the_lockout_lifts_even_while_traffic_continues(self, viewer, monkeypatch):
+        """The flood does not get to extend its own punishment indefinitely."""
+        now = [1000.0]
+        monkeypatch.setattr(viewer, "_now", lambda: now[0])
+
+        c = viewer.app.test_client()
+        c.environ_base["HTTP_X_DASHBOARD_TOKEN"] = "wrong"
+        for _ in range(viewer.MAX_AUTH_FAILURES + 5):
+            c.get("/api/stats")
+        assert c.get("/api/stats").status_code == 429
+
+        # Traffic keeps arriving right up to the moment the window passes.
+        for _ in range(10):
+            now[0] += viewer.RATE_LIMIT_WINDOW_SEC / 10
+            c.get("/api/stats")
+        now[0] += viewer.RATE_LIMIT_WINDOW_SEC + 1
+
+        assert c.get("/api/stats").status_code == 401

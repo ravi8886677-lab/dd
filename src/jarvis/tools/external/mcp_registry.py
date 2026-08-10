@@ -90,6 +90,18 @@ def _install_from_packages(packages: List[Dict[str, Any]]) -> Optional[Dict[str,
         version = str(package.get("version") or "").strip()
         if not identifier or not version:
             continue
+        # The launch below speaks stdio. A package declaring sse or
+        # streamable-http would start and then hang waiting for a handshake
+        # it never gets, and the connections list would say "no tools" with
+        # no clue why. An absent transport means stdio, the registry default.
+        transport = package.get("transport")
+        if isinstance(transport, dict):
+            declared = str(transport.get("type") or "stdio").lower()
+            if declared != "stdio":
+                debug_log(
+                    f"registry package {identifier} speaks {declared}, not stdio", "mcp",
+                )
+                continue
         command, build_args = launcher
         candidate = {
             "transport": "stdio",
@@ -178,11 +190,13 @@ def fetch(limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any]]:
         )
         response.raise_for_status()
         payload = response.json()
+        records = payload.get("servers") if isinstance(payload, dict) else None
+    except RegistryUnavailableError:
+        raise
     except Exception as e:  # noqa: BLE001
         debug_log(f"MCP registry fetch failed: {e}", "mcp")
         raise RegistryUnavailableError(str(e)) from e
 
-    records = payload.get("servers")
     if not isinstance(records, list):
         raise RegistryUnavailableError("registry response had no server list")
 

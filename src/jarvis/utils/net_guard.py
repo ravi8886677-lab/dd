@@ -41,12 +41,6 @@ _CREDENTIAL_HEADERS = frozenset({
 })
 
 
-def _origin(url: str) -> tuple:
-    """Scheme, host and port — what "same origin" means for credentials."""
-    parsed = urlparse(url)
-    return (parsed.scheme, (parsed.hostname or "").lower(), parsed.port)
-
-
 class UnsafeURLError(ValueError):
     """Base for every refusal to fetch. Callers that do not care why a URL was
     rejected can catch this alone."""
@@ -71,6 +65,34 @@ class UnresolvableHostError(UnsafeURLError):
 class TooManyRedirectsError(UnsafeURLError):
     """The redirect chain outran its cap. Every hop stayed public, so this is
     a loop or a deliberately long chain rather than an attempt to reach inward."""
+
+
+# Ports that need not be written out, so a URL that states one is the same
+# origin as one that does not.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple:
+    """Scheme, host and port — what "same origin" means for credentials.
+
+    The port is normalised against the scheme's default, because
+    ``https://a/x`` and ``https://a:443/x`` are one origin and treating them
+    as two would strip a caller's credentials on a redirect within its own
+    API.
+
+    Raises:
+        NonPublicAddressError: the URL states a port that is not a port. A
+            hostile ``Location`` can carry anything, and callers classify
+            refusals by exception type, so this must not escape as the bare
+            ValueError ``urlparse`` raises.
+    """
+    parsed = urlparse(url)
+    try:
+        port = parsed.port
+    except ValueError as e:
+        raise NonPublicAddressError(f"Unusable port in {url}") from e
+    scheme = parsed.scheme
+    return (scheme, (parsed.hostname or "").lower(), port or _DEFAULT_PORTS.get(scheme))
 
 
 def _ip_is_public(ip: ipaddress._BaseAddress) -> bool:
@@ -167,14 +189,15 @@ def guarded_get(
     """
     check_url(url)
 
-    # Copied because hops may strip credentials from it, and the caller's
-    # dict is theirs.
+    # Copied because hops may strip credentials from these, and the caller's
+    # objects are theirs.
     sent_headers = dict(headers or {})
+    sent_kwargs = dict(kwargs)
     current_url = url
     for _ in range(max_redirects + 1):
         response = requests.get(
             current_url, headers=sent_headers, timeout=timeout,
-            allow_redirects=False, stream=stream, **kwargs,
+            allow_redirects=False, stream=stream, **sent_kwargs,
         )
         if not (response.is_redirect or response.is_permanent_redirect):
             return response
@@ -197,6 +220,12 @@ def guarded_get(
             dropped = [h for h in sent_headers if h.lower() in _CREDENTIAL_HEADERS]
             for header in dropped:
                 del sent_headers[header]
+            # requests renders auth= and cookies= into the outgoing request
+            # exactly as it does a header, so stripping only headers would
+            # leave the same leak by another route.
+            for kwarg in ("auth", "cookies"):
+                if sent_kwargs.pop(kwarg, None) is not None:
+                    dropped.append(kwarg)
             if dropped:
                 debug_log(
                     f"net_guard: dropped {', '.join(dropped)} crossing to "

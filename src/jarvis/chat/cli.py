@@ -69,7 +69,7 @@ def _print_help() -> None:
 
 def _print_yolo_status() -> None:
     if approval.is_active():
-        print(f"  🔓 YOLO is on — {approval.describe_remaining()}.", flush=True)
+        print(f"  🔓 YOLO is on: {approval.describe_remaining()}.", flush=True)
     else:
         print("  🔒 YOLO is off. Jarvis will refuse actions that need it.", flush=True)
 
@@ -102,7 +102,7 @@ def _handle_yolo_command(argument: str) -> None:
     # the CLI parses the text and lets the one owner of the policy decide.
     if approval.grant(minutes):
         # describe_remaining() ends in "left", which does not follow "for".
-        print(f"  🔓 YOLO is on — {approval.describe_remaining()}.", flush=True)
+        print(f"  🔓 YOLO is on: {approval.describe_remaining()}.", flush=True)
     else:
         print(f"  ⚠️  {argument!r} is not a usable duration. "
               f"Try {YOLO_COMMAND} 30, or {YOLO_COMMAND} off.", flush=True)

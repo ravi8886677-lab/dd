@@ -187,3 +187,78 @@ class TestCredentialsDoNotFollowARedirectAcrossOrigins:
             guarded_get("https://8.8.8.8/start", headers=headers)
 
         assert headers == {"Authorization": "Bearer sekrit"}
+
+
+class TestOriginComparisonIsExact:
+    """Getting this wrong in either direction is a bug: too loose leaks the
+    credential, too strict breaks a caller's own API."""
+
+    def _redirect(self, location):
+        return Mock(is_redirect=True, is_permanent_redirect=False,
+                    headers={"Location": location}, close=Mock())
+
+    def _ok(self):
+        return Mock(is_redirect=False, is_permanent_redirect=False,
+                    headers={}, status_code=200, raise_for_status=Mock())
+
+    @pytest.mark.parametrize("start,target", [
+        ("https://1.1.1.1/a", "https://1.1.1.1:443/b"),
+        ("https://1.1.1.1:443/a", "https://1.1.1.1/b"),
+        ("http://1.1.1.1/a", "http://1.1.1.1:80/b"),
+    ])
+    def test_an_explicit_default_port_is_the_same_origin(self, start, target):
+        """`https://host/x` and `https://host:443/x` are one origin."""
+        responses = [self._redirect(target), self._ok()]
+        with patch("requests.get", side_effect=responses) as mock_get:
+            guarded_get(start, headers={"Authorization": "Bearer sekrit"})
+
+        sent = mock_get.call_args_list[1].kwargs["headers"]
+        assert sent.get("Authorization") == "Bearer sekrit"
+
+    def test_a_different_port_is_a_different_origin(self):
+        responses = [self._redirect("https://1.1.1.1:8443/b"), self._ok()]
+        with patch("requests.get", side_effect=responses) as mock_get:
+            guarded_get("https://1.1.1.1/a", headers={"Authorization": "Bearer sekrit"})
+
+        assert "Authorization" not in mock_get.call_args_list[1].kwargs["headers"]
+
+    def test_a_malformed_port_is_a_refusal_not_a_crash(self):
+        """A hostile Location can carry anything; it must land as a refusal
+        the callers already classify, not a bare ValueError."""
+        with patch("requests.get", return_value=self._redirect("https://1.1.1.1:99999/b")):
+            with pytest.raises(UnsafeURLError):
+                guarded_get("https://8.8.8.8/a")
+
+
+class TestCredentialKwargsDoNotCrossOrigins:
+    """Stripping only `headers` is half a fix: `requests` renders `auth=` and
+    `cookies=` into the outgoing request just the same."""
+
+    def _redirect(self, location):
+        return Mock(is_redirect=True, is_permanent_redirect=False,
+                    headers={"Location": location}, close=Mock())
+
+    def _ok(self):
+        return Mock(is_redirect=False, is_permanent_redirect=False,
+                    headers={}, status_code=200, raise_for_status=Mock())
+
+    def test_auth_is_dropped_across_origins(self):
+        responses = [self._redirect("https://1.1.1.1/next"), self._ok()]
+        with patch("requests.get", side_effect=responses) as mock_get:
+            guarded_get("https://8.8.8.8/start", auth=("user", "pass"))
+
+        assert mock_get.call_args_list[1].kwargs.get("auth") is None
+
+    def test_cookies_are_dropped_across_origins(self):
+        responses = [self._redirect("https://1.1.1.1/next"), self._ok()]
+        with patch("requests.get", side_effect=responses) as mock_get:
+            guarded_get("https://8.8.8.8/start", cookies={"session": "tok"})
+
+        assert not mock_get.call_args_list[1].kwargs.get("cookies")
+
+    def test_they_survive_a_same_origin_redirect(self):
+        responses = [self._redirect("https://8.8.8.8/next"), self._ok()]
+        with patch("requests.get", side_effect=responses) as mock_get:
+            guarded_get("https://8.8.8.8/start", auth=("user", "pass"))
+
+        assert mock_get.call_args_list[1].kwargs.get("auth") == ("user", "pass")

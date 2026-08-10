@@ -347,8 +347,8 @@ class TestYoloFromTheTerminal:
     def test_the_confirmation_reads_as_a_sentence(
         self, chat_cfg, recorded_queries, captured_diary, capsys,
     ):
-        """describe_remaining() already ends in 'left', so composing it with
-        'for' produced 'YOLO is on for 30 min left.'"""
+        """describe_remaining() already ends in 'left', so the prefix must
+        not also say 'for'."""
         _session(chat_cfg, "/yolo 30\n/exit\n")
 
         out = capsys.readouterr().out

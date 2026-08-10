@@ -170,14 +170,18 @@ def _guard_request():
     )
 
     if not _token_matches(supplied):
-        # Every failure is counted, including those against "/". That path is
-        # exempt from the refusal below so it can render its own guidance,
-        # but it still compares the token and answers 200 or 401, so leaving
-        # it uncounted would make it an oracle that answers guesses forever.
-        _record_event("auth")
-        debug_log("dashboard rejected a bad token", "memory_viewer")
+        # Checked before recording, so a request already being refused does
+        # not re-arm the window that refused it. Recording first would let a
+        # flood hold itself locked out for as long as it kept going, and grow
+        # the bucket without limit inside the lock every other request needs.
         if _rate_limited("auth", MAX_AUTH_FAILURES):
             return jsonify({"error": "too many failed attempts — try again shortly"}), 429
+        # Failures against "/" count too. That path is exempt from the refusal
+        # below so it can render its own guidance, but it still compares the
+        # token and answers 200 or 401, so leaving it uncounted would make it
+        # an oracle that answers guesses forever.
+        _record_event("auth")
+        debug_log("dashboard rejected a bad token", "memory_viewer")
         if request.path == "/":
             # The landing page accepts the token as a query parameter and
             # stores it, so the user only ever pastes the launch URL. A bare
@@ -590,7 +594,11 @@ def mcp_catalogue_add(name: str) -> Response:
 
     path = _config_path()
     cfg_json = _load_json(path)
-    cfg_json.setdefault("mcps", {})[name] = entry.to_config(extra_env or None)
+    mcps = cfg_json.setdefault("mcps", {})
+    collision = _key_collision(mcps, name)
+    if collision is not None:
+        return collision
+    mcps[name] = entry.to_config(extra_env or None)
     if not _save_json(path, cfg_json):
         return jsonify({"error": "could not write config.json"}), 500
     debug_log(f"added catalogue MCP server {name} from the dashboard", "memory_viewer")
@@ -628,6 +636,25 @@ def mcp_registry_refresh() -> Response:
     return jsonify({"ok": True, "count": len(entries)})
 
 
+def _key_collision(mcps: dict, key: str) -> Optional[Response]:
+    """A 409 when ``key`` is taken, or ``None`` when it is free.
+
+    Config keys are flat while registry names are namespaced, so
+    `io.github.evil/github`, `io.github.honest/github` and the curated
+    `github` all want the same key. Whichever add path runs second must
+    refuse: overwriting swaps a configured server, and any credential stored
+    beside it, for different code, while the other grid goes on reporting the
+    original as installed. The check belongs to every path that writes a key,
+    not just the one where the collision was first noticed.
+    """
+    if key not in mcps:
+        return None
+    debug_log(f"refused add: config key '{key}' already exists", "memory_viewer")
+    return jsonify({
+        "error": f"a server named '{key}' already exists; remove it first",
+    }), 409
+
+
 def _registry_config_name(registry_name: str) -> str:
     """A config key for a registry server.
 
@@ -643,6 +670,7 @@ def mcp_registry_add() -> Response:
     """Install a cached registry server using its pinned package version."""
     from jarvis.config import _load_json, _save_json
     from jarvis.tools.external.mcp_registry import find_cached
+    from jarvis.tools.external.mcp_supply_chain import validate_server_launch
 
     payload = request.get_json(silent=True) or {}
     name = str(payload.get("name", "")).strip()
@@ -655,22 +683,25 @@ def mcp_registry_add() -> Response:
         # refused at spawn time.
         return jsonify({"error": "that server has no pinned package to install"}), 400
 
+    install = entry.get("install")
+    # The cache is plain JSON in the config directory, so pin checking at
+    # fetch time says nothing about what is on disk now. The spawn-time guard
+    # is the only check that agrees with spawn time, so run it here too.
+    if not isinstance(install, dict):
+        return jsonify({"error": "that server has no usable launch config"}), 400
     path = _config_path()
     cfg_json = _load_json(path)
     mcps = cfg_json.setdefault("mcps", {})
     key = _registry_config_name(name)
-    if key in mcps:
-        # Registry names are namespaced and config keys are not, so
-        # `io.github.evil/github` and the curated `github` compete for one
-        # key. Overwriting would swap a trusted server — and any API key
-        # stored beside it — for an unrelated publisher's package, while the
-        # catalogue tile went on reporting the trusted one as installed.
-        # Two honest publishers collide the same way.
-        debug_log(f"refused registry add: '{key}' already exists", "memory_viewer")
-        return jsonify({
-            "error": f"a server named '{key}' already exists; remove it first",
-        }), 409
-    mcps[key] = dict(entry["install"])
+    collision = _key_collision(mcps, key)
+    if collision is not None:
+        return collision
+    try:
+        validate_server_launch(key, install)
+    except Exception as e:  # noqa: BLE001
+        debug_log(f"refused registry add {name}: {e}", "memory_viewer")
+        return jsonify({"error": "that server has no pinned package to install"}), 400
+    mcps[key] = dict(install)
     if not _save_json(path, cfg_json):
         return jsonify({"error": "could not write config.json"}), 500
     debug_log(f"added registry MCP server {name} from the dashboard", "memory_viewer")
@@ -2175,6 +2206,12 @@ _INDEX_HTML = """<!DOCTYPE html>
             flex-wrap: wrap;
         }
         .conn-tile-hint { font-size: 11px; color: var(--text-muted); }
+        .conn-error {
+            flex-basis: 100%;
+            margin-top: 6px;
+            font-size: 11px;
+            color: var(--error-light);
+        }
         .conn-tag {
             font-family: var(--font-mono);
             font-size: 11px;
@@ -4686,7 +4723,22 @@ _INDEX_HTML = """<!DOCTYPE html>
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({api_key: keyInput ? keyInput.value.trim() : ''})
                         });
-                        if (!res.ok) { btn.disabled = false; return; }
+                        if (!res.ok) {
+                            // 409 (name taken), 400 (nothing pinned to install) and 404 all
+                            // need saying: a button that silently re-enables invites another
+                            // click and the same silence.
+                            const body = await res.json().catch(() => ({}));
+                            const foot = btn.parentElement;
+                            let note = foot.querySelector('.conn-error');
+                            if (!note) {
+                                note = document.createElement('div');
+                                note.className = 'conn-error';
+                                foot.appendChild(note);
+                            }
+                            note.textContent = body.error || 'Could not add that server.';
+                            btn.disabled = false;
+                            return;
+                        }
                         loadCatalogue();
                         loadRegistry();
                         loadConnections();
@@ -4747,7 +4799,23 @@ _INDEX_HTML = """<!DOCTYPE html>
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({name: btn.dataset.name})
                     });
-                    if (!res.ok) { btn.disabled = false; return; }
+                    if (!res.ok) {
+                        // 409 (name taken), 400 (nothing pinned to install) and 404 all
+                        // need saying: a button that silently re-enables invites another
+                        // click and the same silence.
+                        const body = await res.json().catch(() => ({}));
+                        const foot = btn.parentElement;
+                        let note = foot.querySelector('.conn-error');
+                        if (!note) {
+                            note = document.createElement('div');
+                            note.className = 'conn-error';
+                            foot.appendChild(note);
+                        }
+                        note.textContent = body.error || 'Could not add that server.';
+                        btn.disabled = false;
+                        return;
+                    }
+                    loadCatalogue();
                     loadRegistry();
                     loadConnections();
                 });

@@ -140,15 +140,23 @@ def _clear_dashboard_rate_limits():
     that touches the dashboard. Several files deliberately provoke 401s and
     dozens of MCP writes, and without this those accumulate across files
     until an unrelated test trips a 429 that looks like a real failure.
+
+    Both import paths are reset because ``desktop_app.memory_viewer`` and
+    ``src.desktop_app.memory_viewer`` are separate module objects with
+    separate buckets, and different test files reach for different ones.
+    Only modules already imported are touched: importing either one here
+    would pull in the Qt tray package for every test in the suite.
     """
-    try:
-        from desktop_app import memory_viewer
-    except Exception:  # noqa: BLE001 - Flask or Qt absent; nothing to reset
-        yield
-        return
-    memory_viewer._reset_rate_limits()
+    def _reset():
+        for name in ("desktop_app.memory_viewer", "src.desktop_app.memory_viewer"):
+            module = sys.modules.get(name)
+            reset = getattr(module, "_reset_rate_limits", None)
+            if reset is not None:
+                reset()
+
+    _reset()
     yield
-    memory_viewer._reset_rate_limits()
+    _reset()
 
 
 @pytest.fixture
