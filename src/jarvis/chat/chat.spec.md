@@ -52,9 +52,31 @@ Per line read:
 | Empty / whitespace | Ignored, no LLM call |
 | `/help` | Prints the command list |
 | `/reset` | Forces a diary flush, then `start_new_conversation()` |
+| `/yolo` | Reports the YOLO window without changing it |
+| `/yolo <minutes>` | Opens the window; `approval.grant` applies the ceiling |
+| `/yolo off` | Closes the window (`stop` and `revoke` also accepted) |
 | `/exit`, `/quit` | Leaves the loop |
 | End of input, Ctrl+C | Leaves the loop |
 | Anything else | Goes to `run_reply_engine` |
+
+## YOLO from the terminal
+
+The tray and the dashboard can open the YOLO window. Without `/yolo` a
+terminal session could not, so `python -m jarvis.chat` was blocked from
+actions with no way to authorise them.
+
+Two properties hold:
+
+- **Bare `/yolo` never grants.** Querying the state must not change it, or a
+  typo opens the window it was meant to report on.
+- **The CLI parses, `approval` decides.** The command turns text into a
+  number and hands it to `approval.grant`, which owns the ceiling and the
+  rejection of NaN and non-positive values. The duration policy has one
+  owner, not one per front end.
+
+This is a human typing into their own terminal, which is the only thing
+allowed to grant. Nothing reachable from a tool or from model output may
+call `approval.grant`; `tests/test_yolo.py` enforces that separately.
 
 The reply engine prints the reply itself (`🤖 Jarvis` block), so the
 session never echoes it — doing so would double every answer. An engine

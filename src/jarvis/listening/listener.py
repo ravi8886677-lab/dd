@@ -21,6 +21,7 @@ from contextlib import contextmanager
 
 from .echo_detection import EchoDetector
 from .state_manager import StateManager, ListeningState
+from ..utils.backoff import retry_backoff_sleep
 from ..utils.audio_lock import portaudio_lock
 from .wake_detection import is_wake_word_detected, extract_query_after_wake, is_stop_command
 from .transcript_buffer import TranscriptBuffer
@@ -1837,7 +1838,7 @@ class VoiceListener(threading.Thread):
                         wait = 2 ** (attempt + 1)
                         debug_log(f"rate limited loading MLX Whisper (attempt {attempt + 1}): {e}", "voice")
                         print(f"  ⏳ Rate limited by HuggingFace, retrying in {wait}s ({attempt + 1}/{max_retries})...", flush=True)
-                        time.sleep(wait)
+                        retry_backoff_sleep(wait)
                         continue
                     debug_log(f"failed to initialise MLX Whisper: {e}", "voice")
                     print(f"  ❌ Failed to initialise MLX Whisper: {e}", flush=True)
@@ -1969,7 +1970,7 @@ class VoiceListener(threading.Thread):
                         for retry_num in range(1, _max_retries + 1):
                             wait = _backoff ** retry_num
                             print(f"  ⏳ Rate limited by HuggingFace, retrying in {wait}s ({retry_num}/{_max_retries})...", flush=True)
-                            time.sleep(wait)
+                            retry_backoff_sleep(wait)
                             try:
                                 self.model = WhisperModel(
                                     model_name, device=try_device, compute_type=try_compute,
