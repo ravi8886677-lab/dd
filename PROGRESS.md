@@ -1,49 +1,59 @@
 # Jarvis — session handoff
 
-Written to be pasted into a fresh Claude session. Repo:
-`https://github.com/ravi8886677-lab/dd` (branch `main`).
+Written to be pasted into a fresh agent session. Repo:
+`https://github.com/ravi8886677-lab/dd` (branch `main`, tip `8c3e1f9`).
 
 `ravi8886677-lab/jarvis` is an upstream fork and is **not** the working
 repo — do not push there.
+
+Read `CLAUDE.md` first. It carries hard project rules (offline-first,
+British English, TDD, spec files next to code, emoji CLI output) and
+they have teeth.
 
 ---
 
 ## What this is
 
-Jarvis is a privacy-first personal assistant: persistent memory across
-sessions, a tool-using reply engine, and (on real hardware) voice.
-Upstream is voice-only; this branch added a text front end, a web
-dashboard, and computer control.
+A privacy-first personal assistant: persistent memory across sessions, a
+tool-using reply engine, MCP integration, a web dashboard, computer
+control, and (on real hardware) voice.
 
-Read `CLAUDE.md` first — it carries hard project rules (offline-first,
-British English, TDD, spec files, emoji CLI output). Several of them
-have teeth, and at least one was breached below.
+The work since the last handoff has been almost entirely the MCP layer
+and the security around it, plus the approval model.
 
 ---
 
 ## State: what works, and how confident to be
 
-Verified means "observed working in this container".
+**Verified** means observed working in a container — a headless Linux
+box with no display, no microphone, and no working OS keyring.
 
 | Area | State |
 |------|-------|
-| Text chat (`python -m jarvis.chat`) | ✅ Verified end to end |
-| Dashboard chat + orb | ✅ Driven in a headless browser |
-| Memory (diary + knowledge graph) | ✅ Facts recalled across separate processes |
-| Dashboard auth (token + Host check) | ✅ Tested |
-| MCP Connections tab | ✅ Endpoints tested; never tried a real MCP server |
-| Settings tab (provider/key) | ✅ Live model list fetched from Gemini |
-| `openApp` | ✅ "play a Hindi song on YouTube" routed and opened |
-| `computerUse` gate | ✅ Proposal/approval flow verified |
-| `computerUse` actually clicking | ❌ **Never run** — no display here |
-| Voice / wake word / TTS | ❌ **Never run** — no microphone here |
-| Desktop tray app | ❌ Never run — no display |
-| Orb on a real screen | ❌ Only offscreen renders |
+| Text chat (`python -m jarvis.chat`) | ✅ Verified |
+| Dashboard chat + orb | ✅ Driven headlessly |
+| Memory (diary + knowledge graph) | ✅ Facts recalled across processes |
+| Dashboard auth (token + Host check) | ✅ Verified against a live server |
+| MCP over **stdio** | ✅ Real `@modelcontextprotocol/server-everything`, 13 tools, real call |
+| MCP over **Streamable HTTP** | ✅ Same server in `streamableHttp` mode, 13 tools, real call |
+| Supply-chain pinning | ✅ Refused unpinned, allowed pinned, on a real launch |
+| Tool fingerprinting (rug pull) | ✅ Real poisoned server withheld |
+| Local audit | ✅ Flags hidden chars, prompt markup, credential paths, shadowing |
+| YOLO gate | ✅ Real server not called with it off; called with it on |
+| Dashboard YOLO slider | ✅ Driven against a live server, 5 min → 8h |
+| Settings tab writing a fresh config | ✅ From no config file at all |
+| **Credential store on a real OS** | ❌ **Never** — this box's keyring is broken; only failure paths tested |
+| **OAuth against a real provider** | ❌ **Never** — unit-tested only |
+| **The re-pin migration on a real install** | ❌ Only a synthetic config |
+| Voice / wake word / TTS | ❌ Never run — no microphone |
+| `computerUse` actually clicking | ❌ Never run — no display |
+| Desktop tray app, orb on a screen | ❌ Never run — no display |
 
-**The honest summary:** roughly half the surface has never been observed
-working, and it is the half a client would judge first. Everything in
-that column failed for the same reason — this container has no display,
-no `/dev/snd`, no input devices.
+**The honest summary:** the MCP layer is now exercised against real
+servers over both transports. What has never touched real hardware is
+everything that needs a keychain, a browser redirect, a microphone or a
+screen — and two of those (credential migration, server re-pinning) run
+on *every existing user's first launch after upgrade*.
 
 ---
 
@@ -56,163 +66,168 @@ pip install -r requirements-chat.txt
 pip install flask psutil          # dashboard
 ```
 
-Config lives at `~/.config/jarvis/config.json` (mode 0600):
-
-```json
-{
-  "llm_provider": "openai_compatible",
-  "llm_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-  "llm_api_key": "YOUR_KEY",
-  "llm_chat_model": "gemini-3.1-flash-lite",
-  "fast_model": "gemini-3.1-flash-lite",
-  "embedding_provider": "openai_compatible",
-  "embedding_model": "gemini-embedding-001",
-  "computer_use_confirm": "risky"
-}
-```
-
 ```bash
-PYTHONPATH=src python -m jarvis.chat                      # text chat
-PYTHONPATH=src python -m jarvis.chat "what's the time?"   # one-shot, stdout is the answer alone
+PYTHONPATH=src python -m jarvis.chat                            # text chat
 PYTHONPATH=src:. python src/desktop_app/memory_viewer.py 5071   # dashboard
-PYTHONPATH=src python -m jarvis.daemon                    # voice (needs a mic)
+PYTHONPATH=src python -m jarvis.daemon                          # voice (needs a mic)
+PYTHONPATH=src python -m jarvis.mcp_trust_cli audit             # audit MCP tool definitions
 ```
+
+Config is at `~/.config/jarvis/config.json` (mode 0600), or set it
+entirely from the dashboard's **Settings** tab — verified working from
+no config file at all. API keys move into the OS credential store on
+first load and are blanked from the file.
 
 The dashboard prints a URL carrying a per-launch token. Plain
 `localhost:5071` returns 401 by design.
 
 ---
 
-## Outstanding work
+## The security model, in one page
 
-Ranked. The first two are user-visible; the third is the one that makes
-computer use actually useful.
+Full detail in `src/jarvis/tools/external/mcp_security.spec.md`. Four
+independent defences at four moments:
 
-### 1. Undefined CSS variables (small, visible)
+| Moment | Module | Question |
+|--------|--------|----------|
+| Before the subprocess starts | `mcp_supply_chain.py` | Is this code pinned, or whatever the registry serves today? |
+| At tool discovery | `mcp_trust.py` | Is this the same tool the user accepted? |
+| Before a tool runs | `mcp_gate.py` + `approval.py` | Is YOLO mode on? |
+| On demand | `mcp_audit.py` | Do any definitions carry the shape of a known attack? |
 
-`src/desktop_app/memory_viewer.py` uses `var(--border)`,
-`var(--success-light)` and `var(--error-light)` in the chat and
-connections styles. None are defined — the theme block declares
-`--border-color`, `--success`, `--error`. An unresolvable `var()`
-invalidates the whole declaration, so those borders render as none and
-**a failed MCP server is visually identical to a working one**.
+**The one rule that must not be broken:** nothing in the tool layer may
+call `approval.grant`. Jarvis reads web pages, MCP tool descriptions and
+tool results, any of which carry text other people wrote. If a tool
+could grant YOLO, that text could grant it. `tests/test_yolo.py` asserts
+no built-in tool and no part of the registry can reach it. Keep that
+test passing.
 
-### 2. Dead `.chat-shell` CSS (small)
-
-The chat code toggles `talking` on `.hud-core`, but every rule keyed on
-it targets `.chat-shell.talking` — a class no element carries since the
-three-column rebuild. The orb-shrink behaviour never fires and ~60 lines
-of CSS are unreachable.
-
-### 3. Vision for `computerUse` (the real one)
-
-`computerUse` can click and type, but **cannot see**. Nothing in
-`src/jarvis/llm/` sends images, so `action="screenshot"` only reports
-screen size. It works for "click at 500,400" and not for "click Play".
-
-To close it: capture with `mss`/`pyautogui`, send as an image part to
-the vision model (Gemini 3.x and Claude both return click coordinates
-directly — no OCR engine needed), feed the coordinate back. The
-`LLMBackend` ABC in `src/jarvis/llm/backend.py` is the seam; it has no
-image support yet, so that is the first change.
-
-Considered and rejected: **OSWorld** is a benchmark that drives VMs, not
-a library. **Agent-S** is a real GUI-agent framework, but pulls
-`paddleocr`+`paddlepaddle` (~1 GB) to answer a question our models
-already answer directly.
-
-### 4. CLAUDE.md compliance gaps
-
-- No `computer_use.spec.md` or `open_app.spec.md`, and the Spec File
-  Registry table in `CLAUDE.md` is not extended.
-- README's built-in tools list has `openApp` missing and no `computerUse`.
-- `computer_use_confirm` has no `FieldMeta` entry, so the only way to
-  change it is hand-editing config.json — for a safety-critical setting.
-
-### 5. Product gaps (not bugs)
-
-Streaming replies (~16s of dead air per turn is the most visible),
-image/file input, document RAG, multi-user (the dashboard holds one
-global conversation), scheduled tasks, tool-call visibility in the UI.
+Credentials live in the OS keychain (`jarvis.utils.secret_store`), never
+`config.json`. A key only leaves the file once the store has handed the
+same value back, and a write that cannot be verified is rolled back so
+no orphan copy is left behind.
 
 ---
 
-## Design decisions worth not undoing
+## Outstanding work
 
-**`openApp` takes no command string.** The model picks a name from a
-closed set or gives an http(s) URL. Jarvis reads attacker-controlled web
-pages; a `command` field turns "ignore previous instructions and run…"
-on any page into code execution. A test asserts the schema has no
-command-shaped field.
+Ranked. See `REQUIREMENTS.md` for the full backlog with acceptance
+criteria.
 
-**`computerUse` confirmation is enforced, not requested.** The code is
-printed to the user's screen via a channel the model never reads, so it
-cannot approve itself. Codes are single-use, expire, and are bound to the
-exact action — an approval for "click Play" cannot be spent on "click
-Delete". One approval then opens a 15-minute window for ordinary actions,
-because a gate met on every scroll is one people learn to clear without
-reading. Typing and key presses never get the window.
-
-**The dashboard fetches nothing external.** No CDN webfonts. It renders
-the user's diary; a font request would disclose their IP and the time
-they opened it, on a product whose headline claim is "100% local".
-Guarded by `tests/test_memory_viewer_offline.py`.
-
-**Web search reports failure honestly.** A dead search returns an
-envelope telling the model to say so and invent nothing. Previously it
-wrapped an empty payload in a success envelope and the model made up an
-excuse.
+1. **Run the smoke test on real hardware.** Nothing else on this list
+   matters as much. Six checks, about an hour, listed in
+   `REQUIREMENTS.md`. Two of them cover code that runs for every
+   existing user on upgrade.
+2. **Connections tab redesign.** The dashboard still makes you hand-type
+   `npx` and an exact version. The catalogue (`mcp_catalogue.py`) has
+   everything a directory UI needs — icon, description, category,
+   `needs_api_key` — and the dashboard never sees it.
+3. **MCP Registry.** Nine hardcoded catalogue entries. The official
+   registry at `registry.modelcontextprotocol.io` is a metadata API that
+   would replace them. Not started.
+4. **RFC 9207 `iss` validation and audience checks** for OAuth. Belongs
+   to the 2026 spec revision; the pinned SDK does not implement them.
+   Recorded in the spec's non-goals.
+5. **No SSRF guard on `fetchWebPage`.** It has no loopback or private-IP
+   blocking, unlike `webSearch`. Not currently exploitable for privilege
+   escalation (the dashboard token is not in the daemon's environment,
+   and `/api/yolo` grants only on POST) but it should be closed.
 
 ---
 
 ## Gotchas that cost time
 
-- **The dashboard HTML is inside a Python triple-quoted string.** A JS
-  `"\n"` is eaten by Python and breaks the literal at parse time. Write
-  `"\\n"`.
-- **Chromium blocks port 5060** (`ERR_UNSAFE_PORT`, it is the SIP port).
-  Browsers silently refuse to connect. Use 5071+.
-- **Gemini free tier is tight.** `gemini-3.6-flash` returned
-  `RESOURCE_EXHAUSTED` at ~20 requests; each conversational turn costs
-  3-4 chat-tier calls. `gemini-3.1-flash-lite` has headroom. Symptom of
-  running out: memory writes fail *silently*, because the summariser
-  swallows errors and returns None.
-- **~34 tests fail in a bare checkout** from missing optional deps
-  (`faster_whisper`, `sounddevice`, `psutil`, PyQt6 needing `libEGL`).
-  Diff failures against a baseline rather than reading the raw count.
+- **The dashboard HTML is inside a Python triple-quoted string** in
+  `memory_viewer.py` (~237 KB). A JS `"\n"` is eaten by Python and
+  breaks the file at parse time. Write `"\\n"`.
+- **`app.py` is the PyInstaller entry point** and runs as `__main__`
+  with no package context. A relative import there raises ImportError at
+  launch. `tests/test_desktop_app.py` guards this — it has already
+  caught one.
+- **`StdioServerParameters(env=None)` does not inherit the environment.**
+  The SDK substitutes a four-variable default (HOME, PATH, SHELL, TERM),
+  which starves npx of proxy settings and CA paths and hangs the launch
+  with nothing on stderr. Always build the env explicitly.
+- **The suite reaches this package as both `jarvis.*` and `src.jarvis.*`**,
+  which are separate `sys.modules` entries with separate module-level
+  state. A fixture clearing one does not clear the other. Reference the
+  module the code under test actually holds.
+- **Grep `^FAILED` alone misses collection errors.** Compare
+  `^(FAILED|ERROR)` or a whole broken test file looks like a pass.
+- **Chromium blocks port 5060** (`ERR_UNSAFE_PORT`, the SIP port). Use
+  5071+.
+- **Gemini free tier is tight.** `gemini-3.6-flash` returns
+  `RESOURCE_EXHAUSTED` at ~20 requests and each turn costs 3-4 calls;
+  `gemini-3.1-flash-lite` has headroom. The symptom of running out is
+  that memory writes fail *silently*, because the summariser swallows
+  errors and returns None.
 - **Qt offscreen rendering works** (`QT_QPA_PLATFORM=offscreen`), which
-  is how the orb was reviewed without a display.
+  is how the dashboard and Qt code were exercised without a display.
 
 ---
 
-## Security notes
+## Tests
 
-Two real holes were found and closed in review; both are worth not
-reintroducing.
+`45 failed, 2506 passed, 33 skipped` is the baseline in a bare headless
+checkout. **All 45 are missing optional dependencies, not defects.**
 
-- The dashboard token was exported to `os.environ`, so every subprocess
-  inherited it — including third-party MCP servers, which are spawned
-  with `{**os.environ}`. Any of them could POST `/api/mcp`, the endpoint
-  that writes a command Jarvis later executes. It is now passed to the
-  viewer child only.
-- `/api/settings/test` sent the saved API key as a Bearer token to
-  whatever URL it was given. It now refuses non-http(s) schemes and
-  private/loopback/link-local addresses.
+```bash
+pip install -r requirements-dev.txt
+QT_QPA_PLATFORM=offscreen PYTHONPATH=src:. python -m pytest tests/ -q
+```
 
-Still unaddressed: the dashboard has no rate limiting, and
-`/api/mcp` remains a code-execution path by design — it is gated only by
-the session token.
+Measured here: adding just `beautifulsoup4` and `pyperclip` takes it
+from 45 to 33. The remaining 33 need a display or an audio device —
+`pynput` installs but raises on *import* without an X server, and
+`pyautogui` needs X11 headers to build on Linux. On a laptop with a
+screen they all work.
 
-**Credentials:** two GitHub PATs and a Gemini key were pasted in the
-originating chat session and should be treated as compromised.
+Two tests are genuinely flaky and order-dependent, passing in isolation:
+`test_piper_tts::test_429_retried_then_succeeds` and
+`test_voice_listener::test_429_gives_up_after_max_retries`. They cost a
+false alarm during this session. Diff failures against a baseline rather
+than reading the raw count.
 
 ---
 
-## Suggested next session
+## Design decisions worth not undoing
 
-Start with: *"Read PROGRESS.md. Fix the undefined CSS variables and the
-dead `.chat-shell` rules, then add image support to `LLMBackend` so
-`computerUse` can see."*
+**YOLO is granted by a human, never by a tool.** Discussed above. It is
+the single property the whole approval model rests on.
 
-Follow `CLAUDE.md`: TDD, spec files next to code, British English,
-conventional commits, and update the Spec File Registry when adding one.
+**Per-action confirmation codes were removed deliberately.** They were
+drawn to a hidden Log Viewer window in packaged builds, so the
+`computerUse` gate was never openable in any shipped build. They were
+also tedious. The property they protected survives in YOLO; the friction
+does not.
+
+**MCP tool schemas are passed through untouched.** Jarvis used to inject
+a `confirmation_code` property and strip it before the call, which ate
+the argument of any server that legitimately had one.
+
+**`openApp` takes no command string.** The model picks from a closed set
+or gives an http(s) URL. Jarvis reads attacker-controlled web pages; a
+`command` field turns "ignore previous instructions and run…" into code
+execution. A test asserts the schema has no command-shaped field.
+
+**The dashboard fetches nothing external.** No CDN webfonts. It renders
+the user's diary; a font request would disclose their IP on a product
+whose headline claim is "100% local". Guarded by
+`tests/test_memory_viewer_offline.py`.
+
+**The Host check is not authentication.** It is the DNS-rebinding
+defence, and it stays on even when `JARVIS_DASHBOARD_NO_AUTH` is set.
+Without it any website the user visits can drive the dashboard from
+their own browser, including `POST /api/mcp`, which registers a command
+Jarvis later spawns.
+
+**Web search reports failure honestly.** A dead search returns an
+envelope telling the model to say so and invent nothing.
+
+---
+
+## Credentials
+
+Two GitHub PATs and a Gemini key were pasted into an originating chat
+session earlier in this project's history and should be treated as
+compromised.

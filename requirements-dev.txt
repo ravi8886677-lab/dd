@@ -1,0 +1,44 @@
+# Development and test dependencies.
+#
+# A bare checkout reports ~45 test failures that are missing imports,
+# not defects. Every new contributor and every agent rediscovers that
+# the hard way, so the list lives here.
+#
+# Measured on a headless Linux container:
+#   bare checkout ................................ 45 failed
+#   + pyperclip, beautifulsoup4 .................. 33 failed
+#   remaining 33 need a display or audio device (see below)
+#
+# On a normal laptop with a screen, all of these install and import
+# cleanly and the suite should be green apart from anything genuinely
+# broken.
+
+pytest==8.3.2
+pytest-repeat==0.9.3
+
+# Web search and page fetch tests
+beautifulsoup4>=4.12.0
+
+# Dictation tests. `pyperclip` is fine headless. `pynput` installs but
+# raises on *import* without an X server, so the dictation tests cannot
+# run in a headless container at all — that is an environment limit,
+# not a broken test.
+pyperclip>=1.8.2
+pynput>=1.7.6
+
+# Voice listener and audio serialisation tests. Need a working audio
+# stack; they fail on a container with no /dev/snd.
+sounddevice>=0.4.6
+faster-whisper>=1.0.0
+
+# computerUse tests. On Linux this needs X11 development headers to
+# build its dependencies (pyrect, python3-Xlib, pygetwindow); on
+# Windows and macOS it installs from wheels.
+pyautogui>=0.9.54
+
+# Desktop app tests. Qt needs a platform plugin when there is no
+# display:  QT_QPA_PLATFORM=offscreen
+PyQt6>=6.6.0
+
+# Icon generation tests
+pillow>=10.0.0
