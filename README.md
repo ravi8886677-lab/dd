@@ -487,6 +487,10 @@ See [full MCP setup guide](#mcp-integrations) below.
 
 ## MCP Integrations
 
+> **Adding servers:** the dashboard's **Connections** tab lists curated servers you can add in one click, with the exact version already pinned. Under it, **Browse the public registry** searches the official MCP registry (thousands of servers) once you press Refresh. The registry is cached on your machine, so browsing it works offline and pressing Refresh is the only time Jarvis contacts it. Nothing about you is sent either way.
+>
+> The registry proves the publisher owns the namespace: a GitHub account for `io.github.*`, a domain for the rest. That tells you **who published a server, not that it is safe** — nobody reviews the code, and being listed is not an endorsement. Servers without a pinned package version cannot be added, because Jarvis refuses to launch unpinned code. There is also an **Add a server manually** section for anything else.
+
 > **Remote servers:** as well as local servers Jarvis launches for you, it can connect to hosted ones. Point it at a URL instead of a command:
 >
 > ```json

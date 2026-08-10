@@ -588,6 +588,73 @@ def mcp_catalogue_add(name: str) -> Response:
     return jsonify({"ok": True})
 
 
+@app.route("/api/mcp/registry")
+def mcp_registry_list() -> Response:
+    """The registry directory, read from the local cache only.
+
+    Browsing never reaches the network. Running with no network is a
+    supported way to use Jarvis, and the dashboard renders the user's diary,
+    so it does not quietly make outbound requests while they read it.
+    """
+    from jarvis.config import _load_json
+    from jarvis.tools.external.mcp_registry import load_cached
+
+    entries, fetched_at = load_cached()
+    configured = set((_load_json(_config_path()).get("mcps") or {}).keys())
+    for entry in entries:
+        entry["configured"] = _registry_config_name(entry["name"]) in configured
+    return jsonify({"entries": entries, "fetched_at": fetched_at})
+
+
+@app.route("/api/mcp/registry/refresh", methods=["POST"])
+def mcp_registry_refresh() -> Response:
+    """Fetch the registry. Explicit, because it is the one outbound request
+    the dashboard makes and the user should be the one asking for it."""
+    from jarvis.tools.external.mcp_registry import RegistryUnavailableError, refresh
+
+    try:
+        entries = refresh()
+    except RegistryUnavailableError as e:
+        return jsonify({"error": f"could not reach the registry: {e}"}), 503
+    return jsonify({"ok": True, "count": len(entries)})
+
+
+def _registry_config_name(registry_name: str) -> str:
+    """A config key for a registry server.
+
+    Registry names are reverse-DNS paths (``io.github.acme/thing``). The
+    part after the slash is what a person would call the server, and the
+    tool namespace derives from it.
+    """
+    return registry_name.rsplit("/", 1)[-1] or registry_name
+
+
+@app.route("/api/mcp/registry/add", methods=["POST"])
+def mcp_registry_add() -> Response:
+    """Install a cached registry server using its pinned package version."""
+    from jarvis.config import _load_json, _save_json
+    from jarvis.tools.external.mcp_registry import find_cached
+
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name", "")).strip()
+    entry = find_cached(name) if name else None
+    if entry is None:
+        return jsonify({"error": f"no cached registry entry named {name}"}), 404
+    if not entry.get("install"):
+        # Either the package is unpinned or its ecosystem is one the
+        # supply-chain guard cannot pin, so any config written here would be
+        # refused at spawn time.
+        return jsonify({"error": "that server has no pinned package to install"}), 400
+
+    path = _config_path()
+    cfg_json = _load_json(path)
+    cfg_json.setdefault("mcps", {})[_registry_config_name(name)] = dict(entry["install"])
+    if not _save_json(path, cfg_json):
+        return jsonify({"error": "could not write config.json"}), 500
+    debug_log(f"added registry MCP server {name} from the dashboard", "memory_viewer")
+    return jsonify({"ok": True})
+
+
 @app.route("/api/mcp", methods=["POST"])
 def mcp_add() -> Response:
     """Add or replace one MCP server, persisting to config.json."""
@@ -2122,6 +2189,26 @@ _INDEX_HTML = """<!DOCTYPE html>
             background: var(--bg-card);
         }
         .conn-advanced summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+        .conn-registry-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .conn-registry-bar input {
+            flex: 1;
+            padding: 9px 12px;
+            font-size: 13px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            color: var(--text-primary);
+        }
+        .conn-registry-age {
+            font-size: 11px;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
         .conn-advanced-note {
             font-size: 12px;
             color: var(--text-muted);
@@ -3962,6 +4049,22 @@ _INDEX_HTML = """<!DOCTYPE html>
                     <div class="loading"><div class="spinner"></div></div>
                 </div>
 
+                <details id="conn-registry-panel" class="conn-advanced">
+                    <summary>🌍 Browse the public registry</summary>
+                    <p class="conn-advanced-note">Thousands of servers published
+                       by whoever wrote them. The registry proves the publisher
+                       controls the namespace (a GitHub account, or a domain).
+                       That says who published it, not that the code is safe or
+                       that anyone has reviewed it. Treat these as you would any
+                       software off the internet.</p>
+                    <div class="conn-registry-bar">
+                        <input id="conn-registry-search" placeholder="Filter by name or description" />
+                        <button class="btn-primary" id="conn-registry-refresh">Refresh</button>
+                        <span id="conn-registry-age" class="conn-registry-age"></span>
+                    </div>
+                    <div id="conn-registry" class="conn-catalogue"></div>
+                </details>
+
                 <details id="conn-advanced" class="conn-advanced">
                     <summary>⚙️ Add a server manually</summary>
                     <p class="conn-advanced-note">Pin an exact version. A package
@@ -4441,6 +4544,7 @@ _INDEX_HTML = """<!DOCTYPE html>
             } else if (currentTab === 'connections') {
                 connPane.style.display = '';
                 loadCatalogue();
+                loadRegistry();
                 loadConnections();
             } else if (currentTab === 'settings') {
                 settingsPane.style.display = '';
@@ -4570,6 +4674,96 @@ _INDEX_HTML = """<!DOCTYPE html>
                     + '<div class="empty-title">Could not load the directory</div></div>';
             }
         }
+
+        let registryEntries = [];
+
+        function renderRegistry() {
+            const grid = document.getElementById('conn-registry');
+            const needle = document.getElementById('conn-registry-search').value.trim().toLowerCase();
+            const shown = registryEntries.filter(e => !needle
+                || e.name.toLowerCase().includes(needle)
+                || (e.description || '').toLowerCase().includes(needle));
+            if (!shown.length) {
+                grid.innerHTML = '<div class="empty-state"><div class="empty-icon">🌍</div>'
+                    + '<div class="empty-title">Nothing cached yet</div>'
+                    + '<p>Refresh to fetch the registry.</p></div>';
+                return;
+            }
+            grid.innerHTML = shown.slice(0, 60).map(e => {
+                // The proof is about identity, never about safety, so it is
+                // worded as who was checked rather than as a tick.
+                const proof = e.namespace_proof === 'github'
+                    ? 'GitHub account checked' : 'Domain checked';
+                let action;
+                if (e.configured) {
+                    action = '<button class="conn-added" disabled>Added</button>';
+                } else if (e.install) {
+                    action = `<button class="conn-registry-add btn-primary"
+                                      data-name="${escapeHtml(e.name)}">Add</button>`;
+                } else {
+                    action = `<span class="conn-tag" title="${e.remote_url
+                        ? 'A hosted server: add it under Advanced with its URL.'
+                        : 'No pinned package, so it cannot be launched safely.'}">not installable</span>`;
+                }
+                return `<div class="conn-tile${e.configured ? ' is-added' : ''}">
+                    <div class="conn-tile-name">${escapeHtml(e.title || e.name)}</div>
+                    <div class="conn-tile-desc">${escapeHtml(e.description)}</div>
+                    <div class="conn-tile-foot">
+                        <span class="conn-tag" title="${escapeHtml(proof)}">${escapeHtml(e.namespace)}</span>
+                        ${action}
+                    </div>
+                    <div class="conn-tile-hint">${escapeHtml(proof)} · v${escapeHtml(e.version)}</div>
+                </div>`;
+            }).join('');
+
+            grid.querySelectorAll('.conn-registry-add').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    btn.disabled = true;
+                    const res = await fetch('/api/mcp/registry/add', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({name: btn.dataset.name})
+                    });
+                    if (!res.ok) { btn.disabled = false; return; }
+                    loadRegistry();
+                    loadConnections();
+                });
+            });
+        }
+
+        async function loadRegistry() {
+            try {
+                const data = await (await fetch('/api/mcp/registry')).json();
+                registryEntries = data.entries || [];
+                const age = document.getElementById('conn-registry-age');
+                // A cached directory that hides its age invites acting on
+                // stale data, so the fetch time is always on screen.
+                age.textContent = data.fetched_at
+                    ? 'Cached ' + new Date(data.fetched_at * 1000).toLocaleString()
+                    : 'Never fetched';
+                renderRegistry();
+            } catch (err) {
+                registryEntries = [];
+                renderRegistry();
+            }
+        }
+
+        document.getElementById('conn-registry-refresh').addEventListener('click', async () => {
+            const btn = document.getElementById('conn-registry-refresh');
+            const age = document.getElementById('conn-registry-age');
+            btn.disabled = true;
+            age.textContent = 'Fetching…';
+            const res = await fetch('/api/mcp/registry/refresh', {method: 'POST'});
+            btn.disabled = false;
+            if (!res.ok) {
+                age.textContent = 'Could not reach the registry';
+                return;
+            }
+            loadRegistry();
+        });
+
+        document.getElementById('conn-registry-search')
+            .addEventListener('input', renderRegistry);
 
         async function loadConnections() {
             const list = document.getElementById('conn-list');

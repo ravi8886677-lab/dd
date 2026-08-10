@@ -209,16 +209,26 @@ class TestTheConnectionsTabIsADirectory:
         for field in ('id="conn-name"', 'id="conn-command"', 'id="conn-args"'):
             assert field in block, f"{field} is not inside the advanced disclosure"
 
-    def test_the_markup_claims_no_vetting(self, html):
+    def test_no_badge_claims_the_server_was_vetted(self, html):
         """Jarvis vets nothing. A tick that means 'we checked this' would be a
         lie, and the security layer exists because a server that looks fine
-        may not be."""
+        may not be.
+
+        Explanatory prose is excluded: the copy has to be free to say a
+        server is *not* known to be safe, which is the opposite of a badge.
+        """
+        import re
+
         pane = html[html.find('id="connections-content"'):]
         # The pane runs to the end of the markup; the scripts follow it.
         pane = pane[:pane.find("<script")]
         assert pane, "could not isolate the connections pane"
-        for claim in ("verified", "Verified", "trusted", "safe", "official"):
-            assert claim not in pane, f"connections markup claims {claim!r}"
+        labels_and_attributes = re.sub(r"<p\b.*?</p>", "", pane, flags=re.S)
+
+        for claim in ("verified", "Verified", "trusted", "vetted", "approved"):
+            assert claim not in labels_and_attributes, (
+                f"connections markup labels something {claim!r}"
+            )
 
     def test_the_api_offers_no_field_that_implies_vetting(self, client):
         """A field is what a future UI would render a badge from, so the
@@ -228,3 +238,74 @@ class TestTheConnectionsTabIsADirectory:
         for entry in entries:
             for field in ("verified", "trusted", "safe", "official", "audited"):
                 assert field not in entry, f"catalogue entry exposes {field!r}"
+
+
+class TestTheRegistryIsBrowsedFromCache:
+    """Browsing must not reach the network: running offline is supported, and
+    the dashboard should not make outbound requests while someone reads their
+    own diary."""
+
+    @pytest.fixture(autouse=True)
+    def _cache(self, tmp_path, monkeypatch):
+        # The endpoints import `jarvis.*`, which is a different module object
+        # from `src.jarvis.*` with its own module-level state. Patch the one
+        # the code under test actually holds.
+        from jarvis.tools.external import mcp_registry
+        monkeypatch.setattr(mcp_registry, "_cache_path", lambda: tmp_path / "reg.json")
+        self.registry = mcp_registry
+        self.entry = {
+            "name": "io.github.acme/thing", "namespace": "io.github.acme",
+            "namespace_proof": "github", "title": "Thing",
+            "description": "Does a thing", "version": "1.2.3",
+            "install": {"transport": "stdio", "command": "npx",
+                        "args": ["-y", "thing-mcp@1.2.3"]},
+            "remote_url": None,
+        }
+        (tmp_path / "reg.json").write_text(
+            json.dumps({"fetched_at": 1234.0, "entries": [self.entry]})
+        )
+
+    def test_listing_serves_the_cache_without_fetching(self, client):
+        from unittest.mock import patch
+
+        with patch.object(self.registry, "guarded_get",
+                          side_effect=AssertionError("network touched")):
+            resp = client.get("/api/mcp/registry")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["entries"][0]["name"] == "io.github.acme/thing"
+
+    def test_the_listing_says_how_stale_it_is(self, client):
+        """A cached directory that hides its age invites acting on old data."""
+        assert client.get("/api/mcp/registry").get_json()["fetched_at"] == 1234.0
+
+    def test_adding_writes_the_pinned_package(self, client):
+        resp = client.post("/api/mcp/registry/add", json={"name": "io.github.acme/thing"})
+
+        assert resp.status_code == 200
+        written = json.loads(client.config_path.read_text())["mcps"]["thing"]
+        assert written["args"] == ["-y", "thing-mcp@1.2.3"]
+
+    def test_a_server_with_no_pinned_package_cannot_be_added(self, client, tmp_path):
+        (tmp_path / "reg.json").write_text(json.dumps({
+            "fetched_at": 1.0,
+            "entries": [dict(self.entry, name="io.github.acme/remote", install=None)],
+        }))
+
+        resp = client.post("/api/mcp/registry/add", json={"name": "io.github.acme/remote"})
+
+        assert resp.status_code == 400
+        assert "mcps" not in json.loads(client.config_path.read_text())
+
+    def test_an_uncached_name_is_refused(self, client):
+        resp = client.post("/api/mcp/registry/add", json={"name": "io.github.acme/nope"})
+
+        assert resp.status_code == 404
+
+    def test_refresh_reports_a_dead_registry_rather_than_pretending(self, client):
+        from unittest.mock import patch
+
+        with patch.object(self.registry, "guarded_get", side_effect=OSError("offline")):
+            resp = client.post("/api/mcp/registry/refresh")
+
+        assert resp.status_code == 503
