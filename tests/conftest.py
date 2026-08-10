@@ -132,6 +132,25 @@ def _isolate_user_config_path(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("JARVIS_CONFIG_PATH", str(sandbox / "config.json"))
 
 
+@pytest.fixture(autouse=True)
+def _clear_dashboard_rate_limits():
+    """Empty the dashboard's rate-limit buckets between tests.
+
+    ``memory_viewer._rate_events`` is module-level state shared by every test
+    that touches the dashboard. Several files deliberately provoke 401s and
+    dozens of MCP writes, and without this those accumulate across files
+    until an unrelated test trips a 429 that looks like a real failure.
+    """
+    try:
+        from desktop_app import memory_viewer
+    except Exception:  # noqa: BLE001 - Flask or Qt absent; nothing to reset
+        yield
+        return
+    memory_viewer._reset_rate_limits()
+    yield
+    memory_viewer._reset_rate_limits()
+
+
 @pytest.fixture
 def mock_config():
     """Provide a mock configuration for unit tests."""

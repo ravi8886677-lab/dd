@@ -137,3 +137,53 @@ class TestRedirectsAreRevalidated:
         with patch("requests.get", side_effect=responses) as mock_get:
             guarded_get("https://8.8.8.8/start")
             assert mock_get.call_args_list[1][0][0] == "https://8.8.8.8/next"
+
+
+class TestCredentialsDoNotFollowARedirectAcrossOrigins:
+    """`requests` strips Authorization in `rebuild_auth` when a redirect
+    changes host. The hand-rolled walk has to do the same, or the first
+    caller that fetches an authenticated untrusted URL hands its token to
+    whatever public host the origin points at."""
+
+    def _redirect(self, location):
+        return Mock(is_redirect=True, is_permanent_redirect=False,
+                    headers={"Location": location}, close=Mock())
+
+    def _ok(self):
+        return Mock(is_redirect=False, is_permanent_redirect=False,
+                    headers={}, status_code=200, raise_for_status=Mock())
+
+    def test_authorization_is_dropped_when_the_host_changes(self):
+        responses = [self._redirect("https://1.1.1.1/next"), self._ok()]
+        headers = {"Authorization": "Bearer sekrit", "Accept": "text/html"}
+        with patch("requests.get", side_effect=responses) as mock_get:
+            guarded_get("https://8.8.8.8/start", headers=headers)
+
+        sent = mock_get.call_args_list[1].kwargs["headers"]
+        assert "Authorization" not in sent
+        assert sent["Accept"] == "text/html", "unrelated headers must survive"
+
+    @pytest.mark.parametrize("header", ["Cookie", "Proxy-Authorization"])
+    def test_other_credential_headers_are_dropped_too(self, header):
+        responses = [self._redirect("https://1.1.1.1/next"), self._ok()]
+        with patch("requests.get", side_effect=responses) as mock_get:
+            guarded_get("https://8.8.8.8/s", headers={header: "secret"})
+
+        assert header not in mock_get.call_args_list[1].kwargs["headers"]
+
+    def test_credentials_survive_a_same_origin_redirect(self):
+        responses = [self._redirect("https://8.8.8.8/next"), self._ok()]
+        with patch("requests.get", side_effect=responses) as mock_get:
+            guarded_get("https://8.8.8.8/start",
+                        headers={"Authorization": "Bearer sekrit"})
+
+        sent = mock_get.call_args_list[1].kwargs["headers"]
+        assert sent["Authorization"] == "Bearer sekrit"
+
+    def test_the_callers_dict_is_not_mutated(self):
+        responses = [self._redirect("https://1.1.1.1/next"), self._ok()]
+        headers = {"Authorization": "Bearer sekrit"}
+        with patch("requests.get", side_effect=responses):
+            guarded_get("https://8.8.8.8/start", headers=headers)
+
+        assert headers == {"Authorization": "Bearer sekrit"}

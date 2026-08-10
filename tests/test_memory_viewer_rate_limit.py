@@ -1,8 +1,8 @@
 """Tests for the dashboard's rate limits.
 
 `/api/mcp` writes a command Jarvis later spawns, so it is a code-execution
-path. Until now the only thing in front of it was the session token, and
-nothing slowed down an attempt to guess that token.
+path. The session token gates it; these limits bound how fast that token can
+be guessed and how fast the endpoint can be driven.
 """
 
 from __future__ import annotations
@@ -109,24 +109,35 @@ class TestCodeExecutionPathsAreLimited:
 
 class TestTheLimitIsTimeBased:
 
-    def test_a_lockout_does_not_strand_the_real_user(self, viewer, monkeypatch):
-        """The lockout is dashboard-wide, so if it never lifted, anyone able
-        to send bad tokens could lock the user out of their own diary."""
-        now = [1000.0]
-        monkeypatch.setattr(viewer, "_now", lambda: now[0])
-
+    def test_a_lockout_never_reaches_the_real_user(self, viewer):
+        """The bucket is dashboard-wide, so if a valid token were charged
+        against it, anyone able to send bad tokens could lock the owner out
+        of their own diary. A correct token skips the bucket entirely."""
         guesser = viewer.app.test_client()
         guesser.environ_base["HTTP_X_DASHBOARD_TOKEN"] = "wrong"
-        for _ in range(viewer.MAX_AUTH_FAILURES + 5):
+        for _ in range(viewer.MAX_AUTH_FAILURES + 20):
             guesser.get("/api/stats")
+
+        assert guesser.get("/api/stats").status_code == 429
 
         owner = viewer.app.test_client()
         owner.environ_base["HTTP_X_DASHBOARD_TOKEN"] = viewer._SESSION_TOKEN
-        assert owner.get("/api/mcp").status_code == 429
+        assert owner.get("/api/mcp").status_code == 200
+
+    def test_the_refusal_ages_out_for_the_guesser_too(self, viewer, monkeypatch):
+        """Otherwise a burst of typos would bar that client for good."""
+        now = [1000.0]
+        monkeypatch.setattr(viewer, "_now", lambda: now[0])
+
+        c = viewer.app.test_client()
+        c.environ_base["HTTP_X_DASHBOARD_TOKEN"] = "wrong"
+        for _ in range(viewer.MAX_AUTH_FAILURES + 5):
+            c.get("/api/stats")
+        assert c.get("/api/stats").status_code == 429
 
         now[0] += viewer.RATE_LIMIT_WINDOW_SEC + 1
 
-        assert owner.get("/api/mcp").status_code == 200
+        assert c.get("/api/stats").status_code == 401
 
     def test_the_window_reopens_once_it_has_passed(self, client, viewer, monkeypatch):
         now = [1000.0]
@@ -147,3 +158,47 @@ class TestTheLimitIsTimeBased:
         assert client.post("/api/mcp", json={
             "name": "later", "command": "npx", "args": ["-y", "pkg@1.0.0"],
         }).status_code == 200
+
+
+class TestTheLandingPageIsNotAFreeOracle:
+    """`/` is exempt from the token gate so the launch URL can hand the token
+    over, but it compares the token itself and answers 200 or 401. Left
+    uncounted, it answers an unlimited number of guesses."""
+
+    def test_guessing_against_the_landing_page_is_rate_limited(self, viewer):
+        c = viewer.app.test_client()
+
+        statuses = [c.get(f"/?token=guess-{i}").status_code
+                    for i in range(viewer.MAX_AUTH_FAILURES + 5)]
+
+        assert 401 in statuses, "expected the first guesses to be plain refusals"
+        assert statuses[-1] == 429, "the landing page answered guesses forever"
+
+    def test_the_launch_url_still_works(self, viewer):
+        c = viewer.app.test_client()
+
+        assert c.get(f"/?token={viewer._SESSION_TOKEN}").status_code == 200
+
+
+class TestAStaleTabDoesNotLockTheOwnerOut:
+    """The dashboard polls itself twice every five seconds. After a restart
+    those polls carry a dead cookie, so a forgotten tab generates failures
+    faster than a person ever would."""
+
+    def test_the_budget_exceeds_the_dashboards_own_poll_rate(self, viewer):
+        # Two setInterval(…, 5000) loops on the page: 24 requests a minute.
+        polls_per_window = 2 * (60 / 5) * (viewer.RATE_LIMIT_WINDOW_SEC / 60)
+        assert viewer.MAX_AUTH_FAILURES > polls_per_window, (
+            "one stale tab can saturate the auth budget on its own"
+        )
+
+    def test_a_valid_token_is_served_while_a_stale_tab_hammers(self, viewer):
+        stale = viewer.app.test_client()
+        stale.environ_base["HTTP_X_DASHBOARD_TOKEN"] = "expired-cookie"
+        for _ in range(viewer.MAX_AUTH_FAILURES + 10):
+            stale.get("/api/stats")
+
+        owner = viewer.app.test_client()
+        owner.environ_base["HTTP_X_DASHBOARD_TOKEN"] = viewer._SESSION_TOKEN
+
+        assert owner.get("/api/mcp").status_code == 200

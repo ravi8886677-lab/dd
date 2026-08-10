@@ -14,9 +14,6 @@ Two failures are possible and they need opposite advice:
 - A **resolution failure** (typo, DNS outage). Retrying is legitimate, and
   telling the model to give up loses a page the user actually wanted.
 
-Before the SSRF guard both cases came back as `Failed to fetch page`, and
-the private-address case was not a refusal at all: the page was fetched.
-
 This file is behavioural, not judge-driven: it exercises the real
 `FetchWebPageTool.run` against a mocked network and asserts the observable
 envelope.

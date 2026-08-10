@@ -61,9 +61,9 @@ Per line read:
 
 ## YOLO from the terminal
 
-The tray and the dashboard can open the YOLO window. Without `/yolo` a
-terminal session could not, so `python -m jarvis.chat` was blocked from
-actions with no way to authorise them.
+The tray, the dashboard and `/yolo` are the three ways a human can open the
+YOLO window. A terminal session needs its own, or `python -m jarvis.chat` is
+blocked from actions with no way to authorise them.
 
 Two properties hold:
 

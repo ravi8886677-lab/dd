@@ -54,8 +54,26 @@ other defence in `mcp_security.spec.md`.
 package, or one from an ecosystem the supply-chain guard cannot pin, gets no
 Add button. Offering one would write a config that
 `validate_server_launch` refuses at spawn time, which is the exact failure
-the connections directory exists to prevent. `tests/test_mcp_registry.py`
-runs the real guard over the generated configs.
+the connections directory exists to prevent.
+
+**The guard itself decides what counts as pinned**, by being run over the
+candidate config. A registry `version` is free text and holds `latest`,
+`^1.2.3`, `1.0` and `v1.2.3` as readily as `1.2.3`, so checking it is
+non-empty proves nothing. The only check that agrees with spawn time is the
+spawn-time check.
+
+**Adding never overwrites.** Registry names are namespaced and config keys
+are not, so `io.github.evil/github` and the curated `github` compete for one
+key, as do two honest publishers of `.../thing`. A collision returns 409:
+overwriting would swap a trusted server, and any API key stored beside it,
+for another publisher's package, while the catalogue tile went on reporting
+the trusted one as installed.
+
+**Malformed records are survivable.** A record whose `_meta`, `remotes` or
+`packages` is the wrong shape still lists if its name is readable; one with
+no usable name is dropped. Either way nothing escapes as an exception, so a
+single bad row cannot empty the directory or turn the documented 503 into a
+500.
 
 The registry returns every published version of every server; only the
 current one belongs in a directory.

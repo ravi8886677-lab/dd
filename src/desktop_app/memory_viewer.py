@@ -57,9 +57,12 @@ _ALLOWED_HOST_NAMES = {"localhost", "127.0.0.1", "[::1]", "::1"}
 # blunt automation: guessing the session token, and hammering the endpoints
 # that write a command Jarvis later spawns.
 RATE_LIMIT_WINDOW_SEC = 60.0
-# Wrong tokens tolerated per window before refusing to answer at all. A
-# person who reopens a stale tab burns one or two; a script burns them all.
-MAX_AUTH_FAILURES = 20
+# Wrong tokens tolerated per window before refusing to answer at all. Must
+# stay clear of the page's own traffic: it polls twice every five seconds, so
+# a tab left open across a restart sends 24 failures a minute by itself. The
+# token is 32 random bytes, so this ceiling is belt-and-braces rather than the
+# thing making a guess hopeless.
+MAX_AUTH_FAILURES = 60
 # Writes to the MCP config endpoints per window. Adding every entry in the
 # catalogue by hand is well inside this.
 MAX_WRITES_PER_WINDOW = 30
@@ -160,26 +163,32 @@ def _guard_request():
     if not _host_is_allowed(request.headers.get("Host", "")):
         return jsonify({"error": "unrecognised Host header"}), 403
 
-    # The landing page accepts the token as a query parameter and stores
-    # it, so the user only ever pastes the launch URL.
-    if request.path == "/":
-        return None
-
-    # Checked before the token, so a lockout cannot be dodged by rotating the
-    # guess. One bucket for the whole dashboard: it serves a single user, and
-    # a per-client bucket is a per-guess bucket to anyone choosing the client.
-    if _rate_limited("auth", MAX_AUTH_FAILURES):
-        return jsonify({"error": "too many failed attempts — try again shortly"}), 429
-
     supplied = (
         request.headers.get("X-Dashboard-Token")
         or request.cookies.get(_TOKEN_COOKIE)
         or request.args.get("token", "")
     )
+
     if not _token_matches(supplied):
+        # Every failure is counted, including those against "/". That path is
+        # exempt from the refusal below so it can render its own guidance,
+        # but it still compares the token and answers 200 or 401, so leaving
+        # it uncounted would make it an oracle that answers guesses forever.
         _record_event("auth")
         debug_log("dashboard rejected a bad token", "memory_viewer")
+        if _rate_limited("auth", MAX_AUTH_FAILURES):
+            return jsonify({"error": "too many failed attempts — try again shortly"}), 429
+        if request.path == "/":
+            # The landing page accepts the token as a query parameter and
+            # stores it, so the user only ever pastes the launch URL. A bare
+            # 401 body here would leave them with no way forward.
+            return None
         return jsonify({"error": "unauthorised — reopen the dashboard from its launch URL"}), 401
+
+    # A request carrying the real token is never charged for someone else's
+    # failures. The bucket is dashboard-wide, so charging it would let a
+    # forgotten tab with a dead cookie — the page polls itself twice every
+    # five seconds — lock the owner out of their own diary.
 
     # /api/mcp and /api/mcp/catalogue/<name> both register a command Jarvis
     # will spawn, so they share one budget — limiting them separately would
@@ -648,7 +657,20 @@ def mcp_registry_add() -> Response:
 
     path = _config_path()
     cfg_json = _load_json(path)
-    cfg_json.setdefault("mcps", {})[_registry_config_name(name)] = dict(entry["install"])
+    mcps = cfg_json.setdefault("mcps", {})
+    key = _registry_config_name(name)
+    if key in mcps:
+        # Registry names are namespaced and config keys are not, so
+        # `io.github.evil/github` and the curated `github` compete for one
+        # key. Overwriting would swap a trusted server — and any API key
+        # stored beside it — for an unrelated publisher's package, while the
+        # catalogue tile went on reporting the trusted one as installed.
+        # Two honest publishers collide the same way.
+        debug_log(f"refused registry add: '{key}' already exists", "memory_viewer")
+        return jsonify({
+            "error": f"a server named '{key}' already exists; remove it first",
+        }), 409
+    mcps[key] = dict(entry["install"])
     if not _save_json(path, cfg_json):
         return jsonify({"error": "could not write config.json"}), 500
     debug_log(f"added registry MCP server {name} from the dashboard", "memory_viewer")
@@ -4666,6 +4688,7 @@ _INDEX_HTML = """<!DOCTYPE html>
                         });
                         if (!res.ok) { btn.disabled = false; return; }
                         loadCatalogue();
+                        loadRegistry();
                         loadConnections();
                     });
                 });
@@ -4800,6 +4823,7 @@ _INDEX_HTML = """<!DOCTYPE html>
                         await fetch('/api/mcp/' + encodeURIComponent(btn.dataset.name),
                                     {method: 'DELETE'});
                         loadCatalogue();
+                        loadRegistry();
                         loadConnections();
                     });
                 });
@@ -4825,6 +4849,7 @@ _INDEX_HTML = """<!DOCTYPE html>
                 document.getElementById('conn-command').value = '';
                 document.getElementById('conn-args').value = '';
                 loadCatalogue();
+                loadRegistry();
                 loadConnections();
             }
         });

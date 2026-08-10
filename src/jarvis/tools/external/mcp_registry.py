@@ -72,8 +72,17 @@ def _install_from_packages(packages: List[Dict[str, Any]]) -> Optional[Dict[str,
     Returning ``None`` is the honest answer for an unpinned or unfamiliar
     package: the supply-chain guard would refuse the launch, so offering an
     Add button would only produce a config that fails to start.
+
+    The guard itself decides what counts as pinned. A registry `version` is
+    a free-text field and holds `latest`, `^1.2.3` and `1.0` as readily as
+    `1.2.3`, so checking it is non-empty proves nothing; the only check that
+    matches what happens at spawn time is running that check.
     """
+    from .mcp_supply_chain import validate_server_launch
+
     for package in packages or []:
+        if not isinstance(package, dict):
+            continue
         launcher = _LAUNCHERS.get(str(package.get("registryType", "")).lower())
         if launcher is None:
             continue
@@ -82,22 +91,38 @@ def _install_from_packages(packages: List[Dict[str, Any]]) -> Optional[Dict[str,
         if not identifier or not version:
             continue
         command, build_args = launcher
-        return {
+        candidate = {
             "transport": "stdio",
             "command": command,
             "args": build_args(identifier, version),
         }
+        try:
+            validate_server_launch(identifier, candidate)
+        except Exception as e:  # noqa: BLE001
+            debug_log(f"registry package {identifier}@{version} is not pinned: {e}", "mcp")
+            continue
+        return candidate
     return None
 
 
 def _normalise(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """One registry record as a directory entry, or ``None`` to skip it."""
-    server = record.get("server") or {}
+    """One registry record as a directory entry, or ``None`` to skip it.
+
+    A public API's response shape is not ours to trust, so anything that does
+    not fit is dropped rather than being allowed to abort the whole page.
+    """
+    if not isinstance(record, dict):
+        return None
+    server = record.get("server")
+    if not isinstance(server, dict):
+        return None
     name = str(server.get("name") or "").strip()
     if not name:
         return None
 
-    meta = (record.get("_meta") or {}).get(_REGISTRY_META_KEY) or {}
+    raw_meta = record.get("_meta")
+    meta = (raw_meta or {}).get(_REGISTRY_META_KEY) if isinstance(raw_meta, dict) else None
+    meta = meta if isinstance(meta, dict) else {}
     # The registry returns every published version of every server. A
     # directory wants the current one.
     if meta.get("isLatest") is False:
@@ -106,8 +131,11 @@ def _normalise(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     namespace = name.split("/", 1)[0]
-    remotes = server.get("remotes") or []
-    remote_url = str(remotes[0].get("url")) if remotes else None
+    remotes = server.get("remotes")
+    remote_url = None
+    if isinstance(remotes, list) and remotes and isinstance(remotes[0], dict):
+        url = remotes[0].get("url")
+        remote_url = str(url) if url else None
 
     return {
         "name": name,
@@ -119,6 +147,19 @@ def _normalise(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "install": _install_from_packages(server.get("packages") or []),
         "remote_url": remote_url,
     }
+
+
+def _normalise_safely(record: Any) -> Optional[Dict[str, Any]]:
+    """``_normalise`` with a net under it.
+
+    One malformed record must not empty the directory, and it must not
+    surface as a 500 from an endpoint documented to answer 503.
+    """
+    try:
+        return _normalise(record)
+    except Exception as e:  # noqa: BLE001
+        debug_log(f"skipping unusable registry record: {e}", "mcp")
+        return None
 
 
 def fetch(limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any]]:
@@ -145,7 +186,7 @@ def fetch(limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any]]:
     if not isinstance(records, list):
         raise RegistryUnavailableError("registry response had no server list")
 
-    entries = [e for e in (_normalise(r) for r in records) if e is not None]
+    entries = [e for e in (_normalise_safely(r) for r in records) if e is not None]
     debug_log(f"MCP registry returned {len(entries)} current servers", "mcp")
     return entries
 
@@ -174,7 +215,11 @@ def load_cached() -> Tuple[List[Dict[str, Any]], Optional[float]]:
         entries = data.get("entries")
         if not isinstance(entries, list):
             return [], None
-        return entries, data.get("fetched_at")
+        # The file is on disk and may have been written by a different
+        # version or hand-edited. Callers index these by name, so anything
+        # without one is dropped here rather than raising downstream.
+        usable = [e for e in entries if isinstance(e, dict) and e.get("name")]
+        return usable, data.get("fetched_at")
     except FileNotFoundError:
         return [], None
     except Exception as e:  # noqa: BLE001

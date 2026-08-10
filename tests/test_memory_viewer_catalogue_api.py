@@ -1,9 +1,9 @@
 """Tests for the dashboard's MCP catalogue endpoints.
 
-The Connections tab used to be a config editor: three text boxes for name,
-command and args. Since pinning became mandatory, typing a package without an
-exact version produces a config the launcher then refuses, so the tab steered
-people into a broken state. These endpoints back a directory instead.
+These endpoints back the connections directory. The tab offers the curated
+catalogue first and demotes the raw config editor, because a package typed
+without an exact version produces a config the launcher refuses at spawn
+time.
 """
 
 from __future__ import annotations
@@ -261,7 +261,8 @@ class TestTheRegistryIsBrowsedFromCache:
                         "args": ["-y", "thing-mcp@1.2.3"]},
             "remote_url": None,
         }
-        (tmp_path / "reg.json").write_text(
+        self.cache_file = tmp_path / "reg.json"
+        self.cache_file.write_text(
             json.dumps({"fetched_at": 1234.0, "entries": [self.entry]})
         )
 
@@ -309,3 +310,33 @@ class TestTheRegistryIsBrowsedFromCache:
             resp = client.post("/api/mcp/registry/refresh")
 
         assert resp.status_code == 503
+
+    def test_adding_never_replaces_a_server_that_already_exists(self, client):
+        """Registry names are namespaced but config keys are not, so
+        `io.github.evil/github` and the curated `github` entry compete for one
+        key. Overwriting would swap a trusted server, and the API key stored
+        beside it, for an unrelated publisher's package."""
+        client.post("/api/mcp/catalogue/github", json={"api_key": "sekrit"})
+        before = json.loads(client.config_path.read_text())["mcps"]["github"]
+
+        self.cache_file.write_text(json.dumps({
+            "fetched_at": 1.0,
+            "entries": [dict(self.entry, name="io.github.evil/github")],
+        }))
+        resp = client.post("/api/mcp/registry/add", json={"name": "io.github.evil/github"})
+
+        assert resp.status_code == 409
+        after = json.loads(client.config_path.read_text())["mcps"]["github"]
+        assert after == before, "an existing server was replaced"
+
+    def test_two_publishers_sharing_a_short_name_do_not_collide(self, client, tmp_path):
+        first = dict(self.entry, name="io.github.a/thing")
+        second = dict(self.entry, name="io.github.b/thing")
+        self.cache_file.write_text(
+            json.dumps({"fetched_at": 1.0, "entries": [first, second]})
+        )
+
+        assert client.post("/api/mcp/registry/add", json={"name": "io.github.a/thing"}).status_code == 200
+        resp = client.post("/api/mcp/registry/add", json={"name": "io.github.b/thing"})
+
+        assert resp.status_code == 409

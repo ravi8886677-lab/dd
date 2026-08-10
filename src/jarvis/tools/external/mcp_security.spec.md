@@ -80,16 +80,26 @@ launch, not a reason to stop people configuring their own servers.
 Both write endpoints register a command Jarvis will later spawn, so they
 share one budget (`MAX_WRITES_PER_WINDOW`); budgeting them separately
 would only mean reaching for the other one. Failed token checks share a
-second budget (`MAX_AUTH_FAILURES`), counted before the token is compared
-so that rotating the guess does not dodge the lockout.
+second budget (`MAX_AUTH_FAILURES`).
 
-Both are dashboard-wide rather than per-client, because the dashboard
-serves one person and a per-client bucket is a per-guess bucket to anyone
-choosing the client. The consequence is that a lockout stops the real
-user too, so the window must age out on its own: it is never extended by
-requests arriving during it, and `tests/test_memory_viewer_rate_limit.py`
-holds that line. A brute force that permanently locked the owner out of
-their own diary would have traded one denial of service for another.
+Three properties make the auth budget safe to apply dashboard-wide, which
+it must be: the dashboard serves one person, and a per-client bucket is a
+per-guess bucket to whoever picks the client.
+
+1. **A valid token is never charged against it.** Otherwise anyone able to
+   send bad tokens could lock the owner out of their own diary, trading one
+   denial of service for another.
+2. **The limit clears the page's own traffic.** The dashboard polls itself
+   twice every five seconds, so a tab left open across a restart sends 24
+   failures a minute by itself, with a dead cookie and nobody at the
+   keyboard. A ceiling under that locks out on ordinary use.
+3. **`/` is counted even though it is not refused.** That path is exempt
+   from the JSON 401 so it can render its own guidance, but it compares the
+   token and answers 200 or 401 either way. Left uncounted it is an oracle
+   that answers guesses forever, and the limit everywhere else is
+   decoration.
+
+`tests/test_memory_viewer_rate_limit.py` holds all three.
 
 **The directory makes no safety claim.** There is no "verified" badge and
 no field an interface could render one from. On other directories that

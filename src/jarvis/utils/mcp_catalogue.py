@@ -14,12 +14,19 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, List
 
 from ..debug import debug_log
 
 _MODULE_NAME = "_jarvis_mcp_catalogue"
+# Flask serves the connections directory on several threads, and two of them
+# can reach a cold catalogue at once. Without this, the second thread reads
+# the half-built module the first has already published to sys.modules and
+# renders an empty grid.
+_load_lock = threading.Lock()
+_module: Any = None
 
 
 def _catalogue_path() -> Path:
@@ -33,28 +40,37 @@ def load_module() -> Any:
     degrade to "no curated entries", never stop the dashboard or the config
     migration from running.
     """
-    cached = sys.modules.get(_MODULE_NAME)
-    if cached is not None:
-        return cached
+    global _module
 
-    module_path = _catalogue_path()
-    if not module_path.exists():
-        debug_log(f"MCP catalogue not found at {module_path}", "mcp")
-        return None
-    spec = importlib.util.spec_from_file_location(_MODULE_NAME, module_path)
-    if spec is None or spec.loader is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
-    # Registered before execution because ``dataclass`` resolves the defining
-    # module by name while the class body is being built.
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception as e:  # noqa: BLE001
-        debug_log(f"MCP catalogue failed to load: {e}", "mcp")
-        sys.modules.pop(spec.name, None)
-        return None
-    return module
+    if _module is not None:
+        return _module
+
+    with _load_lock:
+        # Another thread may have finished while this one waited.
+        if _module is not None:
+            return _module
+
+        module_path = _catalogue_path()
+        if not module_path.exists():
+            debug_log(f"MCP catalogue not found at {module_path}", "mcp")
+            return None
+        spec = importlib.util.spec_from_file_location(_MODULE_NAME, module_path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        # Registered before execution because ``dataclass`` resolves the
+        # defining module by name while the class body is being built. The
+        # module is only published to callers once it is fully executed, so
+        # nobody outside this lock ever sees the half-built version.
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception as e:  # noqa: BLE001
+            debug_log(f"MCP catalogue failed to load: {e}", "mcp")
+            sys.modules.pop(spec.name, None)
+            return None
+        _module = module
+        return _module
 
 
 def load_entries() -> List[Any]:

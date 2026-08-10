@@ -354,3 +354,69 @@ class TestMixUpAttacksAreRefused:
         mcp_oauth.verify_issuer(
             "srv", received="https://as.example.com", expected=None, advertised=False,
         )
+
+
+class TestOnlyTheRedirectItselfIsRecorded:
+    """The listener answers every request until it is closed, and the browser
+    asks for /favicon.ico right after rendering the success page. If that
+    second request overwrote the result, a provider advertising RFC 9207
+    would be refused for a redirect it sent correctly."""
+
+    def test_a_favicon_request_does_not_erase_the_issuer(self):
+        import threading
+        import urllib.request
+
+        listener = mcp_oauth.LoopbackCallback()
+        try:
+            result = {}
+
+            def wait():
+                result["value"] = listener.wait_for_code(timeout=10)
+
+            waiter = threading.Thread(target=wait)
+            waiter.start()
+            urllib.request.urlopen(
+                f"{listener.redirect_uri}?code=c&state=s&iss=https://as.example.com",
+                timeout=10,
+            ).read()
+            waiter.join(timeout=10)
+
+            # What the browser does next, unprompted.
+            base = listener.redirect_uri.rsplit("/", 2)[0]
+            try:
+                urllib.request.urlopen(f"{base}/favicon.ico", timeout=10).read()
+            except Exception:
+                pass  # a 404 is fine; the point is it must not clobber state
+
+            assert listener.issuer == "https://as.example.com"
+            assert result["value"] == ("c", "s")
+        finally:
+            listener.close()
+
+    def test_a_later_request_does_not_erase_the_code(self):
+        import threading
+        import urllib.request
+
+        listener = mcp_oauth.LoopbackCallback()
+        try:
+            result = {}
+
+            def wait():
+                result["value"] = listener.wait_for_code(timeout=10)
+
+            waiter = threading.Thread(target=wait)
+            waiter.start()
+            urllib.request.urlopen(
+                f"{listener.redirect_uri}?code=the-code&state=s", timeout=10
+            ).read()
+            waiter.join(timeout=10)
+
+            base = listener.redirect_uri.rsplit("/", 2)[0]
+            try:
+                urllib.request.urlopen(f"{base}/favicon.ico", timeout=10).read()
+            except Exception:
+                pass
+
+            assert listener.wait_for_code(timeout=1) == ("the-code", "s")
+        finally:
+            listener.close()

@@ -344,6 +344,17 @@ class TestYoloFromTheTerminal:
 
         assert "30" in capsys.readouterr().out
 
+    def test_the_confirmation_reads_as_a_sentence(
+        self, chat_cfg, recorded_queries, captured_diary, capsys,
+    ):
+        """describe_remaining() already ends in 'left', so composing it with
+        'for' produced 'YOLO is on for 30 min left.'"""
+        _session(chat_cfg, "/yolo 30\n/exit\n")
+
+        out = capsys.readouterr().out
+        assert "for 30 min left" not in out
+        assert "30 min" in out
+
     @pytest.mark.parametrize("bad", ["abc", "-5", "0", "nan", "true"])
     def test_a_bad_duration_leaves_the_window_shut(
         self, chat_cfg, recorded_queries, captured_diary, capsys, bad,

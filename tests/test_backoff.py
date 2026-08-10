@@ -31,9 +31,9 @@ class TestPatchingTheSeamStaysLocal:
             assert listener.retry_backoff_sleep is original
 
     def test_background_thread_sleeps_are_not_recorded(self):
-        """The failure this seam exists to prevent: an unrelated thread
-        sleeping during the test used to land in the mock's call list and
-        break assertions on the backoff schedule."""
+        """The failure this seam prevents: an unrelated thread sleeping
+        during the test landing in the mock's call list and breaking
+        assertions on the backoff schedule."""
         with patch("src.jarvis.output.tts.retry_backoff_sleep") as mock_sleep:
             done = threading.Event()
 

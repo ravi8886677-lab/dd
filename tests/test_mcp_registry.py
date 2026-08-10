@@ -202,3 +202,101 @@ class TestTheRegistryIsNotAVettingSignal:
 
         for field in ("verified", "trusted", "safe", "audited", "approved"):
             assert field not in entries[0], f"registry entry exposes {field!r}"
+
+
+class TestOnlyGenuinePinsGetAnAddButton:
+    """`install` is the config a click will write. If the supply-chain guard
+    would refuse it, offering the button produces a server that cannot start
+    — the failure the connections directory exists to prevent."""
+
+    @pytest.mark.parametrize("version", [
+        "latest", "next", "1.0", "^1.2.3", "~1.2.3", ">=1.0.0", "*", "",
+    ])
+    def test_an_unpinned_npm_version_is_not_offered(self, version):
+        packages = [{"registryType": "npm", "identifier": "thing-mcp",
+                     "version": version, "transport": {"type": "stdio"}}]
+        with patch.object(mcp_registry, "guarded_get",
+                          return_value=_response(_payload(_server(packages=packages)))):
+            entries = mcp_registry.fetch()
+
+        assert entries[0]["install"] is None, f"{version!r} was offered as a pin"
+
+    @pytest.mark.parametrize("version", ["v1.2.3", "1.2.*", "latest", ">=0.4"])
+    def test_an_unpinned_pypi_version_is_not_offered(self, version):
+        packages = [{"registryType": "pypi", "identifier": "thing-mcp",
+                     "version": version, "transport": {"type": "stdio"}}]
+        with patch.object(mcp_registry, "guarded_get",
+                          return_value=_response(_payload(_server(packages=packages)))):
+            entries = mcp_registry.fetch()
+
+        assert entries[0]["install"] is None, f"{version!r} was offered as a pin"
+
+    def test_anything_offered_is_accepted_by_the_real_guard(self):
+        """The guard itself is the judge, not a second opinion about pinning."""
+        packages = [
+            {"registryType": "npm", "identifier": "a", "version": "latest"},
+            {"registryType": "npm", "identifier": "b", "version": "2.3.4"},
+        ]
+        with patch.object(mcp_registry, "guarded_get",
+                          return_value=_response(_payload(_server(packages=packages)))):
+            entries = mcp_registry.fetch()
+
+        install = entries[0]["install"]
+        assert install is not None, "a pinned package later in the list was skipped"
+        validate_server_launch("thing", install)
+
+
+class TestMalformedRegistryDataDoesNotEscape:
+    """A public API's response shape is not ours to trust."""
+
+    @pytest.mark.parametrize("record", [
+        {"server": {"name": "io.github.a/b"}, "_meta": [1]},
+        {"server": {"name": "io.github.a/b", "remotes": ["not-a-dict"]}},
+        {"server": {"name": "io.github.a/b", "remotes": [None]}},
+        {"server": {"name": "io.github.a/b", "packages": ["not-a-dict"]}},
+    ])
+    def test_malformed_sub_fields_do_not_lose_a_usable_server(self, record):
+        """A broken `_meta` or `remotes` is no reason to hide a server whose
+        name and description are perfectly readable."""
+        payload = _payload(record, _server())
+        with patch.object(mcp_registry, "guarded_get", return_value=_response(payload)):
+            entries = mcp_registry.fetch()
+
+        names = [e["name"] for e in entries]
+        assert "io.github.acme/thing" in names
+        assert "io.github.a/b" in names
+        assert all(e["install"] is None or e["install"]["command"] for e in entries)
+
+    @pytest.mark.parametrize("record", [
+        {"server": "not-a-dict"},
+        {"server": {}},
+        "not-a-dict-at-all",
+        None,
+        42,
+    ])
+    def test_a_record_with_no_usable_server_is_dropped(self, record):
+        payload = _payload(record, _server())
+        with patch.object(mcp_registry, "guarded_get", return_value=_response(payload)):
+            entries = mcp_registry.fetch()
+
+        assert [e["name"] for e in entries] == ["io.github.acme/thing"]
+
+    def test_a_wholly_unusable_response_raises_the_documented_error(self):
+        with patch.object(mcp_registry, "guarded_get",
+                          return_value=_response({"servers": "nonsense"})):
+            with pytest.raises(mcp_registry.RegistryUnavailableError):
+                mcp_registry.fetch()
+
+
+class TestACorruptCacheEntryIsSurvivable:
+
+    def test_entries_missing_fields_are_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mcp_registry, "_cache_path", lambda: tmp_path / "reg.json")
+        (tmp_path / "reg.json").write_text(json.dumps({
+            "fetched_at": 1.0,
+            "entries": [{}, "not-a-dict", {"name": "io.github.a/b"}],
+        }))
+
+        entries, _ = mcp_registry.load_cached()
+
+        assert [e["name"] for e in entries] == ["io.github.a/b"]

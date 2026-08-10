@@ -101,7 +101,8 @@ def _handle_yolo_command(argument: str) -> None:
     # grant() applies the ceiling and rejects NaN and non-positive values, so
     # the CLI parses the text and lets the one owner of the policy decide.
     if approval.grant(minutes):
-        print(f"  🔓 YOLO is on for {approval.describe_remaining()}.", flush=True)
+        # describe_remaining() ends in "left", which does not follow "for".
+        print(f"  🔓 YOLO is on — {approval.describe_remaining()}.", flush=True)
     else:
         print(f"  ⚠️  {argument!r} is not a usable duration. "
               f"Try {YOLO_COMMAND} 30, or {YOLO_COMMAND} off.", flush=True)

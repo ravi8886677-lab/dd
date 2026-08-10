@@ -167,6 +167,24 @@ class _CallbackHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
         parsed = urlparse(self.path)
+
+        # The listener answers every request until it is closed, and a browser
+        # asks for /favicon.ico as soon as it renders the page below. Anything
+        # that is not the redirect must leave the recorded result alone, or
+        # that follow-up erases the code and the issuer.
+        if parsed.path != _CALLBACK_PATH:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        # Likewise a second redirect: the first answer is the real one.
+        if self.server.oauth_done.is_set():  # type: ignore[attr-defined]
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         params = parse_qs(parsed.query)
         error = (params.get("error") or [None])[0]
         code = (params.get("code") or [None])[0]

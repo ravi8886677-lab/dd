@@ -34,6 +34,18 @@ from ..debug import debug_log
 DEFAULT_MAX_REDIRECTS = 3
 DEFAULT_TIMEOUT_SEC = 15.0
 
+# Headers that authenticate the caller and must not cross an origin boundary
+# on a redirect. Compared lowercase because header names are case-insensitive.
+_CREDENTIAL_HEADERS = frozenset({
+    "authorization", "cookie", "proxy-authorization",
+})
+
+
+def _origin(url: str) -> tuple:
+    """Scheme, host and port — what "same origin" means for credentials."""
+    parsed = urlparse(url)
+    return (parsed.scheme, (parsed.hostname or "").lower(), parsed.port)
+
 
 class UnsafeURLError(ValueError):
     """Base for every refusal to fetch. Callers that do not care why a URL was
@@ -155,10 +167,13 @@ def guarded_get(
     """
     check_url(url)
 
+    # Copied because hops may strip credentials from it, and the caller's
+    # dict is theirs.
+    sent_headers = dict(headers or {})
     current_url = url
     for _ in range(max_redirects + 1):
         response = requests.get(
-            current_url, headers=headers, timeout=timeout,
+            current_url, headers=sent_headers, timeout=timeout,
             allow_redirects=False, stream=stream, **kwargs,
         )
         if not (response.is_redirect or response.is_permanent_redirect):
@@ -173,6 +188,20 @@ def guarded_get(
         except UnsafeURLError as e:
             debug_log(f"net_guard: refusing redirect to {next_url}: {e}", "web")
             raise
+        if _origin(next_url) != _origin(current_url):
+            # requests.Session does this in rebuild_auth, and the hand-rolled
+            # walk skips that machinery. Following a redirect to another host
+            # with the caller's credentials still attached hands them to
+            # whoever the origin points at — a public-to-public hop the guard
+            # deliberately allows, so nothing else would stop it.
+            dropped = [h for h in sent_headers if h.lower() in _CREDENTIAL_HEADERS]
+            for header in dropped:
+                del sent_headers[header]
+            if dropped:
+                debug_log(
+                    f"net_guard: dropped {', '.join(dropped)} crossing to "
+                    f"{_origin(next_url)}", "web",
+                )
         debug_log(f"net_guard: following redirect to {next_url}", "web")
         current_url = next_url
 

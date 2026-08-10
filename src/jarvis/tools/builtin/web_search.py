@@ -45,23 +45,27 @@ def _fetch_page_content(url: str, max_chars: int = 1500,
         # guarded_get re-validates every redirect hop. A search result is an
         # untrusted URL, so the destination is checked before each request
         # rather than after the chain has already been followed.
-        response = guarded_get(
+        # ``with`` matters here: the read below stops at the byte cap, leaving
+        # an unread body on the socket. The cascade runs several of these per
+        # query from a thread pool, so without it a session that searches
+        # repeatedly accumulates half-read connections.
+        with guarded_get(
             url, headers=headers, timeout=timeout,
             max_redirects=_MAX_REDIRECTS, stream=True,
-        )
-        response.raise_for_status()
+        ) as response:
+            response.raise_for_status()
 
-        # Stream-read with a byte cap so a hostile server can't exhaust memory.
-        chunks: list[bytes] = []
-        total = 0
-        for chunk in response.iter_content(chunk_size=8192):
-            if not chunk:
-                continue
-            chunks.append(chunk)
-            total += len(chunk)
-            if total >= _MAX_FETCH_BYTES:
-                break
-        body = b"".join(chunks)
+            # Stream-read with a byte cap so a hostile server can't exhaust memory.
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= _MAX_FETCH_BYTES:
+                    break
+            body = b"".join(chunks)
 
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(body, 'html.parser')
