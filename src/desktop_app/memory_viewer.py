@@ -12,6 +12,7 @@ import sqlite3
 import os
 import secrets
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -38,7 +39,9 @@ app = Flask(__name__)
 #
 # So: a token minted per server start, and a Host allow-list. The token
 # is handed to the browser once via the launch URL and kept in a cookie;
-# nothing needs to be stored on disk.
+# nothing needs to be stored on disk. Rate limits sit behind both, so a
+# token cannot be guessed at speed and the endpoints that register a
+# spawnable command cannot be driven in a tight loop.
 # The desktop app launches this as a subprocess and needs the same
 # token to build the window's URL, so it may mint one and pass it in.
 _SESSION_TOKEN = os.environ.get("JARVIS_DASHBOARD_TOKEN") or secrets.token_urlsafe(32)
@@ -47,6 +50,59 @@ _TOKEN_COOKIE = "jarvis_dashboard_token"
 # Host headers that may address this server. Anything else means the
 # request arrived via a name that resolves here — the rebinding case.
 _ALLOWED_HOST_NAMES = {"localhost", "127.0.0.1", "[::1]", "::1"}
+
+# ── Rate limits ──────────────────────────────────────────────────────────
+# The dashboard serves one person on their own machine, so these ceilings
+# sit far above anything a human clicking around will reach. They exist to
+# blunt automation: guessing the session token, and hammering the endpoints
+# that write a command Jarvis later spawns.
+RATE_LIMIT_WINDOW_SEC = 60.0
+# Wrong tokens tolerated per window before refusing to answer at all. A
+# person who reopens a stale tab burns one or two; a script burns them all.
+MAX_AUTH_FAILURES = 20
+# Writes to the MCP config endpoints per window. Adding every entry in the
+# catalogue by hand is well inside this.
+MAX_WRITES_PER_WINDOW = 30
+
+_rate_lock = threading.Lock()
+# Event timestamps per bucket, oldest first. Trimmed to the window on every
+# read, so this cannot grow without bound.
+_rate_events: dict[str, list[float]] = {}
+
+# Named seam for the clock. Patching ``time.monotonic`` through the module
+# attribute would swap it for the whole process; see utils/backoff.py.
+_now = time.monotonic
+
+
+def _trim(bucket: str, now: float) -> list[float]:
+    """Drop events that have aged out. Caller holds the lock."""
+    events = [t for t in _rate_events.get(bucket, []) if now - t < RATE_LIMIT_WINDOW_SEC]
+    _rate_events[bucket] = events
+    return events
+
+
+def _rate_limited(bucket: str, limit: int) -> bool:
+    """Whether ``bucket`` is over ``limit``, without recording anything.
+
+    Read-only so a caller holding the correct token is not charged for
+    someone else's failures, and so a lockout ages out on its own rather
+    than being extended by every request that arrives during it.
+    """
+    with _rate_lock:
+        return len(_trim(bucket, _now())) >= limit
+
+
+def _record_event(bucket: str) -> None:
+    """Count one event against ``bucket``."""
+    now = _now()
+    with _rate_lock:
+        _trim(bucket, now).append(now)
+
+
+def _reset_rate_limits() -> None:
+    """Clear every bucket. For tests and for a fresh launch."""
+    with _rate_lock:
+        _rate_events.clear()
 
 
 # Values that count as switching the token off. Anything else — including
@@ -109,13 +165,30 @@ def _guard_request():
     if request.path == "/":
         return None
 
+    # Checked before the token, so a lockout cannot be dodged by rotating the
+    # guess. One bucket for the whole dashboard: it serves a single user, and
+    # a per-client bucket is a per-guess bucket to anyone choosing the client.
+    if _rate_limited("auth", MAX_AUTH_FAILURES):
+        return jsonify({"error": "too many failed attempts — try again shortly"}), 429
+
     supplied = (
         request.headers.get("X-Dashboard-Token")
         or request.cookies.get(_TOKEN_COOKIE)
         or request.args.get("token", "")
     )
     if not _token_matches(supplied):
+        _record_event("auth")
+        debug_log("dashboard rejected a bad token", "memory_viewer")
         return jsonify({"error": "unauthorised — reopen the dashboard from its launch URL"}), 401
+
+    # /api/mcp and /api/mcp/catalogue/<name> both register a command Jarvis
+    # will spawn, so they share one budget — limiting them separately would
+    # just mean using the other one.
+    if request.method in ("POST", "DELETE") and request.path.startswith("/api/mcp"):
+        if _rate_limited("mcp_write", MAX_WRITES_PER_WINDOW):
+            debug_log("dashboard MCP writes over the limit; refusing", "memory_viewer")
+            return jsonify({"error": "too many changes at once — try again shortly"}), 429
+        _record_event("mcp_write")
     return None
 
 # Global database connection

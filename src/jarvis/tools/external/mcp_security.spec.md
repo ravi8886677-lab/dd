@@ -75,6 +75,22 @@ the launcher will refuse. The manual three-box form still exists behind
 an Advanced disclosure, because pinning is a rule about what Jarvis will
 launch, not a reason to stop people configuring their own servers.
 
+### Rate limits on the dashboard
+
+Both write endpoints register a command Jarvis will later spawn, so they
+share one budget (`MAX_WRITES_PER_WINDOW`); budgeting them separately
+would only mean reaching for the other one. Failed token checks share a
+second budget (`MAX_AUTH_FAILURES`), counted before the token is compared
+so that rotating the guess does not dodge the lockout.
+
+Both are dashboard-wide rather than per-client, because the dashboard
+serves one person and a per-client bucket is a per-guess bucket to anyone
+choosing the client. The consequence is that a lockout stops the real
+user too, so the window must age out on its own: it is never extended by
+requests arriving during it, and `tests/test_memory_viewer_rate_limit.py`
+holds that line. A brute force that permanently locked the owner out of
+their own diary would have traded one denial of service for another.
+
 **The directory makes no safety claim.** There is no "verified" badge and
 no field an interface could render one from. On other directories that
 mark means the vendor vetted the server. Jarvis vets nothing, and every
