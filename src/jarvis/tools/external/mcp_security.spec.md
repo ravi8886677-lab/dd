@@ -276,6 +276,24 @@ provider; this module supplies the pieces it has no opinion about:
   the next call re-authorises rather than the daemon failing to start.
 - Under OAuth the provider owns the `Authorization` header and refreshes
   it as it expires, so no static bearer is added alongside it.
+- `verify_issuer` checks the RFC 9207 `iss` parameter on the
+  authorisation response. The SDK checks `state` and PKCE but not this,
+  and its callback contract returns only `(code, state)`, so the value is
+  read off the redirect here or lost. Without the check, a client that
+  talks to more than one authorisation server can be induced to send its
+  code to the wrong token endpoint, which hands the attacker a usable
+  code.
+
+  | `iss` | Metadata advertises it | Outcome |
+  |-------|------------------------|---------|
+  | matches | either | accepted |
+  | differs | either | refused |
+  | absent | yes | refused: the server promised one on every response |
+  | absent | no | accepted; RFC 9207 is opt-in and most providers have not adopted it |
+  | any | no metadata discovered | accepted; nothing to compare against |
+
+  Comparison is an exact case-sensitive string match (RFC 9207 §2.4).
+  Anything looser admits a lookalike host or a path suffix.
 
 `mcp_oauth.forget(server)` clears both entries — the Disconnect action.
 
@@ -358,9 +376,8 @@ and can read that file.
   only fixes *which* code runs.
 - **Proving a package is safe.** A pin makes the code reproducible, not
   trustworthy.
-- **RFC 9207 `iss` validation and audience checks.** Both belong to the
-  2026 spec revision; the pinned SDK's provider does not implement them,
-  so a malicious authorisation server response is not fully defended
-  against yet.
-- **Rate limiting the dashboard**, which remains gated by its session
-  token alone.
+- **Audience restriction of access tokens.** `iss` is validated (see
+  Authentication above), but Jarvis does not check that a token's
+  audience names the resource it is being sent to. The pinned SDK does
+  not surface the claim, so a token issued for one resource server is
+  not refused when presented to another.

@@ -248,3 +248,109 @@ def test_oauth_does_not_also_send_a_bearer_header(monkeypatch):
     MCPClient({"srv": cfg})._connect(cfg, "srv")
 
     assert "Authorization" not in (captured.get("headers") or {})
+
+
+# ── RFC 9207: authorisation server issuer identification ─────────────────
+
+
+class TestTheIssuerIsCaptured:
+    """The SDK's callback contract returns only (code, state), so the `iss`
+    parameter has to be read here or it is lost."""
+
+    def _redirect(self, listener, query):
+        import threading
+        import urllib.request
+
+        result = {}
+
+        def wait():
+            try:
+                result["value"] = listener.wait_for_code(timeout=10)
+            except Exception as e:  # noqa: BLE001
+                result["error"] = e
+
+        waiter = threading.Thread(target=wait)
+        waiter.start()
+        urllib.request.urlopen(f"{listener.redirect_uri}?{query}", timeout=10).read()
+        waiter.join(timeout=10)
+        return result
+
+    def test_the_issuer_is_read_off_the_redirect(self):
+        listener = mcp_oauth.LoopbackCallback()
+        try:
+            self._redirect(listener, "code=c&state=s&iss=https://as.example.com")
+            assert listener.issuer == "https://as.example.com"
+        finally:
+            listener.close()
+
+    def test_a_redirect_without_an_issuer_reads_as_none(self):
+        listener = mcp_oauth.LoopbackCallback()
+        try:
+            self._redirect(listener, "code=c&state=s")
+            assert listener.issuer is None
+        finally:
+            listener.close()
+
+
+class TestMixUpAttacksAreRefused:
+    """RFC 9207. Without this check a malicious authorisation server can have
+    the client send its code to the wrong token endpoint, which hands the
+    attacker the code."""
+
+    def test_a_matching_issuer_is_accepted(self):
+        mcp_oauth.verify_issuer(
+            "srv", received="https://as.example.com",
+            expected="https://as.example.com", advertised=True,
+        )
+
+    def test_a_different_issuer_is_refused(self):
+        with pytest.raises(mcp_oauth.IssuerMismatchError):
+            mcp_oauth.verify_issuer(
+                "srv", received="https://evil.example.com",
+                expected="https://as.example.com", advertised=True,
+            )
+
+    def test_comparison_is_exact_not_prefix(self):
+        """A sibling host under the same registrable domain is a different
+        issuer, and so is a path suffix."""
+        for received in ("https://as.example.com.evil.net",
+                         "https://as.example.com/../other",
+                         "HTTPS://AS.EXAMPLE.COM"):
+            with pytest.raises(mcp_oauth.IssuerMismatchError):
+                mcp_oauth.verify_issuer(
+                    "srv", received=received,
+                    expected="https://as.example.com", advertised=True,
+                )
+
+    def test_a_missing_issuer_is_refused_when_the_server_promised_one(self):
+        """The metadata says every response carries iss, so one without it
+        did not come from that server."""
+        with pytest.raises(mcp_oauth.IssuerMismatchError):
+            mcp_oauth.verify_issuer(
+                "srv", received=None,
+                expected="https://as.example.com", advertised=True,
+            )
+
+    def test_a_missing_issuer_is_allowed_when_the_server_never_promised_one(self):
+        """RFC 9207 is opt-in. Refusing here would break every provider that
+        has not adopted it."""
+        mcp_oauth.verify_issuer(
+            "srv", received=None,
+            expected="https://as.example.com", advertised=False,
+        )
+
+    def test_an_issuer_is_still_checked_even_if_it_was_not_advertised(self):
+        """A server that sends iss without advertising it still must not send
+        somebody else's."""
+        with pytest.raises(mcp_oauth.IssuerMismatchError):
+            mcp_oauth.verify_issuer(
+                "srv", received="https://evil.example.com",
+                expected="https://as.example.com", advertised=False,
+            )
+
+    def test_nothing_to_compare_against_does_not_raise(self):
+        """Discovery may not have produced metadata. There is no security
+        benefit either way, and refusing would break the connection."""
+        mcp_oauth.verify_issuer(
+            "srv", received="https://as.example.com", expected=None, advertised=False,
+        )

@@ -107,6 +107,61 @@ class KeychainTokenStorage(TokenStorage):
         )
 
 
+class IssuerMismatchError(RuntimeError):
+    """The authorisation response did not come from the expected issuer."""
+
+
+def verify_issuer(
+    server_name: str,
+    *,
+    received: Optional[str],
+    expected: Optional[str],
+    advertised: bool,
+) -> None:
+    """Check the RFC 9207 ``iss`` parameter on an authorisation response.
+
+    Without this, a client that talks to more than one authorisation server
+    can be induced to send its code to the wrong token endpoint, handing the
+    attacker a usable code. The SDK checks ``state`` and PKCE but not this,
+    and its callback contract returns only ``(code, state)``, so the check
+    has to happen on our side of the redirect.
+
+    Args:
+        received: ``iss`` as it arrived, or ``None`` if absent.
+        expected: the issuer from discovered metadata, or ``None`` if we
+            never got any.
+        advertised: whether that metadata set
+            ``authorization_response_iss_parameter_supported``.
+
+    Raises:
+        IssuerMismatchError: the response is not from the expected issuer.
+    """
+    if expected is None:
+        # Nothing to compare against. Refusing would break the connection
+        # without buying anything, since we cannot tell right from wrong.
+        debug_log(f"no issuer metadata for '{server_name}'; iss unverified", "mcp")
+        return
+
+    if received is None:
+        if advertised:
+            # The server's own metadata promises iss on every response, so a
+            # response without one did not come from it.
+            raise IssuerMismatchError(
+                f"'{server_name}': the authorisation server advertises RFC 9207 "
+                "but the response carried no 'iss'."
+            )
+        debug_log(f"'{server_name}' does not send iss (RFC 9207 not adopted)", "mcp")
+        return
+
+    # RFC 9207 §2.4: compare as a simple case-sensitive string. Anything
+    # looser lets a lookalike host or a path suffix through.
+    if received != expected:
+        raise IssuerMismatchError(
+            f"'{server_name}': authorisation response came from '{received}' "
+            f"but '{expected}' was expected."
+        )
+
+
 class _CallbackHandler(BaseHTTPRequestHandler):
     """Answers exactly one redirect and records what it carried."""
 
@@ -116,6 +171,9 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         error = (params.get("error") or [None])[0]
         code = (params.get("code") or [None])[0]
         state = (params.get("state") or [None])[0]
+        # RFC 9207. Recorded separately because the SDK's callback contract
+        # has no room for it.
+        self.server.oauth_issuer = (params.get("iss") or [None])[0]  # type: ignore[attr-defined]
 
         self.server.oauth_result = (code, state, error)  # type: ignore[attr-defined]
         self.server.oauth_done.set()  # type: ignore[attr-defined]
@@ -170,6 +228,7 @@ class LoopbackCallback:
         self._server = HTTPServer((self.host, 0), _CallbackHandler)
         self.port = self._server.server_address[1]
         self._server.oauth_result = (None, None, None)  # type: ignore[attr-defined]
+        self._server.oauth_issuer = None  # type: ignore[attr-defined]
         self._server.oauth_done = threading.Event()  # type: ignore[attr-defined]
         self._thread = threading.Thread(
             target=self._server.serve_forever, daemon=True,
@@ -180,6 +239,11 @@ class LoopbackCallback:
     @property
     def redirect_uri(self) -> str:
         return f"http://{self.host}:{self.port}{_CALLBACK_PATH}"
+
+    @property
+    def issuer(self) -> Optional[str]:
+        """The RFC 9207 ``iss`` from the redirect, or ``None`` if absent."""
+        return self._server.oauth_issuer  # type: ignore[attr-defined]
 
     def wait_for_code(
         self, timeout: float = _CALLBACK_TIMEOUT_SEC
@@ -240,21 +304,58 @@ def build_provider(server_name: str, server_url: str) -> OAuthClientProvider:
             # A headless or locked-down desktop has no browser to open.
             print(f"  🌐 Open this to authorise:\n     {authorization_url}\n", flush=True)
 
+    # The provider is built below, but the callback closure needs to read the
+    # metadata it discovers at runtime. A one-slot box is the smallest way to
+    # close that loop without reaching into the SDK's internals from outside.
+    provider_box: list = []
+
     async def callback_handler() -> Tuple[str, Optional[str]]:
         import asyncio
 
         try:
-            return await asyncio.to_thread(listener.wait_for_code)
+            code, state = await asyncio.to_thread(listener.wait_for_code)
+            expected, advertised = _discovered_issuer(provider_box)
+            verify_issuer(
+                server_name,
+                received=listener.issuer,
+                expected=expected,
+                advertised=advertised,
+            )
+            return code, state
         finally:
             listener.close()
 
-    return OAuthClientProvider(
+    provider = OAuthClientProvider(
         server_url=server_url,
         client_metadata=metadata,
         storage=KeychainTokenStorage(server_name),
         redirect_handler=redirect_handler,
         callback_handler=callback_handler,
     )
+    provider_box.append(provider)
+    return provider
+
+
+def _discovered_issuer(provider_box: list) -> Tuple[Optional[str], bool]:
+    """The issuer the SDK discovered, and whether it advertises RFC 9207.
+
+    Read defensively: this reaches into the SDK's context, and a shape change
+    there must degrade to "cannot verify" rather than break authorisation.
+    """
+    if not provider_box:
+        return None, False
+    try:
+        oauth_metadata = getattr(provider_box[0].context, "oauth_metadata", None)
+        if oauth_metadata is None:
+            return None, False
+        issuer = getattr(oauth_metadata, "issuer", None)
+        advertised = bool(
+            getattr(oauth_metadata, "authorization_response_iss_parameter_supported", False)
+        )
+        return (str(issuer) if issuer is not None else None), advertised
+    except Exception as e:  # noqa: BLE001
+        debug_log(f"could not read issuer metadata: {e}", "mcp")
+        return None, False
 
 
 def uses_oauth(server_cfg: dict) -> bool:
