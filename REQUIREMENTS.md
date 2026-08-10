@@ -63,6 +63,14 @@ and static analysis.
 - **A restart is not a refresh test.** If the access token is still
   valid, restarting only proves it was re-read. Force it: shorten the
   expiry server-side or expire the stored token by hand, *then* restart.
+- **This now also exercises RFC 9207 `iss` validation**, which has only
+  been unit-tested. `verify_issuer` reads the issuer out of the SDK's
+  discovered metadata, and that read reaches into SDK internals. It is
+  written to degrade to "cannot verify" rather than refuse, but a real
+  provider is the only thing that proves the happy path still connects.
+  **Done when:** a real provider authorises successfully, and the debug
+  log does not show `iss unverified` for a provider that publishes an
+  issuer (which would mean the metadata read silently found nothing).
 
 ### R0.5 — Real catalogue servers 🟡
 
@@ -80,100 +88,56 @@ Only `@modelcontextprotocol/server-everything` has been driven.
 
 ---
 
-## P1 — The Connections tab
+### R0.7 — The connections directory on a real screen 🟠
 
-The dashboard's MCP tab is a config editor: three text boxes for name,
-command and args. Since pinning became mandatory, typing a package
-without an exact version produces a config the launcher then refuses —
-so the tab actively steers people into a broken state.
+The Connections tab is now a directory rather than a config editor, and
+none of it has been seen on a display.
 
-**The dashboard never sees `mcp_catalogue.py` at all.** It is wired only
-into the Qt setup wizard and settings window.
+- **Done when:** the curated grid renders as tiles, an entry needing a key
+  shows its inline field and hint, clicking Add flips the tile to Added,
+  and the added server then appears under Configured with a tool count.
 
-### R1.1 — Serve the catalogue
+### R0.8 — Registry browse and refresh 🟡
 
-- New endpoint returning the nine curated entries.
-- **Done when:** the dashboard can render name, emoji icon, description,
-  category and whether an API key is needed, without importing
-  `desktop_app` (which pulls in Qt — see `_load_catalogue_by_name` in
-  `config.py` for the file-loading pattern that avoids it).
+Driven headlessly against the live registry, never on a screen.
 
-### R1.2 — Directory grid with one-click add
-
-- **Done when:** clicking Add writes the catalogue's **pinned** args, so
-  a user cannot create an entry the launcher will refuse. The manual
-  three-box form is demoted to an "Advanced" disclosure. Entries needing
-  a key get an inline field using `api_key_hint`.
-
-### Explicitly not wanted
-
-**No "✓ verified" badge.** On other directories that tick means the
-vendor vetted the server. Jarvis does not vet anything, and the whole
-security layer exists because a server that *looks* fine may not be. If
-a badge is wanted it must mean something checkable — "pinned version",
-"in the curated catalogue" — and be labelled as that.
+- **Done when:** opening the tab shows the cached listing with its fetch
+  time and makes no network request; Refresh fetches and updates that
+  time; the filter box narrows the grid; and a server with no pinned
+  package shows "not installable" rather than an Add button.
+- **Then pull the network out and reopen the tab.** **Done when:** the
+  cached listing still renders and Refresh reports it could not reach the
+  registry, rather than emptying the directory.
 
 ---
 
-## P2 — MCP Registry
+## P1 — Audience restriction of OAuth access tokens
 
-Nine hardcoded entries is not a directory. `registry.modelcontextprotocol.io`
-is a metadata-only API (no auth needed for reads) that would replace them.
+`iss` is validated (RFC 9207), so a mix-up attack is refused. The audience
+claim is not checked, because the pinned SDK does not surface it: a token
+issued for one resource server is not refused when presented to another.
 
-- **Done when:** the dashboard lists servers from the registry, cached
-  locally so it works offline, with namespace verification surfaced as
-  the trust signal — and **labelled clearly as proof of namespace
-  ownership, not safety**. Registry inclusion is not vetting.
-- Keep the curated catalogue as the default view.
-
----
-
-## P3 — Security gaps that are known and open
-
-### R3.1 — SSRF guard on `fetchWebPage`
-
-It has no loopback or private-IP blocking, unlike `webSearch`. Not
-currently a privilege-escalation path — the dashboard token is not in
-the daemon's environment and `/api/yolo` grants only on POST — but it
-should not rest on that.
-
-- **Done when:** `fetchWebPage` refuses loopback, link-local and private
-  addresses, with a test covering each.
-
-### R3.2 — RFC 9207 `iss` validation and audience checks
-
-Belongs to the 2026 MCP spec revision. The pinned SDK's OAuth provider
-does not implement them, so a malicious *authorisation server* response
-is not fully defended against. Recorded in the spec's non-goals.
-
-- **Done when:** either the SDK gains them and Jarvis picks them up, or
-  Jarvis validates `iss` itself.
-
-### R3.3 — Dashboard rate limiting
-
-`/api/mcp` remains a code-execution path gated only by the session
-token. No rate limiting anywhere.
+- **Done when:** either the SDK exposes the claim and Jarvis checks it, or
+  Jarvis decodes the token's `aud` itself and refuses a mismatch.
+- Recorded in `mcp_security.spec.md` non-goals until then.
 
 ---
 
-## P4 — Housekeeping
+## P2 — A rarely flaky test
 
-- **Flaky tests.** `test_piper_tts::test_429_retried_then_succeeds` and
-  `test_voice_listener::test_429_gives_up_after_max_retries` pass in
-  isolation and fail depending on order. They caused a false alarm this
-  session. **Done when:** they pass in any order.
-- **Duplicate test classes.** `tests/tools/builtin/test_computer_use.py`
-  has two near-identical coordinate-validation classes
-  (`TestCoordinatesAreValidated`, `TestCoordinatesAreChecked`) that
-  predate this work. Harmless, but one should go.
-- **Missing optional deps** are the entire 45-failure baseline. Listing
-  them in a `requirements-dev.txt` would stop every future agent having
-  to rediscover that the suite is not actually broken.
-- **`jarvis.chat` has no YOLO control.** The tray and dashboard can
-  grant; a plain terminal session cannot. A `/yolo 30` REPL command
-  would close that, and `chat.spec.md` would need updating with it.
+`test_text_chat.py::test_one_shot_puts_only_the_answer_on_stdout` failed
+once in roughly thirteen full-suite runs and has not reproduced since.
 
----
+The one-shot path swaps `sys.stdout` process-wide so the engine's
+narration goes to stderr, which means a print from any other thread during
+that window lands in the captured answer. That is the likely mechanism, but
+it was not confirmed.
+
+- **Do not weaken the assertion.** Exact equality is the point: the README
+  advertises `answer=$(python -m jarvis.chat "…")`, and anything extra on
+  stdout ends up inside the caller's variable.
+- **Done when:** the cause is identified and either the leaking print is
+  stopped or the redirect is made thread-safe.
 
 ## Rules that constrain any of the above
 

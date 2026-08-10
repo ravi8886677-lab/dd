@@ -42,6 +42,12 @@ box with no display, no microphone, and no working OS keyring.
 | YOLO gate | ✅ Real server not called with it off; called with it on |
 | Dashboard YOLO slider | ✅ Driven against a live server, 5 min → 8h |
 | Settings tab writing a fresh config | ✅ From no config file at all |
+| Connections directory + one-click add | ✅ Every catalogue entry added and re-checked against the spawn-time guard |
+| MCP registry browse / refresh / add | ✅ Against the live registry: 63 servers cached, a real entry installed and its pinned launch accepted |
+| Dashboard rate limits | ✅ Token guessing and MCP writes both lock out and recover |
+| `fetchWebPage` SSRF guard | ✅ Refuses loopback, private, link-local and inward redirects before the request |
+| RFC 9207 `iss` validation | ✅ Unit-tested; a real provider still needs R0.4 |
+| `/yolo` in the text chat | ✅ Grants, revokes and reports without touching the assistant |
 | **Credential store on a real OS** | ❌ **Never** — this box's keyring is broken; only failure paths tested |
 | **OAuth against a real provider** | ❌ **Never** — unit-tested only |
 | **The re-pin migration on a real install** | ❌ Only a synthetic config |
@@ -49,11 +55,15 @@ box with no display, no microphone, and no working OS keyring.
 | `computerUse` actually clicking | ❌ Never run — no display |
 | Desktop tray app, orb on a screen | ❌ Never run — no display |
 
-**The honest summary:** the MCP layer is now exercised against real
-servers over both transports. What has never touched real hardware is
-everything that needs a keychain, a browser redirect, a microphone or a
-screen — and two of those (credential migration, server re-pinning) run
-on *every existing user's first launch after upgrade*.
+**The honest summary:** the MCP layer is exercised against real servers
+over both transports, and the dashboard work above is driven against a
+live Flask instance and the live public registry. What has never touched
+real hardware is everything that needs a keychain, a browser redirect, a
+microphone or a screen — and two of those (credential migration, server
+re-pinning) run on *every existing user's first launch after upgrade*.
+
+Everything on the old backlog below P0 is done. What is left is the part
+no container can do.
 
 ---
 
@@ -114,24 +124,18 @@ no orphan copy is left behind.
 Ranked. See `REQUIREMENTS.md` for the full backlog with acceptance
 criteria.
 
-1. **Run the smoke test on real hardware.** Nothing else on this list
-   matters as much. Six checks, about an hour, listed in
-   `REQUIREMENTS.md`. Two of them cover code that runs for every
-   existing user on upgrade.
-2. **Connections tab redesign.** The dashboard still makes you hand-type
-   `npx` and an exact version. The catalogue (`mcp_catalogue.py`) has
-   everything a directory UI needs — icon, description, category,
-   `needs_api_key` — and the dashboard never sees it.
-3. **MCP Registry.** Nine hardcoded catalogue entries. The official
-   registry at `registry.modelcontextprotocol.io` is a metadata API that
-   would replace them. Not started.
-4. **RFC 9207 `iss` validation and audience checks** for OAuth. Belongs
-   to the 2026 spec revision; the pinned SDK does not implement them.
-   Recorded in the spec's non-goals.
-5. **No SSRF guard on `fetchWebPage`.** It has no loopback or private-IP
-   blocking, unlike `webSearch`. Not currently exploitable for privilege
-   escalation (the dashboard token is not in the daemon's environment,
-   and `/api/yolo` grants only on POST) but it should be closed.
+1. **Run the smoke test on real hardware.** This is the whole list now.
+   Eight checks, about an hour, in `REQUIREMENTS.md`. Two of them cover
+   code that runs for every existing user on upgrade.
+2. **Audience restriction of OAuth access tokens.** `iss` is validated;
+   the audience claim is not, because the pinned SDK does not surface
+   it. A token issued for one resource server is not refused when
+   presented to another. Recorded in the security spec's non-goals.
+3. **`test_one_shot_puts_only_the_answer_on_stdout` is rarely flaky.**
+   Seen once in roughly thirteen full-suite runs, never reproduced
+   since. The one-shot path swaps `sys.stdout` process-wide, so a print
+   from any thread during that window lands in the captured answer. Not
+   diagnosed; the exact-equality assertion is correct and worth keeping.
 
 ---
 
@@ -168,25 +172,37 @@ criteria.
 
 ## Tests
 
-`45 failed, 2506 passed, 33 skipped` is the baseline in a bare headless
-checkout. **All 45 are missing optional dependencies, not defects.**
+`33 failed, 2623 passed, 33 skipped` on a headless container with
+`pytest`, `requests`, `beautifulsoup4`, `pyperclip`, `pillow`, `flask`
+and `PyQt6` installed. **All 33 are missing audio or display
+dependencies, not defects** — 16 in `test_dictation.py`, 7 in
+`test_voice_listener.py`, 5 in `test_desktop_app.py`, 4 in
+`test_portaudio_serialisation.py`, 1 in `test_llm_thinking.py`.
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -r requirements-dev.txt flask psutil
 QT_QPA_PLATFORM=offscreen PYTHONPATH=src:. python -m pytest tests/ -q
 ```
 
-Measured here: adding just `beautifulsoup4` and `pyperclip` takes it
-from 45 to 33. The remaining 33 need a display or an audio device —
-`pynput` installs but raises on *import* without an X server, and
-`pyautogui` needs X11 headers to build on Linux. On a laptop with a
-screen they all work.
+`pynput` installs but raises on *import* without an X server, so the
+dictation tests cannot run headless at all. `pyautogui` needs X11 headers
+to build on Linux. PyQt6 additionally needs `libegl1` from apt, or every
+`desktop_app` import fails with `libEGL.so.1: cannot open shared object
+file`. On a laptop with a screen they all work.
 
-Two tests are genuinely flaky and order-dependent, passing in isolation:
-`test_piper_tts::test_429_retried_then_succeeds` and
-`test_voice_listener::test_429_gives_up_after_max_retries`. They cost a
-false alarm during this session. Diff failures against a baseline rather
-than reading the raw count.
+The two order-dependent 429 tests are fixed: they were patching
+`module.time.sleep`, which resolves to the shared `time` module and
+swapped sleep for the whole process, so any other thread's sleep landed
+in the mock and the backoff assertion became a race. They now patch a
+per-module seam (`jarvis.utils.backoff`).
+
+Still diff failures against a baseline rather than reading the raw
+count. The quickest honest baseline is a worktree at the last known-good
+commit:
+
+```bash
+git worktree add /tmp/base <commit> && cd /tmp/base && python -m pytest tests/ -q
+```
 
 ---
 
