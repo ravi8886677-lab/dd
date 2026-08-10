@@ -450,6 +450,71 @@ def mcp_list() -> Response:
     })
 
 
+@app.route("/api/mcp/catalogue")
+def mcp_catalogue_list() -> Response:
+    """The curated directory, with what a grid needs to render each entry.
+
+    ``configured`` lets the grid show Added rather than Add, so a server is
+    not installed twice.
+
+    There is deliberately no "verified" flag. On other directories that mark
+    means the vendor vetted the server; Jarvis vets nothing, and the entire
+    MCP security layer exists because a server that looks fine may not be.
+    """
+    from jarvis.config import _load_json
+    from jarvis.utils.mcp_catalogue import load_entries
+
+    configured = set((_load_json(_config_path()).get("mcps") or {}).keys())
+
+    return jsonify({
+        "entries": [
+            {
+                "name": e.name,
+                "display_name": e.display_name,
+                "description": e.description,
+                "category": e.category,
+                "needs_api_key": bool(e.needs_api_key),
+                "api_key_hint": e.api_key_hint or "",
+                "command": e.command,
+                "args": list(e.args),
+                "configured": e.name in configured,
+            }
+            for e in load_entries()
+        ]
+    })
+
+
+@app.route("/api/mcp/catalogue/<name>", methods=["POST"])
+def mcp_catalogue_add(name: str) -> Response:
+    """Add a curated server using the catalogue's own pinned arguments.
+
+    The manual form lets someone type a package without a version, which the
+    supply-chain guard then refuses at spawn time. Adding from the catalogue
+    cannot produce that state, because the args come from the entry rather
+    than from anything typed.
+    """
+    from jarvis.config import _load_json, _save_json
+    from jarvis.utils.mcp_catalogue import load_by_name
+
+    entry = load_by_name().get(name)
+    if entry is None:
+        return jsonify({"error": f"no catalogue entry named {name}"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    api_key = str(payload.get("api_key", "")).strip()
+    extra_env = {}
+    if api_key and entry.api_key_env_var:
+        extra_env[entry.api_key_env_var] = api_key
+
+    path = _config_path()
+    cfg_json = _load_json(path)
+    cfg_json.setdefault("mcps", {})[name] = entry.to_config(extra_env or None)
+    if not _save_json(path, cfg_json):
+        return jsonify({"error": "could not write config.json"}), 500
+    debug_log(f"added catalogue MCP server {name} from the dashboard", "memory_viewer")
+    return jsonify({"ok": True})
+
+
 @app.route("/api/mcp", methods=["POST"])
 def mcp_add() -> Response:
     """Add or replace one MCP server, persisting to config.json."""
@@ -1911,6 +1976,84 @@ _INDEX_HTML = """<!DOCTYPE html>
             color: #14110a;
             font-weight: 600;
             cursor: pointer;
+        }
+        .conn-heading {
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin: 26px 0 12px;
+        }
+        .conn-catalogue {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 12px;
+        }
+        .conn-tile {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 16px 18px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+        .conn-tile.is-added { opacity: 0.62; }
+        .conn-tile-name { font-weight: 600; font-size: 15px; }
+        .conn-tile-desc {
+            font-size: 13px;
+            color: var(--text-muted);
+            line-height: 1.5;
+            flex: 1;
+        }
+        .conn-tile-foot {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .conn-tile-hint { font-size: 11px; color: var(--text-muted); }
+        .conn-tag {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            padding: 4px 9px;
+            border-radius: 999px;
+            background: var(--bg-hover);
+            color: var(--text-muted);
+        }
+        .conn-key {
+            flex: 1;
+            min-width: 110px;
+            padding: 7px 10px;
+            font-size: 12px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+        }
+        .conn-tile-foot .conn-catalogue-add { margin-left: auto; padding: 7px 15px; }
+        .conn-added {
+            margin-left: auto;
+            padding: 7px 15px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-muted);
+            cursor: default;
+        }
+        .conn-advanced {
+            margin-top: 26px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px 18px;
+            background: var(--bg-card);
+        }
+        .conn-advanced summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+        .conn-advanced-note {
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.6;
+            margin: 12px 0;
         }
         .conn-list { display: flex; flex-direction: column; gap: 12px; }
         .conn-card {
@@ -3736,16 +3879,29 @@ _INDEX_HTML = """<!DOCTYPE html>
                        picked up on the next conversation.</p>
                 </div>
 
-                <div class="conn-add">
-                    <input id="conn-name" placeholder="Name (e.g. github)" />
-                    <input id="conn-command" placeholder="Command (e.g. npx)" />
-                    <input id="conn-args" placeholder="Arguments (e.g. -y @modelcontextprotocol/server-github)" />
-                    <button class="btn-primary" id="conn-add-btn">Add</button>
+                <h3 class="conn-heading">🧩 Available</h3>
+                <div id="conn-catalogue" class="conn-catalogue">
+                    <div class="loading"><div class="spinner"></div></div>
                 </div>
 
+                <h3 class="conn-heading">🔗 Configured</h3>
                 <div id="conn-list" class="conn-list">
                     <div class="loading"><div class="spinner"></div></div>
                 </div>
+
+                <details id="conn-advanced" class="conn-advanced">
+                    <summary>⚙️ Add a server manually</summary>
+                    <p class="conn-advanced-note">Pin an exact version. A package
+                       without one (<code>@latest</code>, or no version at all) is
+                       refused at launch, because it hands whoever controls that
+                       package a fresh run of their code every time Jarvis starts.</p>
+                    <div class="conn-add">
+                        <input id="conn-name" placeholder="Name (e.g. github)" />
+                        <input id="conn-command" placeholder="Command (e.g. npx)" />
+                        <input id="conn-args" placeholder="Arguments (e.g. -y @modelcontextprotocol/server-github@2025.4.8)" />
+                        <button class="btn-primary" id="conn-add-btn">Add</button>
+                    </div>
+                </details>
             </div>
         </div>
     </main>
@@ -4211,6 +4367,7 @@ _INDEX_HTML = """<!DOCTYPE html>
                 initGraph();
             } else if (currentTab === 'connections') {
                 connPane.style.display = '';
+                loadCatalogue();
                 loadConnections();
             } else if (currentTab === 'settings') {
                 settingsPane.style.display = '';
@@ -4285,6 +4442,62 @@ _INDEX_HTML = """<!DOCTYPE html>
         });
 
         // ── Connections (MCP) ─────────────────────────────────────────
+        async function loadCatalogue() {
+            const grid = document.getElementById('conn-catalogue');
+            grid.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            try {
+                const data = await (await fetch('/api/mcp/catalogue')).json();
+                if (!data.entries.length) {
+                    grid.innerHTML = '';
+                    return;
+                }
+                // No "verified" tick anywhere here: Jarvis does not vet these
+                // servers, and a badge implying otherwise would undercut the
+                // whole reason the MCP security layer exists.
+                grid.innerHTML = data.entries.map(e => {
+                    const keyField = e.needs_api_key && !e.configured
+                        ? `<input class="conn-key" data-name="${escapeHtml(e.name)}"
+                                  type="password" placeholder="API key"
+                                  title="${escapeHtml(e.api_key_hint)}" />`
+                        : '';
+                    const button = e.configured
+                        ? '<button class="conn-added" disabled>Added</button>'
+                        : `<button class="conn-catalogue-add btn-primary"
+                                   data-name="${escapeHtml(e.name)}">Add</button>`;
+                    return `<div class="conn-tile${e.configured ? ' is-added' : ''}">
+                        <div class="conn-tile-name">${escapeHtml(e.display_name)}</div>
+                        <div class="conn-tile-desc">${escapeHtml(e.description)}</div>
+                        <div class="conn-tile-foot">
+                            <span class="conn-tag">${escapeHtml(e.category)}</span>
+                            ${keyField}
+                            ${button}
+                        </div>
+                        ${e.needs_api_key && !e.configured
+                            ? `<div class="conn-tile-hint">${escapeHtml(e.api_key_hint)}</div>` : ''}
+                    </div>`;
+                }).join('');
+
+                grid.querySelectorAll('.conn-catalogue-add').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const name = btn.dataset.name;
+                        const keyInput = grid.querySelector('.conn-key[data-name="' + name + '"]');
+                        btn.disabled = true;
+                        const res = await fetch('/api/mcp/catalogue/' + encodeURIComponent(name), {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({api_key: keyInput ? keyInput.value.trim() : ''})
+                        });
+                        if (!res.ok) { btn.disabled = false; return; }
+                        loadCatalogue();
+                        loadConnections();
+                    });
+                });
+            } catch (err) {
+                grid.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div>'
+                    + '<div class="empty-title">Could not load the directory</div></div>';
+            }
+        }
+
         async function loadConnections() {
             const list = document.getElementById('conn-list');
             list.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
@@ -4319,6 +4532,7 @@ _INDEX_HTML = """<!DOCTYPE html>
                     btn.addEventListener('click', async () => {
                         await fetch('/api/mcp/' + encodeURIComponent(btn.dataset.name),
                                     {method: 'DELETE'});
+                        loadCatalogue();
                         loadConnections();
                     });
                 });
@@ -4343,6 +4557,7 @@ _INDEX_HTML = """<!DOCTYPE html>
                 document.getElementById('conn-name').value = '';
                 document.getElementById('conn-command').value = '';
                 document.getElementById('conn-args').value = '';
+                loadCatalogue();
                 loadConnections();
             }
         });

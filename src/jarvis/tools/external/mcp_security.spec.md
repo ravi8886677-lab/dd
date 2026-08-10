@@ -62,8 +62,26 @@ disappear behind one error line each. It only rewrites an entry whose
 name, command and package name all match a catalogue entry, so a
 hand-written config is never changed under the user; anything else is
 refused with the message above. The catalogue module is loaded from its
-file rather than imported, because `desktop_app/__init__` pulls in Qt
-and a headless install has to be able to re-pin too.
+file rather than imported (`jarvis.utils.mcp_catalogue`), because
+`desktop_app/__init__` pulls in Qt and a headless install has to be able
+to re-pin too. The web dashboard loads it the same way.
+
+### The connections directory
+
+The dashboard serves the catalogue at `/api/mcp/catalogue` and adds an
+entry through `POST /api/mcp/catalogue/<name>`, which writes the entry's
+own pinned args. A user clicking Add therefore cannot produce a config
+the launcher will refuse. The manual three-box form still exists behind
+an Advanced disclosure, because pinning is a rule about what Jarvis will
+launch, not a reason to stop people configuring their own servers.
+
+**The directory makes no safety claim.** There is no "verified" badge and
+no field an interface could render one from. On other directories that
+mark means the vendor vetted the server. Jarvis vets nothing, and every
+defence in this document exists precisely because a server that looks
+fine may not be. A badge would have to mean something checkable, such as
+"pinned version" or "in the curated catalogue", and say so in those
+words.
 
 ## Trust: fingerprints
 
