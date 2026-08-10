@@ -12,6 +12,7 @@ import sqlite3
 import os
 import secrets
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -38,7 +39,9 @@ app = Flask(__name__)
 #
 # So: a token minted per server start, and a Host allow-list. The token
 # is handed to the browser once via the launch URL and kept in a cookie;
-# nothing needs to be stored on disk.
+# nothing needs to be stored on disk. Rate limits sit behind both, so a
+# token cannot be guessed at speed and the endpoints that register a
+# spawnable command cannot be driven in a tight loop.
 # The desktop app launches this as a subprocess and needs the same
 # token to build the window's URL, so it may mint one and pass it in.
 _SESSION_TOKEN = os.environ.get("JARVIS_DASHBOARD_TOKEN") or secrets.token_urlsafe(32)
@@ -47,6 +50,62 @@ _TOKEN_COOKIE = "jarvis_dashboard_token"
 # Host headers that may address this server. Anything else means the
 # request arrived via a name that resolves here — the rebinding case.
 _ALLOWED_HOST_NAMES = {"localhost", "127.0.0.1", "[::1]", "::1"}
+
+# ── Rate limits ──────────────────────────────────────────────────────────
+# The dashboard serves one person on their own machine, so these ceilings
+# sit far above anything a human clicking around will reach. They exist to
+# blunt automation: guessing the session token, and hammering the endpoints
+# that write a command Jarvis later spawns.
+RATE_LIMIT_WINDOW_SEC = 60.0
+# Wrong tokens tolerated per window before refusing to answer at all. Must
+# stay clear of the page's own traffic: it polls twice every five seconds, so
+# a tab left open across a restart sends 24 failures a minute by itself. The
+# token is 32 random bytes, so this ceiling is belt-and-braces rather than the
+# thing making a guess hopeless.
+MAX_AUTH_FAILURES = 60
+# Writes to the MCP config endpoints per window. Adding every entry in the
+# catalogue by hand is well inside this.
+MAX_WRITES_PER_WINDOW = 30
+
+_rate_lock = threading.Lock()
+# Event timestamps per bucket, oldest first. Trimmed to the window on every
+# read, so this cannot grow without bound.
+_rate_events: dict[str, list[float]] = {}
+
+# Named seam for the clock. Patching ``time.monotonic`` through the module
+# attribute would swap it for the whole process; see utils/backoff.py.
+_now = time.monotonic
+
+
+def _trim(bucket: str, now: float) -> list[float]:
+    """Drop events that have aged out. Caller holds the lock."""
+    events = [t for t in _rate_events.get(bucket, []) if now - t < RATE_LIMIT_WINDOW_SEC]
+    _rate_events[bucket] = events
+    return events
+
+
+def _rate_limited(bucket: str, limit: int) -> bool:
+    """Whether ``bucket`` is over ``limit``, without recording anything.
+
+    Read-only so a caller holding the correct token is not charged for
+    someone else's failures, and so a lockout ages out on its own rather
+    than being extended by every request that arrives during it.
+    """
+    with _rate_lock:
+        return len(_trim(bucket, _now())) >= limit
+
+
+def _record_event(bucket: str) -> None:
+    """Count one event against ``bucket``."""
+    now = _now()
+    with _rate_lock:
+        _trim(bucket, now).append(now)
+
+
+def _reset_rate_limits() -> None:
+    """Clear every bucket. For tests and for a fresh launch."""
+    with _rate_lock:
+        _rate_events.clear()
 
 
 # Values that count as switching the token off. Anything else — including
@@ -104,18 +163,45 @@ def _guard_request():
     if not _host_is_allowed(request.headers.get("Host", "")):
         return jsonify({"error": "unrecognised Host header"}), 403
 
-    # The landing page accepts the token as a query parameter and stores
-    # it, so the user only ever pastes the launch URL.
-    if request.path == "/":
-        return None
-
     supplied = (
         request.headers.get("X-Dashboard-Token")
         or request.cookies.get(_TOKEN_COOKIE)
         or request.args.get("token", "")
     )
+
     if not _token_matches(supplied):
+        # Checked before recording, so a request already being refused does
+        # not re-arm the window that refused it. Recording first would let a
+        # flood hold itself locked out for as long as it kept going, and grow
+        # the bucket without limit inside the lock every other request needs.
+        if _rate_limited("auth", MAX_AUTH_FAILURES):
+            return jsonify({"error": "too many failed attempts — try again shortly"}), 429
+        # Failures against "/" count too. That path is exempt from the refusal
+        # below so it can render its own guidance, but it still compares the
+        # token and answers 200 or 401, so leaving it uncounted would make it
+        # an oracle that answers guesses forever.
+        _record_event("auth")
+        debug_log("dashboard rejected a bad token", "memory_viewer")
+        if request.path == "/":
+            # The landing page accepts the token as a query parameter and
+            # stores it, so the user only ever pastes the launch URL. A bare
+            # 401 body here would leave them with no way forward.
+            return None
         return jsonify({"error": "unauthorised — reopen the dashboard from its launch URL"}), 401
+
+    # A request carrying the real token is never charged for someone else's
+    # failures. The bucket is dashboard-wide, so charging it would let a
+    # forgotten tab with a dead cookie — the page polls itself twice every
+    # five seconds — lock the owner out of their own diary.
+
+    # /api/mcp and /api/mcp/catalogue/<name> both register a command Jarvis
+    # will spawn, so they share one budget — limiting them separately would
+    # just mean using the other one.
+    if request.method in ("POST", "DELETE") and request.path.startswith("/api/mcp"):
+        if _rate_limited("mcp_write", MAX_WRITES_PER_WINDOW):
+            debug_log("dashboard MCP writes over the limit; refusing", "memory_viewer")
+            return jsonify({"error": "too many changes at once — try again shortly"}), 429
+        _record_event("mcp_write")
     return None
 
 # Global database connection
@@ -448,6 +534,178 @@ def mcp_list() -> Response:
             for name, spec in servers.items()
         ]
     })
+
+
+@app.route("/api/mcp/catalogue")
+def mcp_catalogue_list() -> Response:
+    """The curated directory, with what a grid needs to render each entry.
+
+    ``configured`` lets the grid show Added rather than Add, so a server is
+    not installed twice.
+
+    There is deliberately no "verified" flag. On other directories that mark
+    means the vendor vetted the server; Jarvis vets nothing, and the entire
+    MCP security layer exists because a server that looks fine may not be.
+    """
+    from jarvis.config import _load_json
+    from jarvis.utils.mcp_catalogue import load_entries
+
+    configured = set((_load_json(_config_path()).get("mcps") or {}).keys())
+
+    return jsonify({
+        "entries": [
+            {
+                "name": e.name,
+                "display_name": e.display_name,
+                "description": e.description,
+                "category": e.category,
+                "needs_api_key": bool(e.needs_api_key),
+                "api_key_hint": e.api_key_hint or "",
+                "command": e.command,
+                "args": list(e.args),
+                "configured": e.name in configured,
+            }
+            for e in load_entries()
+        ]
+    })
+
+
+@app.route("/api/mcp/catalogue/<name>", methods=["POST"])
+def mcp_catalogue_add(name: str) -> Response:
+    """Add a curated server using the catalogue's own pinned arguments.
+
+    The manual form lets someone type a package without a version, which the
+    supply-chain guard then refuses at spawn time. Adding from the catalogue
+    cannot produce that state, because the args come from the entry rather
+    than from anything typed.
+    """
+    from jarvis.config import _load_json, _save_json
+    from jarvis.utils.mcp_catalogue import load_by_name
+
+    entry = load_by_name().get(name)
+    if entry is None:
+        return jsonify({"error": f"no catalogue entry named {name}"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    api_key = str(payload.get("api_key", "")).strip()
+    extra_env = {}
+    if api_key and entry.api_key_env_var:
+        extra_env[entry.api_key_env_var] = api_key
+
+    path = _config_path()
+    cfg_json = _load_json(path)
+    mcps = cfg_json.setdefault("mcps", {})
+    collision = _key_collision(mcps, name)
+    if collision is not None:
+        return collision
+    mcps[name] = entry.to_config(extra_env or None)
+    if not _save_json(path, cfg_json):
+        return jsonify({"error": "could not write config.json"}), 500
+    debug_log(f"added catalogue MCP server {name} from the dashboard", "memory_viewer")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/mcp/registry")
+def mcp_registry_list() -> Response:
+    """The registry directory, read from the local cache only.
+
+    Browsing never reaches the network. Running with no network is a
+    supported way to use Jarvis, and the dashboard renders the user's diary,
+    so it does not quietly make outbound requests while they read it.
+    """
+    from jarvis.config import _load_json
+    from jarvis.tools.external.mcp_registry import load_cached
+
+    entries, fetched_at = load_cached()
+    configured = set((_load_json(_config_path()).get("mcps") or {}).keys())
+    for entry in entries:
+        entry["configured"] = _registry_config_name(entry["name"]) in configured
+    return jsonify({"entries": entries, "fetched_at": fetched_at})
+
+
+@app.route("/api/mcp/registry/refresh", methods=["POST"])
+def mcp_registry_refresh() -> Response:
+    """Fetch the registry. Explicit, because it is the one outbound request
+    the dashboard makes and the user should be the one asking for it."""
+    from jarvis.tools.external.mcp_registry import RegistryUnavailableError, refresh
+
+    try:
+        entries = refresh()
+    except RegistryUnavailableError as e:
+        return jsonify({"error": f"could not reach the registry: {e}"}), 503
+    return jsonify({"ok": True, "count": len(entries)})
+
+
+def _key_collision(mcps: dict, key: str) -> Optional[Response]:
+    """A 409 when ``key`` is taken, or ``None`` when it is free.
+
+    Config keys are flat while registry names are namespaced, so
+    `io.github.evil/github`, `io.github.honest/github` and the curated
+    `github` all want the same key. Whichever add path runs second must
+    refuse: overwriting swaps a configured server, and any credential stored
+    beside it, for different code, while the other grid goes on reporting the
+    original as installed. The check belongs to every path that writes a key,
+    not just the one where the collision was first noticed.
+    """
+    if key not in mcps:
+        return None
+    debug_log(f"refused add: config key '{key}' already exists", "memory_viewer")
+    return jsonify({
+        "error": f"a server named '{key}' already exists; remove it first",
+    }), 409
+
+
+def _registry_config_name(registry_name: str) -> str:
+    """A config key for a registry server.
+
+    Registry names are reverse-DNS paths (``io.github.acme/thing``). The
+    part after the slash is what a person would call the server, and the
+    tool namespace derives from it.
+    """
+    return registry_name.rsplit("/", 1)[-1] or registry_name
+
+
+@app.route("/api/mcp/registry/add", methods=["POST"])
+def mcp_registry_add() -> Response:
+    """Install a cached registry server using its pinned package version."""
+    from jarvis.config import _load_json, _save_json
+    from jarvis.tools.external.mcp_registry import find_cached
+    from jarvis.tools.external.mcp_supply_chain import validate_server_launch
+
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name", "")).strip()
+    entry = find_cached(name) if name else None
+    if entry is None:
+        return jsonify({"error": f"no cached registry entry named {name}"}), 404
+    if not entry.get("install"):
+        # Either the package is unpinned or its ecosystem is one the
+        # supply-chain guard cannot pin, so any config written here would be
+        # refused at spawn time.
+        return jsonify({"error": "that server has no pinned package to install"}), 400
+
+    install = entry.get("install")
+    # The cache is plain JSON in the config directory, so pin checking at
+    # fetch time says nothing about what is on disk now. The spawn-time guard
+    # is the only check that agrees with spawn time, so run it here too.
+    if not isinstance(install, dict):
+        return jsonify({"error": "that server has no usable launch config"}), 400
+    path = _config_path()
+    cfg_json = _load_json(path)
+    mcps = cfg_json.setdefault("mcps", {})
+    key = _registry_config_name(name)
+    collision = _key_collision(mcps, key)
+    if collision is not None:
+        return collision
+    try:
+        validate_server_launch(key, install)
+    except Exception as e:  # noqa: BLE001
+        debug_log(f"refused registry add {name}: {e}", "memory_viewer")
+        return jsonify({"error": "that server has no pinned package to install"}), 400
+    mcps[key] = dict(install)
+    if not _save_json(path, cfg_json):
+        return jsonify({"error": "could not write config.json"}), 500
+    debug_log(f"added registry MCP server {name} from the dashboard", "memory_viewer")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/mcp", methods=["POST"])
@@ -1911,6 +2169,110 @@ _INDEX_HTML = """<!DOCTYPE html>
             color: #14110a;
             font-weight: 600;
             cursor: pointer;
+        }
+        .conn-heading {
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin: 26px 0 12px;
+        }
+        .conn-catalogue {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 12px;
+        }
+        .conn-tile {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 16px 18px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+        .conn-tile.is-added { opacity: 0.62; }
+        .conn-tile-name { font-weight: 600; font-size: 15px; }
+        .conn-tile-desc {
+            font-size: 13px;
+            color: var(--text-muted);
+            line-height: 1.5;
+            flex: 1;
+        }
+        .conn-tile-foot {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .conn-tile-hint { font-size: 11px; color: var(--text-muted); }
+        .conn-error {
+            flex-basis: 100%;
+            margin-top: 6px;
+            font-size: 11px;
+            color: var(--error-light);
+        }
+        .conn-tag {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            padding: 4px 9px;
+            border-radius: 999px;
+            background: var(--bg-hover);
+            color: var(--text-muted);
+        }
+        .conn-key {
+            flex: 1;
+            min-width: 110px;
+            padding: 7px 10px;
+            font-size: 12px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+        }
+        .conn-tile-foot .conn-catalogue-add { margin-left: auto; padding: 7px 15px; }
+        .conn-added {
+            margin-left: auto;
+            padding: 7px 15px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-muted);
+            cursor: default;
+        }
+        .conn-advanced {
+            margin-top: 26px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px 18px;
+            background: var(--bg-card);
+        }
+        .conn-advanced summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+        .conn-registry-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .conn-registry-bar input {
+            flex: 1;
+            padding: 9px 12px;
+            font-size: 13px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            color: var(--text-primary);
+        }
+        .conn-registry-age {
+            font-size: 11px;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+        .conn-advanced-note {
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.6;
+            margin: 12px 0;
         }
         .conn-list { display: flex; flex-direction: column; gap: 12px; }
         .conn-card {
@@ -3736,16 +4098,45 @@ _INDEX_HTML = """<!DOCTYPE html>
                        picked up on the next conversation.</p>
                 </div>
 
-                <div class="conn-add">
-                    <input id="conn-name" placeholder="Name (e.g. github)" />
-                    <input id="conn-command" placeholder="Command (e.g. npx)" />
-                    <input id="conn-args" placeholder="Arguments (e.g. -y @modelcontextprotocol/server-github)" />
-                    <button class="btn-primary" id="conn-add-btn">Add</button>
+                <h3 class="conn-heading">🧩 Available</h3>
+                <div id="conn-catalogue" class="conn-catalogue">
+                    <div class="loading"><div class="spinner"></div></div>
                 </div>
 
+                <h3 class="conn-heading">🔗 Configured</h3>
                 <div id="conn-list" class="conn-list">
                     <div class="loading"><div class="spinner"></div></div>
                 </div>
+
+                <details id="conn-registry-panel" class="conn-advanced">
+                    <summary>🌍 Browse the public registry</summary>
+                    <p class="conn-advanced-note">Thousands of servers published
+                       by whoever wrote them. The registry proves the publisher
+                       controls the namespace (a GitHub account, or a domain).
+                       That says who published it, not that the code is safe or
+                       that anyone has reviewed it. Treat these as you would any
+                       software off the internet.</p>
+                    <div class="conn-registry-bar">
+                        <input id="conn-registry-search" placeholder="Filter by name or description" />
+                        <button class="btn-primary" id="conn-registry-refresh">Refresh</button>
+                        <span id="conn-registry-age" class="conn-registry-age"></span>
+                    </div>
+                    <div id="conn-registry" class="conn-catalogue"></div>
+                </details>
+
+                <details id="conn-advanced" class="conn-advanced">
+                    <summary>⚙️ Add a server manually</summary>
+                    <p class="conn-advanced-note">Pin an exact version. A package
+                       without one (<code>@latest</code>, or no version at all) is
+                       refused at launch, because it hands whoever controls that
+                       package a fresh run of their code every time Jarvis starts.</p>
+                    <div class="conn-add">
+                        <input id="conn-name" placeholder="Name (e.g. github)" />
+                        <input id="conn-command" placeholder="Command (e.g. npx)" />
+                        <input id="conn-args" placeholder="Arguments (e.g. -y @modelcontextprotocol/server-github@2025.4.8)" />
+                        <button class="btn-primary" id="conn-add-btn">Add</button>
+                    </div>
+                </details>
             </div>
         </div>
     </main>
@@ -4211,6 +4602,8 @@ _INDEX_HTML = """<!DOCTYPE html>
                 initGraph();
             } else if (currentTab === 'connections') {
                 connPane.style.display = '';
+                loadCatalogue();
+                loadRegistry();
                 loadConnections();
             } else if (currentTab === 'settings') {
                 settingsPane.style.display = '';
@@ -4285,6 +4678,184 @@ _INDEX_HTML = """<!DOCTYPE html>
         });
 
         // ── Connections (MCP) ─────────────────────────────────────────
+        async function loadCatalogue() {
+            const grid = document.getElementById('conn-catalogue');
+            grid.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            try {
+                const data = await (await fetch('/api/mcp/catalogue')).json();
+                if (!data.entries.length) {
+                    grid.innerHTML = '';
+                    return;
+                }
+                // No "verified" tick anywhere here: Jarvis does not vet these
+                // servers, and a badge implying otherwise would undercut the
+                // whole reason the MCP security layer exists.
+                grid.innerHTML = data.entries.map(e => {
+                    const keyField = e.needs_api_key && !e.configured
+                        ? `<input class="conn-key" data-name="${escapeHtml(e.name)}"
+                                  type="password" placeholder="API key"
+                                  title="${escapeHtml(e.api_key_hint)}" />`
+                        : '';
+                    const button = e.configured
+                        ? '<button class="conn-added" disabled>Added</button>'
+                        : `<button class="conn-catalogue-add btn-primary"
+                                   data-name="${escapeHtml(e.name)}">Add</button>`;
+                    return `<div class="conn-tile${e.configured ? ' is-added' : ''}">
+                        <div class="conn-tile-name">${escapeHtml(e.display_name)}</div>
+                        <div class="conn-tile-desc">${escapeHtml(e.description)}</div>
+                        <div class="conn-tile-foot">
+                            <span class="conn-tag">${escapeHtml(e.category)}</span>
+                            ${keyField}
+                            ${button}
+                        </div>
+                        ${e.needs_api_key && !e.configured
+                            ? `<div class="conn-tile-hint">${escapeHtml(e.api_key_hint)}</div>` : ''}
+                    </div>`;
+                }).join('');
+
+                grid.querySelectorAll('.conn-catalogue-add').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const name = btn.dataset.name;
+                        const keyInput = grid.querySelector('.conn-key[data-name="' + name + '"]');
+                        btn.disabled = true;
+                        const res = await fetch('/api/mcp/catalogue/' + encodeURIComponent(name), {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({api_key: keyInput ? keyInput.value.trim() : ''})
+                        });
+                        if (!res.ok) {
+                            // 409 (name taken), 400 (nothing pinned to install) and 404 all
+                            // need saying: a button that silently re-enables invites another
+                            // click and the same silence.
+                            const body = await res.json().catch(() => ({}));
+                            const foot = btn.parentElement;
+                            let note = foot.querySelector('.conn-error');
+                            if (!note) {
+                                note = document.createElement('div');
+                                note.className = 'conn-error';
+                                foot.appendChild(note);
+                            }
+                            note.textContent = body.error || 'Could not add that server.';
+                            btn.disabled = false;
+                            return;
+                        }
+                        loadCatalogue();
+                        loadRegistry();
+                        loadConnections();
+                    });
+                });
+            } catch (err) {
+                grid.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div>'
+                    + '<div class="empty-title">Could not load the directory</div></div>';
+            }
+        }
+
+        let registryEntries = [];
+
+        function renderRegistry() {
+            const grid = document.getElementById('conn-registry');
+            const needle = document.getElementById('conn-registry-search').value.trim().toLowerCase();
+            const shown = registryEntries.filter(e => !needle
+                || e.name.toLowerCase().includes(needle)
+                || (e.description || '').toLowerCase().includes(needle));
+            if (!shown.length) {
+                grid.innerHTML = '<div class="empty-state"><div class="empty-icon">🌍</div>'
+                    + '<div class="empty-title">Nothing cached yet</div>'
+                    + '<p>Refresh to fetch the registry.</p></div>';
+                return;
+            }
+            grid.innerHTML = shown.slice(0, 60).map(e => {
+                // The proof is about identity, never about safety, so it is
+                // worded as who was checked rather than as a tick.
+                const proof = e.namespace_proof === 'github'
+                    ? 'GitHub account checked' : 'Domain checked';
+                let action;
+                if (e.configured) {
+                    action = '<button class="conn-added" disabled>Added</button>';
+                } else if (e.install) {
+                    action = `<button class="conn-registry-add btn-primary"
+                                      data-name="${escapeHtml(e.name)}">Add</button>`;
+                } else {
+                    action = `<span class="conn-tag" title="${e.remote_url
+                        ? 'A hosted server: add it under Advanced with its URL.'
+                        : 'No pinned package, so it cannot be launched safely.'}">not installable</span>`;
+                }
+                return `<div class="conn-tile${e.configured ? ' is-added' : ''}">
+                    <div class="conn-tile-name">${escapeHtml(e.title || e.name)}</div>
+                    <div class="conn-tile-desc">${escapeHtml(e.description)}</div>
+                    <div class="conn-tile-foot">
+                        <span class="conn-tag" title="${escapeHtml(proof)}">${escapeHtml(e.namespace)}</span>
+                        ${action}
+                    </div>
+                    <div class="conn-tile-hint">${escapeHtml(proof)} · v${escapeHtml(e.version)}</div>
+                </div>`;
+            }).join('');
+
+            grid.querySelectorAll('.conn-registry-add').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    btn.disabled = true;
+                    const res = await fetch('/api/mcp/registry/add', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({name: btn.dataset.name})
+                    });
+                    if (!res.ok) {
+                        // 409 (name taken), 400 (nothing pinned to install) and 404 all
+                        // need saying: a button that silently re-enables invites another
+                        // click and the same silence.
+                        const body = await res.json().catch(() => ({}));
+                        const foot = btn.parentElement;
+                        let note = foot.querySelector('.conn-error');
+                        if (!note) {
+                            note = document.createElement('div');
+                            note.className = 'conn-error';
+                            foot.appendChild(note);
+                        }
+                        note.textContent = body.error || 'Could not add that server.';
+                        btn.disabled = false;
+                        return;
+                    }
+                    loadCatalogue();
+                    loadRegistry();
+                    loadConnections();
+                });
+            });
+        }
+
+        async function loadRegistry() {
+            try {
+                const data = await (await fetch('/api/mcp/registry')).json();
+                registryEntries = data.entries || [];
+                const age = document.getElementById('conn-registry-age');
+                // A cached directory that hides its age invites acting on
+                // stale data, so the fetch time is always on screen.
+                age.textContent = data.fetched_at
+                    ? 'Cached ' + new Date(data.fetched_at * 1000).toLocaleString()
+                    : 'Never fetched';
+                renderRegistry();
+            } catch (err) {
+                registryEntries = [];
+                renderRegistry();
+            }
+        }
+
+        document.getElementById('conn-registry-refresh').addEventListener('click', async () => {
+            const btn = document.getElementById('conn-registry-refresh');
+            const age = document.getElementById('conn-registry-age');
+            btn.disabled = true;
+            age.textContent = 'Fetching…';
+            const res = await fetch('/api/mcp/registry/refresh', {method: 'POST'});
+            btn.disabled = false;
+            if (!res.ok) {
+                age.textContent = 'Could not reach the registry';
+                return;
+            }
+            loadRegistry();
+        });
+
+        document.getElementById('conn-registry-search')
+            .addEventListener('input', renderRegistry);
+
         async function loadConnections() {
             const list = document.getElementById('conn-list');
             list.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
@@ -4319,6 +4890,8 @@ _INDEX_HTML = """<!DOCTYPE html>
                     btn.addEventListener('click', async () => {
                         await fetch('/api/mcp/' + encodeURIComponent(btn.dataset.name),
                                     {method: 'DELETE'});
+                        loadCatalogue();
+                        loadRegistry();
                         loadConnections();
                     });
                 });
@@ -4343,6 +4916,8 @@ _INDEX_HTML = """<!DOCTYPE html>
                 document.getElementById('conn-name').value = '';
                 document.getElementById('conn-command').value = '';
                 document.getElementById('conn-args').value = '';
+                loadCatalogue();
+                loadRegistry();
                 loadConnections();
             }
         });

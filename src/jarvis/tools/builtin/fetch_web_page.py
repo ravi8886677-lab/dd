@@ -3,6 +3,12 @@
 import requests
 from typing import Dict, Any, Optional
 from ...debug import debug_log
+from ...utils.net_guard import (
+    NonPublicAddressError,
+    UnresolvableHostError,
+    UnsafeURLError,
+    guarded_get,
+)
 from ..base import Tool, ToolContext
 from ..types import ToolExecutionResult
 
@@ -52,7 +58,7 @@ class FetchWebPageTool(Tool):
             }
             # ``with`` releases the connection back to the pool deterministically
             # even if BeautifulSoup or the link extraction raises midway.
-            with requests.get(url, headers=headers, timeout=15, allow_redirects=True) as response:
+            with guarded_get(url, headers=headers, timeout=15) as response:
                 response.raise_for_status()
                 response_content = response.content
                 response_text = response.text
@@ -113,6 +119,31 @@ class FetchWebPageTool(Tool):
                 debug_log("fetchWebPage: BeautifulSoup not available, returning raw text", "web")
                 context.user_print("✅ Page content fetched (raw).")
                 return ToolExecutionResult(success=True, reply_text=reply_text)
+        except UnresolvableHostError as e:
+            # Not a policy refusal — a typo or a DNS outage. Say so plainly so
+            # the model can retry or correct the address rather than concluding
+            # the host is forbidden.
+            debug_log(f"fetchWebPage: could not resolve {url}: {e}", "web")
+            context.user_print("⚠️ Could not resolve that address.")
+            return ToolExecutionResult(
+                success=False,
+                reply_text=f"Failed to fetch page: could not resolve the host in {url}.",
+            )
+        except NonPublicAddressError as e:
+            debug_log(f"fetchWebPage: refused {url}: {e}", "web")
+            context.user_print("🔒 Refused: that address is not on the public internet.")
+            return ToolExecutionResult(
+                success=False,
+                reply_text=(
+                    f"Refused to fetch {url}: it is not a public internet address. "
+                    "Local, private and link-local addresses are blocked. Do not "
+                    "retry this address in another form."
+                ),
+            )
+        except UnsafeURLError as e:
+            debug_log(f"fetchWebPage: refused {url}: {e}", "web")
+            context.user_print("⚠️ Failed to fetch page.")
+            return ToolExecutionResult(success=False, reply_text=f"Failed to fetch page: {e}")
         except requests.exceptions.RequestException as e:
             debug_log(f"fetchWebPage: request failed: {e}", "web")
             context.user_print("⚠️ Failed to fetch page.")

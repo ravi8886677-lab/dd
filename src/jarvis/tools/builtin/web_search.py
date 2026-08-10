@@ -1,14 +1,12 @@
 """Web search tool implementation using DuckDuckGo."""
 
-import ipaddress
 import re
-import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse
 
 import requests
 from typing import Dict, Any, Optional, List, Tuple
 from ...debug import debug_log
+from ...utils.net_guard import guarded_get, is_public_url
 from ..base import Tool, ToolContext
 from ..types import ToolExecutionResult
 
@@ -31,52 +29,6 @@ _MAX_REDIRECTS = 3
 _MAX_FETCH_BYTES = 512 * 1024
 
 
-def _is_public_url(url: str) -> bool:
-    """Reject non-http(s) schemes and URLs pointing to private/loopback IPs.
-
-    Defence against SSRF: search results (or a redirect chain from one) could
-    point at 127.0.0.1, 169.254.169.254 (cloud metadata), 10.x/192.168.x, or
-    file:///etc/passwd. We resolve the hostname and check every A/AAAA record
-    against ipaddress.is_private / is_loopback / is_link_local / is_reserved
-    before issuing the request.
-    """
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return False
-    if parsed.scheme not in ("http", "https"):
-        return False
-    host = parsed.hostname
-    if not host:
-        return False
-    # Literal IP in the URL — check directly, don't resolve.
-    try:
-        ip = ipaddress.ip_address(host)
-        return not (ip.is_private or ip.is_loopback or ip.is_link_local
-                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
-    except ValueError:
-        pass
-    # Hostname — resolve all addresses and reject if any is non-public. This
-    # is stricter than checking only the first A record: a hostile DNS could
-    # return [1.1.1.1, 127.0.0.1] and some clients would try both.
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception as e:
-        debug_log(f"DNS lookup failed for {host}: {e}", "web")
-        return False
-    for info in infos:
-        try:
-            addr = info[4][0]
-            ip = ipaddress.ip_address(addr)
-            if (ip.is_private or ip.is_loopback or ip.is_link_local
-                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-                debug_log(f"Rejecting {url}: resolves to non-public {addr}", "web")
-                return False
-        except Exception:
-            return False
-    return True
-
-
 def _fetch_page_content(url: str, max_chars: int = 1500,
                         timeout: float = _FETCH_TIMEOUT_SEC) -> Optional[str]:
     """Fetch and extract text content from a URL.
@@ -84,52 +36,36 @@ def _fetch_page_content(url: str, max_chars: int = 1500,
     Returns extracted text content, or None if fetch fails, the URL is unsafe,
     or a redirect chain crosses into non-public address space.
     """
-    if not _is_public_url(url):
-        return None
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
         }
-        # Manual redirect walk so we can re-validate each hop against the SSRF
-        # allowlist. Limit to _MAX_REDIRECTS to cap latency.
-        current_url = url
-        response: Optional[requests.Response] = None
-        for _ in range(_MAX_REDIRECTS + 1):
-            response = requests.get(
-                current_url, headers=headers, timeout=timeout,
-                allow_redirects=False, stream=True,
-            )
-            if response.is_redirect or response.is_permanent_redirect:
-                next_url = response.headers.get("Location", "")
-                if not next_url:
-                    break
-                # Resolve relative redirects against the current URL.
-                from urllib.parse import urljoin
-                next_url = urljoin(current_url, next_url)
-                if not _is_public_url(next_url):
-                    debug_log(f"Refusing redirect to non-public {next_url}", "web")
-                    return None
-                current_url = next_url
-                response.close()
-                continue
-            break
-        if response is None:
-            return None
-        response.raise_for_status()
+        # guarded_get re-validates every redirect hop. A search result is an
+        # untrusted URL, so the destination is checked before each request
+        # rather than after the chain has already been followed.
+        # ``with`` matters here: the read below stops at the byte cap, leaving
+        # an unread body on the socket. The cascade runs several of these per
+        # query from a thread pool, so without it a session that searches
+        # repeatedly accumulates half-read connections.
+        with guarded_get(
+            url, headers=headers, timeout=timeout,
+            max_redirects=_MAX_REDIRECTS, stream=True,
+        ) as response:
+            response.raise_for_status()
 
-        # Stream-read with a byte cap so a hostile server can't exhaust memory.
-        chunks: list[bytes] = []
-        total = 0
-        for chunk in response.iter_content(chunk_size=8192):
-            if not chunk:
-                continue
-            chunks.append(chunk)
-            total += len(chunk)
-            if total >= _MAX_FETCH_BYTES:
-                break
-        body = b"".join(chunks)
+            # Stream-read with a byte cap so a hostile server can't exhaust memory.
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= _MAX_FETCH_BYTES:
+                    break
+            body = b"".join(chunks)
 
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(body, 'html.parser')
@@ -320,7 +256,7 @@ def _brave_search(query: str, api_key: str, count: int = 5
         for r in results[:count]:
             url = (r.get("url") or "").strip()
             title = (r.get("title") or "").strip()
-            if url and title and _is_public_url(url):
+            if url and title and is_public_url(url):
                 pairs.append((title, url))
         return pairs
     except Exception as e:

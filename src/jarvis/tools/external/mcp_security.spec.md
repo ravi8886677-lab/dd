@@ -62,8 +62,52 @@ disappear behind one error line each. It only rewrites an entry whose
 name, command and package name all match a catalogue entry, so a
 hand-written config is never changed under the user; anything else is
 refused with the message above. The catalogue module is loaded from its
-file rather than imported, because `desktop_app/__init__` pulls in Qt
-and a headless install has to be able to re-pin too.
+file rather than imported (`jarvis.utils.mcp_catalogue`), because
+`desktop_app/__init__` pulls in Qt and a headless install has to be able
+to re-pin too. The web dashboard loads it the same way.
+
+### The connections directory
+
+The dashboard serves the catalogue at `/api/mcp/catalogue` and adds an
+entry through `POST /api/mcp/catalogue/<name>`, which writes the entry's
+own pinned args. A user clicking Add therefore cannot produce a config
+the launcher will refuse. The manual three-box form still exists behind
+an Advanced disclosure, because pinning is a rule about what Jarvis will
+launch, not a reason to stop people configuring their own servers.
+
+### Rate limits on the dashboard
+
+Both write endpoints register a command Jarvis will later spawn, so they
+share one budget (`MAX_WRITES_PER_WINDOW`); budgeting them separately
+would only mean reaching for the other one. Failed token checks share a
+second budget (`MAX_AUTH_FAILURES`).
+
+Three properties make the auth budget safe to apply dashboard-wide, which
+it must be: the dashboard serves one person, and a per-client bucket is a
+per-guess bucket to whoever picks the client.
+
+1. **A valid token is never charged against it.** Otherwise anyone able to
+   send bad tokens could lock the owner out of their own diary, trading one
+   denial of service for another.
+2. **The limit clears the page's own traffic.** The dashboard polls itself
+   twice every five seconds, so a tab left open across a restart sends 24
+   failures a minute by itself, with a dead cookie and nobody at the
+   keyboard. A ceiling under that locks out on ordinary use.
+3. **`/` is counted even though it is not refused.** That path is exempt
+   from the JSON 401 so it can render its own guidance, but it compares the
+   token and answers 200 or 401 either way. Left uncounted it is an oracle
+   that answers guesses forever, and the limit everywhere else is
+   decoration.
+
+`tests/test_memory_viewer_rate_limit.py` holds all three.
+
+**The directory makes no safety claim.** There is no "verified" badge and
+no field an interface could render one from. On other directories that
+mark means the vendor vetted the server. Jarvis vets nothing, and every
+defence in this document exists precisely because a server that looks
+fine may not be. A badge would have to mean something checkable, such as
+"pinned version" or "in the curated catalogue", and say so in those
+words.
 
 ## Trust: fingerprints
 
@@ -242,6 +286,24 @@ provider; this module supplies the pieces it has no opinion about:
   the next call re-authorises rather than the daemon failing to start.
 - Under OAuth the provider owns the `Authorization` header and refreshes
   it as it expires, so no static bearer is added alongside it.
+- `verify_issuer` checks the RFC 9207 `iss` parameter on the
+  authorisation response. The SDK checks `state` and PKCE but not this,
+  and its callback contract returns only `(code, state)`, so the value is
+  read off the redirect here or lost. Without the check, a client that
+  talks to more than one authorisation server can be induced to send its
+  code to the wrong token endpoint, which hands the attacker a usable
+  code.
+
+  | `iss` | Metadata advertises it | Outcome |
+  |-------|------------------------|---------|
+  | matches | either | accepted |
+  | differs | either | refused |
+  | absent | yes | refused: the server promised one on every response |
+  | absent | no | accepted; RFC 9207 is opt-in and most providers have not adopted it |
+  | any | no metadata discovered | accepted; nothing to compare against |
+
+  Comparison is an exact case-sensitive string match (RFC 9207 §2.4).
+  Anything looser admits a lookalike host or a path suffix.
 
 `mcp_oauth.forget(server)` clears both entries — the Disconnect action.
 
@@ -324,9 +386,8 @@ and can read that file.
   only fixes *which* code runs.
 - **Proving a package is safe.** A pin makes the code reproducible, not
   trustworthy.
-- **RFC 9207 `iss` validation and audience checks.** Both belong to the
-  2026 spec revision; the pinned SDK's provider does not implement them,
-  so a malicious authorisation server response is not fully defended
-  against yet.
-- **Rate limiting the dashboard**, which remains gated by its session
-  token alone.
+- **Audience restriction of access tokens.** `iss` is validated (see
+  Authentication above), but Jarvis does not check that a token's
+  audience names the resource it is being sent to. The pinned SDK does
+  not surface the claim, so a token issued for one resource server is
+  not refused when presented to another.

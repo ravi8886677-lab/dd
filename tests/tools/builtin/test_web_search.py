@@ -364,7 +364,7 @@ class TestWebSearchTool:
     def test_is_public_url_rejects_private_and_non_http(self):
         """SSRF guard: loopback, private, link-local, metadata, and non-http URLs
         must all be rejected before we ever issue a request."""
-        from src.jarvis.tools.builtin.web_search import _is_public_url
+        from src.jarvis.utils.net_guard import is_public_url as _is_public_url
         # Scheme filter
         assert _is_public_url("file:///etc/passwd") is False
         assert _is_public_url("ftp://example.com/") is False

@@ -288,3 +288,95 @@ def test_runs_on_a_machine_without_audio_or_gui_libraries():
 
     assert result.returncode == 0, result.stderr
     assert "imported" in result.stdout
+
+
+@pytest.mark.unit
+class TestYoloFromTheTerminal:
+    """The tray and the dashboard can open the YOLO window; a plain terminal
+    session could not, so `python -m jarvis.chat` had no way to authorise an
+    action it was blocked from taking."""
+
+    @pytest.fixture(autouse=True)
+    def _closed_window(self):
+        from jarvis import approval
+        approval.revoke()
+        yield
+        approval.revoke()
+
+    def test_a_duration_opens_the_window(self, chat_cfg, recorded_queries, captured_diary):
+        from jarvis import approval
+
+        _session(chat_cfg, "/yolo 30\n/exit\n")
+
+        assert approval.is_active() is True
+        assert 29 * 60 < approval.remaining_sec() <= 30 * 60
+
+    def test_the_command_is_not_sent_to_the_assistant(
+        self, chat_cfg, recorded_queries, captured_diary,
+    ):
+        _session(chat_cfg, "/yolo 30\n/exit\n")
+
+        assert recorded_queries == []
+
+    def test_off_closes_the_window(self, chat_cfg, recorded_queries, captured_diary):
+        from jarvis import approval
+
+        _session(chat_cfg, "/yolo 30\n/yolo off\n/exit\n")
+
+        assert approval.is_active() is False
+
+    def test_bare_yolo_reports_status_without_granting(
+        self, chat_cfg, recorded_queries, captured_diary, capsys,
+    ):
+        """Asking the state must never change the state — otherwise a typo
+        grants the window it was meant to query."""
+        from jarvis import approval
+
+        _session(chat_cfg, "/yolo\n/exit\n")
+
+        assert approval.is_active() is False
+        assert "off" in capsys.readouterr().out.lower()
+
+    def test_status_shows_the_time_left_once_open(
+        self, chat_cfg, recorded_queries, captured_diary, capsys,
+    ):
+        _session(chat_cfg, "/yolo 30\n/yolo\n/exit\n")
+
+        assert "30" in capsys.readouterr().out
+
+    def test_the_confirmation_reads_as_a_sentence(
+        self, chat_cfg, recorded_queries, captured_diary, capsys,
+    ):
+        """describe_remaining() already ends in 'left', so the prefix must
+        not also say 'for'."""
+        _session(chat_cfg, "/yolo 30\n/exit\n")
+
+        out = capsys.readouterr().out
+        assert "for 30 min left" not in out
+        assert "30 min" in out
+
+    @pytest.mark.parametrize("bad", ["abc", "-5", "0", "nan", "true"])
+    def test_a_bad_duration_leaves_the_window_shut(
+        self, chat_cfg, recorded_queries, captured_diary, capsys, bad,
+    ):
+        from jarvis import approval
+
+        _session(chat_cfg, f"/yolo {bad}\n/exit\n")
+
+        assert approval.is_active() is False
+        assert recorded_queries == []
+
+    def test_an_absurd_duration_is_capped_not_refused(
+        self, chat_cfg, recorded_queries, captured_diary,
+    ):
+        from jarvis import approval
+
+        _session(chat_cfg, "/yolo 99999\n/exit\n")
+
+        assert approval.is_active() is True
+        assert approval.remaining_sec() <= approval.MAX_GRANT_MINUTES * 60
+
+    def test_help_lists_it(self, chat_cfg, recorded_queries, captured_diary, capsys):
+        _session(chat_cfg, "/help\n/exit\n")
+
+        assert "/yolo" in capsys.readouterr().out

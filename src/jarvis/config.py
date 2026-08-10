@@ -341,31 +341,10 @@ def _save_json(path: Path, data: Dict[str, Any]) -> bool:
 
 
 def _load_catalogue_by_name() -> Dict[str, Any]:
-    """Load the MCP catalogue without importing the desktop package.
+    """Catalogue entries keyed by config name, loaded without Qt."""
+    from .utils.mcp_catalogue import load_by_name
 
-    ``desktop_app/__init__`` imports the tray application, which needs
-    Qt. The catalogue itself is plain data, and a headless install must
-    still be able to re-pin its servers, so the module is loaded straight
-    from its file.
-    """
-    import importlib.util
-
-    module_path = Path(__file__).resolve().parent.parent / "desktop_app" / "mcp_catalogue.py"
-    if not module_path.exists():
-        return {}
-    spec = importlib.util.spec_from_file_location("_jarvis_mcp_catalogue", module_path)
-    if spec is None or spec.loader is None:
-        return {}
-    module = importlib.util.module_from_spec(spec)
-    # Registered before execution because ``dataclass`` resolves the
-    # defining module by name while the class body is being built.
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:  # noqa: BLE001
-        sys.modules.pop(spec.name, None)
-        return {}
-    return getattr(module, "CATALOGUE_BY_NAME", {}) or {}
+    return load_by_name()
 
 
 def _package_base(spec: str) -> str:

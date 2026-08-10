@@ -37,7 +37,9 @@ memory.
 ### SSRF guard
 
 Every URL — the initial one AND every hop of a redirect chain — is run
-through `_is_public_url` before any request fires. Rejected:
+through the shared guard in `jarvis.utils.net_guard` before any request
+fires. `guarded_get` owns the redirect walk; see `net_guard.spec.md` for the
+full contract. Rejected:
 
 - Non-`http(s)` schemes (e.g. `file://`, `ftp://`, `javascript:`).
 - Literal private IPs (10.x, 192.168.x, 127.x, 169.254.x, `::1`, etc.).
@@ -238,8 +240,8 @@ Regression tests assert:
 2. **Links-only envelope**: when every fetch returns None, the envelope
    contains the anti-confabulation clauses above and does NOT advertise a
    Content block.
-3. **SSRF**: `_is_public_url` rejects file/ftp/javascript schemes and
-   private/loopback/link-local/metadata/multicast IPs.
+3. **SSRF**: `net_guard.is_public_url` rejects file/ftp/javascript schemes
+   and private/loopback/link-local/metadata/multicast IPs.
 4. **Injection fence**: Content is wrapped in BEGIN/END UNTRUSTED WEB
    EXTRACT delimiters with the hostile payload strictly between them.
 5. **Rate-limit detection**: A DDG challenge response (HTTP 400 or

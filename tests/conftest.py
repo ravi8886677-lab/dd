@@ -132,6 +132,33 @@ def _isolate_user_config_path(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("JARVIS_CONFIG_PATH", str(sandbox / "config.json"))
 
 
+@pytest.fixture(autouse=True)
+def _clear_dashboard_rate_limits():
+    """Empty the dashboard's rate-limit buckets between tests.
+
+    ``memory_viewer._rate_events`` is module-level state shared by every test
+    that touches the dashboard. Several files deliberately provoke 401s and
+    dozens of MCP writes, and without this those accumulate across files
+    until an unrelated test trips a 429 that looks like a real failure.
+
+    Both import paths are reset because ``desktop_app.memory_viewer`` and
+    ``src.desktop_app.memory_viewer`` are separate module objects with
+    separate buckets, and different test files reach for different ones.
+    Only modules already imported are touched: importing either one here
+    would pull in the Qt tray package for every test in the suite.
+    """
+    def _reset():
+        for name in ("desktop_app.memory_viewer", "src.desktop_app.memory_viewer"):
+            module = sys.modules.get(name)
+            reset = getattr(module, "_reset_rate_limits", None)
+            if reset is not None:
+                reset()
+
+    _reset()
+    yield
+    _reset()
+
+
 @pytest.fixture
 def mock_config():
     """Provide a mock configuration for unit tests."""

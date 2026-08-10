@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional, Callable
 from urllib.parse import urlparse
 
+from ..utils.backoff import retry_backoff_sleep
 from ..debug import debug_log
 from ..utils.audio_lock import portaudio_lock
 
@@ -108,7 +109,7 @@ def _download_piper_voice(voice_name: str, progress_callback: Optional[Callable[
                     if status == 429 and attempt < max_retries:
                         wait = 2 ** (attempt + 1)
                         log(f"  ⏳ Rate limited by HuggingFace, retrying in {wait}s ({attempt + 1}/{max_retries})...")
-                        time.sleep(wait)
+                        retry_backoff_sleep(wait)
                         continue
                     raise  # Non-429 or retries exhausted
 

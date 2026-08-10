@@ -1,17 +1,28 @@
 # Development and test dependencies.
 #
-# A bare checkout reports ~45 test failures that are missing imports,
-# not defects. Every new contributor and every agent rediscovers that
-# the hard way, so the list lives here.
+# A bare checkout reports test failures that are missing imports, not
+# defects. Every new contributor and every agent rediscovers that the
+# hard way, so the list lives here.
 #
 # Measured on a headless Linux container:
 #   bare checkout ................................ 45 failed
 #   + pyperclip, beautifulsoup4 .................. 33 failed
-#   remaining 33 need a display or audio device (see below)
+#   + pillow, flask, psutil, PyQt6 ............... 33 failed, 2623 passed
 #
-# On a normal laptop with a screen, all of these install and import
-# cleanly and the suite should be green apart from anything genuinely
-# broken.
+# The last 33 need an audio device or a display and cannot pass in a
+# container at all. On a normal laptop with a screen, all of these
+# install and import cleanly and the suite should be green apart from
+# anything genuinely broken.
+#
+# PyQt6 also needs system libraries that pip does not supply. Without
+# them every desktop_app import dies with
+# "libEGL.so.1: cannot open shared object file":
+#
+#   apt-get install -y libegl1
+#
+# Flask and psutil are dashboard dependencies rather than test-only
+# ones, so they live in requirements.txt; install them too or every
+# memory_viewer test skips itself and looks like a pass.
 
 pytest==8.3.2
 pytest-repeat==0.9.3

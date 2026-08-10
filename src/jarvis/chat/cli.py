@@ -13,6 +13,7 @@ import dataclasses
 import sys
 from typing import Optional, TextIO
 
+from .. import approval
 from ..config import load_settings
 from ..debug import debug_log
 from ..llm import Tier, resolve_model
@@ -36,6 +37,11 @@ EXIT_COMMAND = "/exit"
 EXIT_COMMANDS = {EXIT_COMMAND, "/quit"}
 HELP_COMMAND = "/help"
 RESET_COMMAND = "/reset"
+YOLO_COMMAND = "/yolo"
+# What ``/yolo off`` accepts. Kept tiny and English-only on purpose: this is
+# a REPL keyword like ``/exit``, not user-facing prose to be understood in
+# any language.
+YOLO_OFF_WORDS = {"off", "stop", "revoke"}
 
 
 def _print_banner(cfg) -> None:
@@ -54,9 +60,52 @@ def _print_help() -> None:
     print("📖 Commands", flush=True)
     print(f"  💬 {HELP_COMMAND}    Show this list", flush=True)
     print(f"  🧹 {RESET_COMMAND}   Save the conversation and start a fresh one", flush=True)
+    print(f"  🔓 {YOLO_COMMAND}    Show the YOLO window; {YOLO_COMMAND} 30 opens it "
+          f"for 30 min, {YOLO_COMMAND} off shuts it", flush=True)
     print(f"  👋 {EXIT_COMMAND}    Save the conversation and quit (also /quit, or Ctrl+D)", flush=True)
     print("  ✍️  Anything else is sent to Jarvis.", flush=True)
     print("", flush=True)
+
+
+def _print_yolo_status() -> None:
+    if approval.is_active():
+        print(f"  🔓 YOLO is on: {approval.describe_remaining()}.", flush=True)
+    else:
+        print("  🔒 YOLO is off. Jarvis will refuse actions that need it.", flush=True)
+
+
+def _handle_yolo_command(argument: str) -> None:
+    """Open, close or report the YOLO window.
+
+    This is a human typing into their own terminal, which is the only thing
+    allowed to grant. Nothing reachable from a tool or from model output may
+    call ``approval.grant`` — see ``tests/test_yolo.py``.
+    """
+    if not argument:
+        _print_yolo_status()
+        return
+
+    if argument.lower() in YOLO_OFF_WORDS:
+        approval.revoke()
+        print("  🔒 YOLO is off.", flush=True)
+        return
+
+    try:
+        minutes = float(argument)
+    except ValueError:
+        debug_log(f"chat: unusable YOLO duration {argument!r}", "approval")
+        print(f"  ⚠️  {argument!r} is not a number of minutes. "
+              f"Try {YOLO_COMMAND} 30, or {YOLO_COMMAND} off.", flush=True)
+        return
+
+    # grant() applies the ceiling and rejects NaN and non-positive values, so
+    # the CLI parses the text and lets the one owner of the policy decide.
+    if approval.grant(minutes):
+        # describe_remaining() ends in "left", which does not follow "for".
+        print(f"  🔓 YOLO is on: {approval.describe_remaining()}.", flush=True)
+    else:
+        print(f"  ⚠️  {argument!r} is not a usable duration. "
+              f"Try {YOLO_COMMAND} 30, or {YOLO_COMMAND} off.", flush=True)
 
 
 def _flush_diary(
@@ -226,6 +275,10 @@ def run_chat_session(cfg, *, stdin: Optional[TextIO] = None, one_shot: Optional[
 
             if text == HELP_COMMAND:
                 _print_help()
+                continue
+
+            if text == YOLO_COMMAND or text.startswith(YOLO_COMMAND + " "):
+                _handle_yolo_command(text[len(YOLO_COMMAND):].strip())
                 continue
 
             if text == RESET_COMMAND:

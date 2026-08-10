@@ -170,60 +170,6 @@ class TestHeadlessAndUnknownInput:
         assert result.success is False
 
 
-class TestCoordinatesAreValidated:
-    """YOLO cannot catch this: the window is open, and a missing
-    coordinate clicks wherever the pointer already happens to sit."""
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_click_without_coordinates_is_refused(self, mock_pg):
-        result = ComputerUseTool().run({"action": "click", "target": "Send"}, _ctx())
-
-        assert result.success is False
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_partial_coordinate_is_refused(self, mock_pg):
-        result = ComputerUseTool().run({"action": "click", "x": 100}, _ctx())
-
-        assert result.success is False
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_negative_coordinate_is_refused(self, mock_pg):
-        result = ComputerUseTool().run({"action": "click", "x": -5, "y": 10}, _ctx())
-
-        assert result.success is False
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_an_off_screen_coordinate_is_refused(self, mock_pg):
-        """pyautogui clamps to an edge, turning a wild coordinate into a
-        plausible-looking edge click."""
-        pg = Mock()
-        pg.size.return_value = (1920, 1080)
-        mock_pg.return_value = pg
-
-        result = ComputerUseTool().run({"action": "click", "x": 99999, "y": 5}, _ctx())
-
-        assert result.success is False
-        assert "outside" in (result.error_message or "").lower()
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_typing_needs_no_coordinates(self, mock_pg):
-        cu.approval.grant(15)
-        result = ComputerUseTool().run({"action": "type", "text": "hello"}, _ctx())
-
-        assert result.success is True
-
-    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
-    def test_a_valid_coordinate_passes_validation(self, mock_pg):
-        pg = Mock()
-        pg.size.return_value = (1920, 1080)
-        mock_pg.return_value = pg
-
-        cu.approval.grant(15)
-        result = ComputerUseTool().run({"action": "click", "x": 500, "y": 400}, _ctx())
-
-        assert result.success is True
-
-
 @pytest.mark.unit
 class TestCoordinatesAreChecked:
     """YOLO cannot catch a bad coordinate: inside the window every click
@@ -239,6 +185,14 @@ class TestCoordinatesAreChecked:
 
         assert result.success is False
         assert "needs both x and y" in (result.error_message or "")
+        _no_actions(mock_pg)
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_a_partial_coordinate_is_refused(self, mock_pg):
+        """x without y is as unusable as neither, and just as silent."""
+        result = ComputerUseTool().run({"action": "click", "x": 100}, _ctx())
+
+        assert result.success is False
         _no_actions(mock_pg)
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
@@ -269,13 +223,27 @@ class TestCoordinatesAreChecked:
         assert result.success is True
 
     @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
+    def test_a_valid_coordinate_is_accepted(self, mock_pg):
+        """The refusals above are worthless if everything is refused."""
+        mock_pg.return_value.size.return_value = (1920, 1080)
+
+        cu.approval.grant(15)
+        result = ComputerUseTool().run({"action": "click", "x": 500, "y": 400}, _ctx())
+
+        assert result.success is True
+
+    @patch("src.jarvis.tools.builtin.computer_use._pyautogui")
     def test_validation_runs_before_the_gate(self, mock_pg):
         """A bad coordinate is a bad coordinate, whatever YOLO is doing.
 
-        Reporting "YOLO is off" here would send the user to switch it on
-        and hit the same wall.
+        Reporting "YOLO is off" here would send the user to switch it on and
+        hit the same wall, and asking someone to approve an action that
+        cannot execute trains them to approve without reading.
         """
-        """Asking someone to approve an action that cannot execute wastes
-        their attention and trains them to approve without reading."""
-        ComputerUseTool().run({"action": "click", "target": "Send"}, _ctx())
+        cu.approval.revoke()
+        result = ComputerUseTool().run({"action": "click", "target": "Send"}, _ctx())
+
+        assert result.success is False
+        assert "needs both x and y" in (result.error_message or "")
+        _no_actions(mock_pg)
 
