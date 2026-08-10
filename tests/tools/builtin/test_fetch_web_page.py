@@ -14,10 +14,65 @@ def _make_response_mock(**attrs) -> Mock:
     manager (the production code uses ``with requests.get(...) as resp`` so
     the connection is released deterministically).
     """
+    # A bare Mock returns a truthy Mock for every attribute, so without these
+    # defaults the SSRF guard reads an ordinary page response as a redirect.
+    attrs.setdefault("is_redirect", False)
+    attrs.setdefault("is_permanent_redirect", False)
     resp = Mock(**attrs)
     resp.__enter__ = Mock(return_value=resp)
     resp.__exit__ = Mock(return_value=False)
     return resp
+
+
+class TestFetchWebPageRefusesNonPublicTargets:
+    """fetchWebPage takes a URL the model chose, and the model reads attacker-
+    controlled pages. It must not become a way to reach the loopback
+    interface, the cloud metadata endpoint, or the user's LAN.
+    """
+
+    def setup_method(self):
+        self.tool = FetchWebPageTool()
+        self.context = Mock(spec=ToolContext)
+        self.context.user_print = Mock()
+
+    @pytest.mark.parametrize("url", [
+        "http://127.0.0.1:5071/api/yolo",
+        "http://localhost:5071/",
+        "http://[::1]/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.5/admin",
+        "http://192.168.1.1/",
+        "http://172.16.9.9/",
+    ])
+    def test_non_public_url_is_refused_without_a_request(self, url):
+        with patch('requests.get') as mock_get:
+            result = self.tool.run({"url": url}, self.context)
+            assert result.success is False
+            mock_get.assert_not_called()
+
+    def test_refusal_is_explained_rather_than_blamed_on_the_network(self):
+        """A connection error also says 'refused'. The model needs to learn the
+        address was rejected by policy, so it stops trying to reach it."""
+        result = self.tool.run({"url": "http://127.0.0.1/"}, self.context)
+        assert result.success is False
+        assert "public" in result.reply_text.lower()
+
+    def test_redirect_into_private_space_is_refused(self):
+        """The redirect target is a perfectly parseable page. Without the guard
+        the tool follows the hop and succeeds, which is the bug."""
+        redirect = _make_response_mock(
+            is_redirect=True, is_permanent_redirect=False,
+            headers={"Location": "http://127.0.0.1/admin"},
+            status_code=200,
+            text='<html><head><title>Admin</title></head><body><p>secrets</p></body></html>',
+            content=b'<html><head><title>Admin</title></head><body><p>secrets</p></body></html>',
+            raise_for_status=Mock(),
+            close=Mock(),
+        )
+        with patch('requests.get', return_value=redirect):
+            result = self.tool.run({"url": "https://8.8.8.8/start"}, self.context)
+            assert result.success is False
+            assert "secrets" not in result.reply_text
 
 
 class TestFetchWebPageTool:

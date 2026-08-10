@@ -1,3 +1,4 @@
+import socket
 import types
 import pytest
 
@@ -189,6 +190,11 @@ def test_fetch_web_page_success(monkeypatch):
     class MockResponse:
         def __init__(self):
             self.status_code = 200
+            # The SSRF guard walks redirects by hand, so a stand-in for a real
+            # response has to say it is not one.
+            self.is_redirect = False
+            self.is_permanent_redirect = False
+            self.headers = {}
             self.content = b'''
             <html>
                 <head><title>Test Page</title></head>
@@ -200,7 +206,7 @@ def test_fetch_web_page_success(monkeypatch):
             </html>
             '''
             self.text = self.content.decode()
-        
+
         def raise_for_status(self):
             pass
 
@@ -214,7 +220,13 @@ def test_fetch_web_page_success(monkeypatch):
 
     def mock_requests_get(url, **kwargs):
         return MockResponse()
-    
+
+    # Resolve example.com to a fixed public address. The guard does a real DNS
+    # lookup, and a unit test in an offline-first project must not need one.
+    monkeypatch.setattr(
+        socket, 'getaddrinfo',
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 0))],
+    )
     monkeypatch.setattr(tools_mod.requests, 'get', mock_requests_get)
     
     db = DummyDB()
