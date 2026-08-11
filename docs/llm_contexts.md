@@ -185,6 +185,15 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **Output**: `ServerCapabilities{reachable, chat, tools, embeddings, models}`. Consumed only by the wizard to render an honest capability summary and offer the Ollama-embeddings fallback. Never persisted.
 - **Limits**: `timeout_sec` default 8s per sub-request. Issues up to two `/chat/completions` calls (plain + tool), one `/embeddings`, one `/models`. Fail-soft: every error collapses to a `False` flag; a `ConnectionError` short-circuits to `reachable=False`.
 
+## 16. Realtime voice session (opt-in, replaces the voice loop while active)
+
+- **File**: [src/jarvis/realtime/session.py](src/jarvis/realtime/session.py) driving a provider adapter behind [src/jarvis/realtime/backend.py](src/jarvis/realtime/backend.py). Contract in [src/jarvis/realtime/realtime.spec.md](src/jarvis/realtime/realtime.spec.md).
+- **Trigger**: only while a realtime session is open, and only when `realtime_voice_enabled` is on with credentials present. Off by default; the local pipeline is the default and the fallback.
+- **Model / gating**: `realtime_model` on the hosted provider, entirely outside `resolve_model` and the tier system. This context does not use `llm_chat_model` or `fast_model`, and it does not run when the session is closed.
+- **Inputs**: microphone audio streamed while the session is active, the system prompt as session instructions, and the tool schemas from `generate_tools_json_schema` flattened by `tool_bridge.realtime_tool_schema`.
+- **Outputs**: speech audio, an assistant transcript, a user transcript, and function calls. Transcripts feed the memory pipeline exactly as a local voice turn does, so a realtime conversation is still remembered.
+- **Limits**: the provider handles turn detection (`server_vad`), so `endpoint_silence_ms` does not apply while a session runs. This is the reason the context exists. Tool calls are dispatched through `run_tool_with_retries`, so the MCP confirmation gate and trust store still apply; the session is a new way to ask, not a new authority. Any connection failure returns Jarvis to the local pipeline rather than failing the turn.
+
 ---
 
 ## Frequency / Size Summary
@@ -206,6 +215,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 | 12 | Planner (plan_query) | 1 | yes (planner_enabled) | LARGE/SMALL (tracks chat model) |
 | 13 | Plan step resolver | 0-N (SMALL only) | auto by size + plan | tracks chat model (CHAT tier; runs only when that model is SMALL) |
 | 14 | Tool-specific | per-tool | n/a | LARGE |
+| 16 | Realtime voice session | n/a (streams while open) | yes (`realtime_voice_enabled`, off by default) | hosted `realtime_model`, outside the tier system |
 
 ## Size-aware auto switches
 

@@ -30,6 +30,9 @@ mcp==1.13.1
 # Manager, Linux Secret Service) for API keys. Jarvis degrades to
 # config.json when no backend is present.
 keyring==25.7.0
+# Realtime speech-to-speech voice transport. Only imported when a session
+# starts, so an install without it keeps the local voice pipeline.
+websockets==15.0.1
 chatterbox-tts==0.1.2
 piper-tts>=1.3.0
 pygame>=2.1.0

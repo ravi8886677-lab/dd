@@ -59,6 +59,7 @@ CREDENTIAL_KEYS = (
     "llm_api_key",
     "embedding_api_key",
     "brave_search_api_key",
+    "realtime_api_key",
 )
 
 _keyring_cache: Any = None

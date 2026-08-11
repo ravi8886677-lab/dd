@@ -259,6 +259,18 @@ class Settings:
     location_cgnat_resolve_public_ip: bool
 
     # Web Search
+    # Realtime speech-to-speech voice. Off unless the user turns it on and
+    # supplies their own credentials: this is the one path where audio
+    # leaves the machine, and it does so only while a session is active.
+    # Everything falls back to the local pipeline when it is off or the
+    # provider is unreachable. See src/jarvis/realtime/realtime.spec.md.
+    realtime_voice_enabled: bool
+    realtime_provider: str  # "openai"
+    realtime_model: str
+    realtime_base_url: str  # empty means the provider's default endpoint
+    realtime_api_key: str
+    realtime_voice: str  # provider's voice name; empty means their default
+
     web_search_enabled: bool
     # Optional Brave Search API key. When set, Brave is used as the primary
     # fallback when DuckDuckGo is rate-limited or returns no usable content.
@@ -747,6 +759,14 @@ def get_default_config() -> Dict[str, Any]:
         # Uses a single OpenDNS resolver lookup of myip.opendns.com over DNS (no HTTP services). Disable to avoid any external request.
         "location_cgnat_resolve_public_ip": True,
 
+        # Realtime voice (off by default; the local pipeline is the default path)
+        "realtime_voice_enabled": False,
+        "realtime_provider": "openai",
+        "realtime_model": "gpt-realtime",
+        "realtime_base_url": "",
+        "realtime_api_key": "",
+        "realtime_voice": "",
+
         # Web Search
         "web_search_enabled": True,
         "brave_search_api_key": "",
@@ -982,6 +1002,21 @@ def load_settings() -> Settings:
     location_auto_detect = bool(merged.get("location_auto_detect", True))
     location_cgnat_resolve_public_ip = bool(merged.get("location_cgnat_resolve_public_ip", True))
     web_search_enabled = bool(merged.get("web_search_enabled", True))
+    realtime_voice_enabled = bool(merged.get("realtime_voice_enabled", False))
+    realtime_provider = str(merged.get("realtime_provider", "openai") or "openai").strip().lower()
+    if realtime_provider not in ("openai",):
+        realtime_provider = "openai"
+    realtime_model = str(merged.get("realtime_model", "") or "").strip() or "gpt-realtime"
+    realtime_base_url = str(merged.get("realtime_base_url", "") or "").strip()
+    realtime_voice = str(merged.get("realtime_voice", "") or "").strip()
+    realtime_api_key = resolve_secret(
+        "realtime_api_key", str(merged.get("realtime_api_key", "") or "").strip()
+    )
+    # Credentials are what makes a session possible, so an enabled flag with
+    # no key stays off rather than failing at the first spoken word.
+    if realtime_voice_enabled and not realtime_api_key:
+        realtime_voice_enabled = False
+
     brave_search_api_key = resolve_secret(
         "brave_search_api_key",
         str(merged.get("brave_search_api_key", "") or "").strip(),
@@ -1124,6 +1159,14 @@ def load_settings() -> Settings:
         location_ip_address=location_ip_address,
         location_auto_detect=location_auto_detect,
         location_cgnat_resolve_public_ip=location_cgnat_resolve_public_ip,
+
+        # Realtime voice
+        realtime_voice_enabled=realtime_voice_enabled,
+        realtime_provider=realtime_provider,
+        realtime_model=realtime_model,
+        realtime_base_url=realtime_base_url,
+        realtime_api_key=realtime_api_key,
+        realtime_voice=realtime_voice,
 
         # Web Search
         web_search_enabled=web_search_enabled,

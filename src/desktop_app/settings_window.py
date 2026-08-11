@@ -60,6 +60,7 @@ CATEGORIES = [
     ("piper", "🎵 Piper TTS"),
     ("chatterbox", "🎭 Chatterbox TTS"),
     ("voice_input", "🎤 Voice Input"),
+    ("realtime", "⚡ Realtime Voice"),
     ("wake", "👂 Wake Word"),
     ("whisper", "🗣️ Speech Recognition"),
     ("vad", "📊 Voice Activity Detection"),
@@ -343,6 +344,29 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("location_cgnat_resolve_public_ip", "CGNAT Resolve",
       "Resolve public IP when behind CGNAT",
       "location", "bool")
+
+    # --- Realtime voice ---
+    # Off unless the user turns it on and supplies a key. This is the one
+    # path where audio leaves the machine, so the wording says so plainly
+    # rather than leaving it to be discovered.
+    f("realtime_voice_enabled", "Realtime Voice",
+      "Hold conversations through a hosted speech-to-speech model for "
+      "near-instant replies. Your microphone audio is sent to that provider "
+      "while a session is open. Off by default; the local voice pipeline is "
+      "used whenever this is off or the provider is unreachable.",
+      "realtime", "bool")
+    f("realtime_api_key", "Realtime API Key",
+      "Required for realtime voice. Without it the feature stays off.",
+      "realtime", "password", nullable=True)
+    f("realtime_model", "Realtime Model",
+      "Speech-to-speech model to converse through",
+      "realtime", "str", nullable=True)
+    f("realtime_voice", "Realtime Voice Name",
+      "Provider's voice to speak with (leave empty for their default)",
+      "realtime", "str", nullable=True)
+    f("realtime_base_url", "Realtime Endpoint",
+      "Override the provider's endpoint (leave empty for the default)",
+      "realtime", "str", nullable=True)
 
     # --- Features ---
     f("web_search_enabled", "Web Search",
