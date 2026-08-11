@@ -19,6 +19,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.dashboard_assets import read_js
+
 try:
     import flask  # noqa: F401
     _HAS_FLASK = True
@@ -157,18 +159,20 @@ class TestDiaryOptimiseTopicsEndpoint:
         complete = events[-1]
         assert complete["rows_changed"] == 0
 
-    def test_optimise_button_handler_wired_outside_graph_init(self):
-        """Regression guard: btn-optimise-topics must be wired in the
-        always-run page setup, not inside initGraph() which only fires
-        when the user opens the Knowledge tab."""
-        html = self.client.get("/").get_data(as_text=True)
 
-        wiring = "document.getElementById('btn-optimise-topics')"
-        assert wiring in html, "optimise-topics button has no click handler in the rendered page"
+@pytest.mark.unit
+def test_optimise_button_handler_wired_outside_graph_init():
+    """Regression guard: btn-optimise-topics must be wired in the
+    always-run page setup, not inside initGraph() which only fires
+    when the user opens the Knowledge tab."""
+    script = read_js()
 
-        wiring_idx = html.index(wiring)
-        init_graph_idx = html.index("async function initGraph()")
-        assert wiring_idx < init_graph_idx, (
-            "btn-optimise-topics wiring is nested inside initGraph(); "
-            "the button will not work until the user first opens the Knowledge tab"
-        )
+    wiring = "document.getElementById('btn-optimise-topics')"
+    assert wiring in script, "optimise-topics button has no click handler in the dashboard script"
+
+    wiring_idx = script.index(wiring)
+    init_graph_idx = script.index("async function initGraph()")
+    assert wiring_idx < init_graph_idx, (
+        "btn-optimise-topics wiring is nested inside initGraph(); "
+        "the button will not work until the user first opens the Knowledge tab"
+    )

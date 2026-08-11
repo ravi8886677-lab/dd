@@ -17,6 +17,8 @@ import json
 
 import pytest
 
+from tests.dashboard_assets import read_js
+
 try:
     import flask  # noqa: F401
 
@@ -162,34 +164,32 @@ class TestDiaryScrubEndpoint:
         assert complete["rows_rewritten"] == 2
         assert complete["rows_would_empty"] == 0
 
-    def test_diary_button_handler_wired_outside_graph_init(self):
-        """Regression for the field bug where clicking the diary maintenance
-        button did nothing.
 
-        The diary tab is the default tab and renders on page load, but the
-        ``btn-scrub-deflections`` click handler was originally wired inside
-        ``initGraph()`` — which only runs when the user opens the Knowledge
-        tab. A user who clicked the button on the diary tab without ever
-        visiting Knowledge first got no response and no error.
+@pytest.mark.unit
+def test_diary_button_handler_wired_outside_graph_init():
+    """Regression for the field bug where clicking the diary maintenance
+    button did nothing.
 
-        This test asserts the handler is wired in the always-run section
-        of the page setup script, not nested inside ``initGraph``.
-        """
-        from desktop_app import memory_viewer
+    The diary tab is the default tab and renders on page load, but the
+    ``btn-scrub-deflections`` click handler was originally wired inside
+    ``initGraph()`` — which only runs when the user opens the Knowledge
+    tab. A user who clicked the button on the diary tab without ever
+    visiting Knowledge first got no response and no error.
 
-        client = memory_viewer.app.test_client()
-        client.environ_base["HTTP_X_DASHBOARD_TOKEN"] = memory_viewer._SESSION_TOKEN
-        html = client.get("/").get_data(as_text=True)
+    This test asserts the handler is wired in the always-run section
+    of the page setup script, not nested inside ``initGraph``.
+    """
+    script = read_js()
 
-        wiring = "document.getElementById('btn-scrub-deflections')"
-        assert wiring in html, "diary maintenance button has no click handler in the rendered page"
+    wiring = "document.getElementById('btn-scrub-deflections')"
+    assert wiring in script, "diary maintenance button has no click handler in the dashboard script"
 
-        # The wiring must appear before the ``async function initGraph()``
-        # block — anything inside that function only runs on Knowledge-tab
-        # entry, which is the bug we are guarding against.
-        wiring_idx = html.index(wiring)
-        init_graph_idx = html.index("async function initGraph()")
-        assert wiring_idx < init_graph_idx, (
-            "btn-scrub-deflections wiring is nested inside initGraph(); "
-            "diary button will not work until the user first opens the Knowledge tab"
-        )
+    # The wiring must appear before the ``async function initGraph()``
+    # block — anything inside that function only runs on Knowledge-tab
+    # entry, which is the bug we are guarding against.
+    wiring_idx = script.index(wiring)
+    init_graph_idx = script.index("async function initGraph()")
+    assert wiring_idx < init_graph_idx, (
+        "btn-scrub-deflections wiring is nested inside initGraph(); "
+        "diary button will not work until the user first opens the Knowledge tab"
+    )

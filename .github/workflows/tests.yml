@@ -23,6 +23,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
       - name: Run unit tests
+        env:
+          # Qt has no display on the runner; without this the suite aborts
+          # before any assertion is reported.
+          QT_QPA_PLATFORM: offscreen
         run: |
           python -m pytest -q -m unit
 

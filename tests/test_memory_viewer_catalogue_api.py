@@ -12,6 +12,8 @@ import json
 
 import pytest
 
+from tests.dashboard_assets import read_frontend_source
+
 try:
     import flask  # noqa: F401
 
@@ -188,8 +190,7 @@ class TestTheConnectionsTabIsADirectory:
 
     @pytest.fixture
     def html(self):
-        from src.desktop_app import memory_viewer
-        return memory_viewer._INDEX_HTML
+        return read_frontend_source()
 
     def test_the_directory_grid_is_present(self, html):
         assert 'id="conn-catalogue"' in html
