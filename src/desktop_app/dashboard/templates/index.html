@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🧠 Jarvis Memory</title>
+    <!-- No webfonts, no CDN, no preconnect. This page renders the user's
+         diary and personal facts; a font request would hand a third party
+         their IP, User-Agent and the moment they opened it, and would fail
+         outright on an offline machine. The stacks below prefer the design's
+         faces when installed locally and fall back to system faces that
+         exist on Windows, macOS and Linux. -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <span class="logo-icon">🧠</span>
+                <h1>Jarvis Memory</h1>
+            </div>
+
+            <div class="search-container">
+                <div class="search-wrapper">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" class="search-input" id="search-input" placeholder="Search memories..." />
+                </div>
+            </div>
+
+            <div class="stats-badges">
+                <div class="stat-badge">
+                    <span>📝</span>
+                    <span class="value" id="stats-memories">-</span>
+                    <span>diary</span>
+                </div>
+                <div class="stat-badge">
+                    <span>🧠</span>
+                    <span class="value" id="stats-nodes">-</span>
+                    <span>nodes</span>
+                </div>
+                <div class="stat-badge">
+                    <span>🍽️</span>
+                    <span class="value" id="stats-meals">-</span>
+                    <span>meals</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-container">
+        <div class="yolo-bar">
+            <div class="yolo-state">
+                <span class="yolo-dot" id="yolo-dot"></span>
+                <span id="yolo-label">YOLO mode: off</span>
+            </div>
+            <div class="yolo-actions">
+                <input type="range" id="yolo-slider" class="yolo-slider"
+                       min="5" max="480" step="5" value="30">
+                <span class="yolo-duration" id="yolo-duration">30 min</span>
+                <button class="yolo-btn" id="yolo-start">🚀 Start</button>
+                <button class="yolo-btn off" id="yolo-stop" style="display:none">🔒 Turn off</button>
+            </div>
+        </div>
+        <div class="tabs">
+            <button class="tab active" data-tab="chat">
+                <span>💬</span> Chat
+            </button>
+            <button class="tab" data-tab="memories">
+                <span>💭</span> Diary
+            </button>
+            <button class="tab" data-tab="graph">
+                <span>🧠</span> Knowledge
+            </button>
+            <button class="tab" data-tab="meals">
+                <span>🍽️</span> Meals
+            </button>
+            <button class="tab" data-tab="connections">
+                <span>🔌</span> Connections
+            </button>
+            <button class="tab" data-tab="settings">
+                <span>🔑</span> Settings
+            </button>
+        </div>
+
+        <div class="tab-content">
+            <div id="chat-content" class="tab-pane active">
+                <div class="hud">
+                    <aside class="hud-rail">
+                        <section class="hud-panel">
+                            <h3>◈ System Stats</h3>
+                            <div id="sys-stats" class="hud-readout">
+                                <div class="hud-row"><span>CPU</span><b id="sys-cpu">—</b></div>
+                                <div class="hud-bar"><i id="bar-cpu"></i></div>
+                                <div class="hud-row"><span>Memory</span><b id="sys-mem">—</b></div>
+                                <div class="hud-bar"><i id="bar-mem"></i></div>
+                                <div class="hud-row"><span>Disk</span><b id="sys-disk">—</b></div>
+                                <div class="hud-bar"><i id="bar-disk"></i></div>
+                            </div>
+                        </section>
+
+                        <section class="hud-panel">
+                            <h3>◈ Weather</h3>
+                            <div id="weather-body" class="hud-readout muted">Loading…</div>
+                        </section>
+
+                        <section class="hud-panel">
+                            <h3>◈ System</h3>
+                            <div class="hud-readout">
+                                <div class="hud-row"><span>Provider</span><b id="sys-provider">—</b></div>
+                                <div class="hud-row"><span>Model</span><b id="sys-model">—</b></div>
+                                <div class="hud-row"><span>Status</span><b id="sys-state" class="ok">IDLE</b></div>
+                            </div>
+                        </section>
+                    </aside>
+
+                    <div class="hud-core">
+                        <div class="orb-stage">
+                            <canvas id="orb" width="840" height="840"></canvas>
+                            <div class="orb-state" id="orb-state">idle</div>
+                        </div>
+                        <button id="activate-btn" class="hud-activate">Activate</button>
+                    </div>
+
+                    <section class="hud-panel hud-conversation">
+                        <h3>◈ Conversation</h3>
+                        <div class="chat-log" id="chat-log">
+                            <div class="empty-state">
+                                <div class="empty-icon">💬</div>
+                                <div class="empty-title">Talk to Jarvis</div>
+                                <p>Same assistant as the voice and terminal front ends.</p>
+                            </div>
+                        </div>
+                        <div class="chat-composer">
+                            <textarea id="chat-input" rows="1" placeholder="Ask Jarvis something…"></textarea>
+                            <button class="btn-primary" id="chat-send">Send</button>
+                            <button class="btn-ghost" id="chat-reset" title="Save and start fresh">New</button>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <div id="memories-content" class="tab-pane with-sidebar" style="display: none;">
+                <aside class="sidebar" id="diary-sidebar">
+                    <div class="sidebar-section" id="date-filter-section">
+                        <div class="sidebar-title">📅 Date Range</div>
+                        <div class="date-filters">
+                            <input type="date" class="date-input" id="from-date" placeholder="From" />
+                            <input type="date" class="date-input" id="to-date" placeholder="To" />
+                        </div>
+                    </div>
+
+                    <div class="sidebar-section" id="topics-filter-section">
+                        <div class="sidebar-title">🏷️ Topics</div>
+                        <div class="topics-cloud" id="topics-cloud">
+                            <div class="loading"><div class="spinner"></div></div>
+                        </div>
+                    </div>
+
+                    <div class="sidebar-section" id="diary-maintenance-section">
+                        <div class="sidebar-title">🧹 Maintenance</div>
+                        <button class="diary-maintenance-btn" id="btn-scrub-deflections" title="Ask the chat model to remove sentences that narrate assistant failures (e.g. 'the assistant could not…') from old diary entries. The rest of each entry stays verbatim. No entries are deleted. Requires the chat model to be running.">
+                            Clean up deflection narration
+                        </button>
+                        <button class="diary-maintenance-btn" id="btn-optimise-topics" title="Merge near-synonym tags, normalise casing, and split compound tags across all diary entries. Requires the chat model to be running.">
+                            Optimise tags
+                        </button>
+                    </div>
+                </aside>
+                <div class="memory-list">
+                    <div class="loading"><div class="spinner"></div></div>
+                </div>
+            </div>
+
+            <div id="graph-content" class="tab-pane" style="display: none;">
+                <div class="alpha-disclaimer">
+                    <span class="alpha-badge">Beta</span>
+                    <div class="alpha-body">
+                        <p>
+                            🧪 The knowledge graph is on by default: a compact <strong>warm profile</strong>
+                            (User + Directives branches) is injected into every reply, and query-driven graph
+                            recall runs alongside the diary via <code>Enrichment Source = all</code>.
+                        </p>
+                        <p>
+                            👉 Structure and classification are stable; extractor quality is still being tuned.
+                            Please share feedback so we can keep refining it.
+                        </p>
+                    </div>
+                </div>
+                <div class="graph-explorer">
+                    <!-- Left sidebar: tree navigator -->
+                    <div class="graph-tree-sidebar">
+                        <div class="tree-header">
+                            <span>🌳</span> Memory Tree
+                        </div>
+                        <div class="tree-container" id="tree-container">
+                            <div class="loading"><div class="spinner"></div></div>
+                        </div>
+                    </div>
+
+                    <!-- Centre: graph canvas -->
+                    <div class="graph-canvas-container">
+                        <div class="graph-toolbar">
+                            <button class="graph-btn" id="btn-zoom-in" title="Zoom in">➕</button>
+                            <button class="graph-btn" id="btn-zoom-out" title="Zoom out">➖</button>
+                            <button class="graph-btn" id="btn-fit" title="Fit to view">📐</button>
+                            <button class="graph-btn" id="btn-add-node" title="Add node">✨</button>
+                            <button class="graph-btn" id="btn-import-diary" title="Import from Diary">📥</button>
+                            <button class="graph-btn" id="btn-consolidate-all" title="Consolidate every populated node (dedupe / merge contradictions / prune common knowledge)">🧹</button>
+                        </div>
+                        <canvas id="graph-canvas"></canvas>
+                    </div>
+
+                    <!-- Right sidebar: node details -->
+                    <div class="graph-detail-sidebar" id="detail-sidebar">
+                        <div class="detail-empty">
+                            <div class="empty-icon">🧠</div>
+                            <p>Select a node to view its details</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="meals-content" class="tab-pane" style="display: none;">
+                <div class="inline-filters">
+                    <span class="inline-filter-label">📅</span>
+                    <input type="date" class="date-input" id="meals-from-date" placeholder="From" />
+                    <span class="inline-filter-sep">→</span>
+                    <input type="date" class="date-input" id="meals-to-date" placeholder="To" />
+                </div>
+                <div class="memory-list">
+                    <div class="loading"><div class="spinner"></div></div>
+                </div>
+            </div>
+
+            <div id="settings-content" class="tab-pane" style="display: none;">
+                <div class="conn-intro">
+                    <h2>🔑 AI Provider</h2>
+                    <p>Point Jarvis at any OpenAI-compatible endpoint and supply your
+                       own key. Works with Gemini, OpenAI, Groq, Together, OpenRouter,
+                       or anything you self-host (Ollama, LM Studio, llama.cpp).
+                       Saved to <code>config.json</code> and applied on your next message.</p>
+                </div>
+
+                <div class="settings-grid">
+                    <label>Provider</label>
+                    <select id="set-provider">
+                        <option value="openai_compatible">openai_compatible</option>
+                        <option value="ollama">ollama</option>
+                    </select>
+
+                    <label>Base URL</label>
+                    <input id="set-baseurl" placeholder="https://generativelanguage.googleapis.com/v1beta/openai" />
+
+                    <label>API key</label>
+                    <input id="set-key" type="password" placeholder="leave blank to keep the current key" />
+
+                    <label>Chat model</label>
+                    <input id="set-chat" placeholder="gemini-3.1-flash-lite" />
+
+                    <label>Fast model</label>
+                    <input id="set-fast" placeholder="used for planning and routing" />
+
+                    <label>Embedding model</label>
+                    <input id="set-embed" placeholder="gemini-embedding-001" />
+                </div>
+
+                <div class="settings-actions">
+                    <button class="btn-primary" id="set-save">Save</button>
+                    <button class="btn-ghost" id="set-test">Test connection</button>
+                    <span id="set-status" class="settings-status"></span>
+                </div>
+            </div>
+
+            <div id="connections-content" class="tab-pane" style="display: none;">
+                <div class="conn-intro">
+                    <h2>🔌 Connections</h2>
+                    <p>MCP servers give Jarvis new tools — Home Assistant, GitHub,
+                       Slack, your filesystem, a database. Anything added here is
+                       written to <code id="conn-config-path">config.json</code> and
+                       picked up on the next conversation.</p>
+                </div>
+
+                <h3 class="conn-heading">🧩 Available</h3>
+                <div id="conn-catalogue" class="conn-catalogue">
+                    <div class="loading"><div class="spinner"></div></div>
+                </div>
+
+                <h3 class="conn-heading">🔗 Configured</h3>
+                <div id="conn-list" class="conn-list">
+                    <div class="loading"><div class="spinner"></div></div>
+                </div>
+
+                <details id="conn-registry-panel" class="conn-advanced">
+                    <summary>🌍 Browse the public registry</summary>
+                    <p class="conn-advanced-note">Thousands of servers published
+                       by whoever wrote them. The registry proves the publisher
+                       controls the namespace (a GitHub account, or a domain).
+                       That says who published it, not that the code is safe or
+                       that anyone has reviewed it. Treat these as you would any
+                       software off the internet.</p>
+                    <div class="conn-registry-bar">
+                        <input id="conn-registry-search" placeholder="Filter by name or description" />
+                        <button class="btn-primary" id="conn-registry-refresh">Refresh</button>
+                        <span id="conn-registry-age" class="conn-registry-age"></span>
+                    </div>
+                    <div id="conn-registry" class="conn-catalogue"></div>
+                </details>
+
+                <details id="conn-advanced" class="conn-advanced">
+                    <summary>⚙️ Add a server manually</summary>
+                    <p class="conn-advanced-note">Pin an exact version. A package
+                       without one (<code>@latest</code>, or no version at all) is
+                       refused at launch, because it hands whoever controls that
+                       package a fresh run of their code every time Jarvis starts.</p>
+                    <div class="conn-add">
+                        <input id="conn-name" placeholder="Name (e.g. github)" />
+                        <input id="conn-command" placeholder="Command (e.g. npx)" />
+                        <input id="conn-args" placeholder="Arguments (e.g. -y @modelcontextprotocol/server-github@2025.4.8)" />
+                        <button class="btn-primary" id="conn-add-btn">Add</button>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </main>
+
+    <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>

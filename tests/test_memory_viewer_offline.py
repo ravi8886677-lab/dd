@@ -13,6 +13,7 @@ Jarvis "should only show 127.0.0.1 to Ollama".
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +25,16 @@ except ImportError:
     _HAS_FLASK = False
 
 pytestmark = pytest.mark.skipif(not _HAS_FLASK, reason="Flask not available")
+
+
+@pytest.mark.unit
+def test_dashboard_frontend_is_stored_as_web_assets():
+    """The browser source must be independently parseable and packageable."""
+    dashboard = Path(__file__).parents[1] / "src" / "desktop_app" / "dashboard"
+
+    assert (dashboard / "templates" / "index.html").is_file()
+    assert (dashboard / "static" / "dashboard.css").is_file()
+    assert (dashboard / "static" / "dashboard.js").is_file()
 
 
 @pytest.fixture

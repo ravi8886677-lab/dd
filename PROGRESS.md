@@ -141,9 +141,9 @@ criteria.
 
 ## Gotchas that cost time
 
-- **The dashboard HTML is inside a Python triple-quoted string** in
-  `memory_viewer.py` (~237 KB). A JS `"\n"` is eaten by Python and
-  breaks the file at parse time. Write `"\\n"`.
+- **Dashboard browser code belongs under `desktop_app/dashboard/`.** Keep
+  JavaScript, CSS and Jinja markup in their native files so browser tooling
+  can parse them and Python never interprets their escape sequences.
 - **`app.py` is the PyInstaller entry point** and runs as `__main__`
   with no package context. A relative import there raises ImportError at
   launch. `tests/test_desktop_app.py` guards this — it has already
