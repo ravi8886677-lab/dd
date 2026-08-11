@@ -14,29 +14,11 @@ session is a new way to ask rather than a new authority.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from ..debug import debug_log
+from .backend import FunctionCall, FunctionResult
 from ..tools.registry import run_tool_with_retries
-
-
-@dataclass(frozen=True)
-class FunctionCall:
-    """A tool the realtime model wants run, as it came off the wire."""
-
-    call_id: str
-    name: str
-    arguments_json: str
-
-
-@dataclass(frozen=True)
-class FunctionResult:
-    """What goes back to the model in place of that call."""
-
-    call_id: str
-    output: str
-    success: bool
 
 
 def realtime_tool_schema(chat_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

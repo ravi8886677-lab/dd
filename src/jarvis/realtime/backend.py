@@ -17,7 +17,30 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Iterator, List, Optional
 
-from .tool_bridge import FunctionCall, FunctionResult
+
+@dataclass(frozen=True)
+class FunctionCall:
+    """A tool the realtime model wants run, as it came off the wire.
+
+    Defined here rather than beside the dispatcher because this module is
+    the contract every adapter imports, and `config.load_settings` reaches
+    it through the factory. Importing the dispatcher from here would drag
+    the whole tool registry, and with it the `mcp` package, into loading a
+    config file.
+    """
+
+    call_id: str
+    name: str
+    arguments_json: str
+
+
+@dataclass(frozen=True)
+class FunctionResult:
+    """What goes back to the model in place of that call."""
+
+    call_id: str
+    output: str
+    success: bool
 
 
 class RealtimeEventType(Enum):

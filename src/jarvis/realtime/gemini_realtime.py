@@ -32,8 +32,9 @@ from .backend import (
     RealtimeEvent,
     RealtimeEventType,
     RealtimeVoiceBackend,
+    FunctionCall,
+    FunctionResult,
 )
-from .tool_bridge import FunctionCall, FunctionResult
 
 DEFAULT_BASE_URL = (
     "wss://generativelanguage.googleapis.com/ws/"

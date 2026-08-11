@@ -25,8 +25,9 @@ from .backend import (
     RealtimeEvent,
     RealtimeEventType,
     RealtimeVoiceBackend,
+    FunctionCall,
+    FunctionResult,
 )
-from .tool_bridge import FunctionCall, FunctionResult
 
 DEFAULT_BASE_URL = "wss://api.openai.com/v1/realtime"
 
