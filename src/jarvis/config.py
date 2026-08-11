@@ -761,8 +761,8 @@ def get_default_config() -> Dict[str, Any]:
 
         # Realtime voice (off by default; the local pipeline is the default path)
         "realtime_voice_enabled": False,
-        "realtime_provider": "openai",
-        "realtime_model": "gpt-realtime",
+        "realtime_provider": "gemini",
+        "realtime_model": "",  # empty resolves to the provider's own default
         "realtime_base_url": "",
         "realtime_api_key": "",
         "realtime_voice": "",
@@ -1003,10 +1003,16 @@ def load_settings() -> Settings:
     location_cgnat_resolve_public_ip = bool(merged.get("location_cgnat_resolve_public_ip", True))
     web_search_enabled = bool(merged.get("web_search_enabled", True))
     realtime_voice_enabled = bool(merged.get("realtime_voice_enabled", False))
-    realtime_provider = str(merged.get("realtime_provider", "openai") or "openai").strip().lower()
-    if realtime_provider not in ("openai",):
-        realtime_provider = "openai"
-    realtime_model = str(merged.get("realtime_model", "") or "").strip() or "gpt-realtime"
+    # Provider validation and the per-provider model default live in the
+    # realtime factory, so config and the adapters cannot disagree about
+    # which providers exist.
+    from .realtime.factory import default_model_for, resolve_provider
+
+    realtime_provider = resolve_provider(merged.get("realtime_provider"))
+    realtime_model = (
+        str(merged.get("realtime_model", "") or "").strip()
+        or default_model_for(realtime_provider)
+    )
     realtime_base_url = str(merged.get("realtime_base_url", "") or "").strip()
     realtime_voice = str(merged.get("realtime_voice", "") or "").strip()
     realtime_api_key = resolve_secret(

@@ -192,7 +192,8 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 - **Model / gating**: `realtime_model` on the hosted provider, entirely outside `resolve_model` and the tier system. This context does not use `llm_chat_model` or `fast_model`, and it does not run when the session is closed.
 - **Inputs**: microphone audio streamed while the session is active, the system prompt as session instructions, and the tool schemas from `generate_tools_json_schema` flattened by `tool_bridge.realtime_tool_schema`.
 - **Outputs**: speech audio, an assistant transcript, a user transcript, and function calls. Transcripts feed the memory pipeline exactly as a local voice turn does, so a realtime conversation is still remembered.
-- **Limits**: the provider handles turn detection (`server_vad`), so `endpoint_silence_ms` does not apply while a session runs. This is the reason the context exists. Tool calls are dispatched through `run_tool_with_retries`, so the MCP confirmation gate and trust store still apply; the session is a new way to ask, not a new authority. Any connection failure returns Jarvis to the local pipeline rather than failing the turn.
+- **Provider**: `realtime_provider` selects the adapter via `realtime/factory.py` (`gemini` by default, `openai` also supported). An empty `realtime_model` resolves to that provider's own default.
+- **Limits**: the provider handles turn detection server-side, so `endpoint_silence_ms` does not apply while a session runs. This is the reason the context exists. Tool calls are dispatched through `run_tool_with_retries`, so the MCP confirmation gate and trust store still apply; the session is a new way to ask, not a new authority. Any connection failure returns Jarvis to the local pipeline rather than failing the turn.
 
 ---
 

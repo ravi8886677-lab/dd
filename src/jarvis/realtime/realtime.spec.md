@@ -84,6 +84,18 @@ session runner, the tool bridge and the audio coordination know nothing about
 any vendor's wire format. Adding a provider means writing an adapter, not
 touching the session.
 
+`factory.py` is the one place that names an adapter, and `realtime_provider`
+selects between them. Gemini Live is the default; OpenAI Realtime is also
+supported. An unrecognised provider name falls back to the default rather than
+disabling voice, because a typo should cost the user their choice of provider
+and not the feature.
+
+Providers disagree about more than event names, and the adapter absorbs all of
+it: how many events one message carries, whether function arguments arrive as
+text or as a decoded object, whether interruption is announced or inferred,
+whether the two audio directions share a sample rate, and where the credential
+travels. What reaches the session is the same either way.
+
 ## Threading
 
 A realtime session is a long-lived socket in a codebase that is otherwise

@@ -355,11 +355,17 @@ def _build_field_metadata() -> List[FieldMeta]:
       "while a session is open. Off by default; the local voice pipeline is "
       "used whenever this is off or the provider is unreachable.",
       "realtime", "bool")
+    f("realtime_provider", "Provider",
+      "Which speech-to-speech service holds the conversation",
+      "realtime", "choice",
+      choices=[("gemini", "Gemini Live"),
+               ("openai", "OpenAI Realtime")])
     f("realtime_api_key", "Realtime API Key",
       "Required for realtime voice. Without it the feature stays off.",
       "realtime", "password", nullable=True)
     f("realtime_model", "Realtime Model",
-      "Speech-to-speech model to converse through",
+      "Speech-to-speech model to converse through. Leave empty to use the "
+      "provider's default.",
       "realtime", "str", nullable=True)
     f("realtime_voice", "Realtime Voice Name",
       "Provider's voice to speak with (leave empty for their default)",
