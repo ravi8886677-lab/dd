@@ -20,7 +20,7 @@ Controlled by `tool_selection_strategy` in config:
 |---------------|---------------------------------------------------------------------|-----------|------------------|
 | `"all"`       | Pass every registered tool.                                         | No        | None             |
 | `"keyword"`   | Score tools by keyword overlap with the query; return top matches.  | No        | None             |
-| `"embedding"` | Rank tools by cosine similarity of embeddings via nomic-embed-text. | No        | numpy            |
+| `"embedding"` | Rank tools by cosine similarity between the query and enriched tool summaries. Tool vectors are cached, so the per-turn cost is one embedding call regardless of catalogue size. | No | numpy |
 | `"llm"`       | Ask a lightweight LLM call to pick the top 3–5 relevant tool names (default). | Yes | None |
 
 ### Always-included Tools
@@ -38,15 +38,18 @@ Regardless of strategy, these tools are **always** included:
 
 ### Embedding Strategy
 
-1. Embed the user query using `get_embedding()` (calls Ollama `/api/embeddings` with the configured embed model).
-2. For each tool (excluding always-included), build a summary string from the tool name (camelCase split) and description, then embed it.
+1. Embed the user query using the configured embedding backend.
+2. For each tool (excluding always-included), build a summary string and embed it. The summary names the tool (camelCase and `snake_case` split into words), the **server it comes from**, and its description. The server matters because people ask for tools by the product they belong to ("use higgsfield to make a clip"), a word that appears nowhere in the tool's own name or description. MCP tools are registered as `server__tool`, so the server is recovered from the name.
 3. Compute cosine similarity between the query embedding and each tool embedding.
-4. Select tools using a **relative threshold**: keep tools whose similarity >= `top_score * _RELATIVE_THRESHOLD` (0.97 — nomic-embed-text has a high baseline similarity, so a loose threshold lets the entire catalogue through).
-5. If fewer than `_MIN_SELECTED` (3) tools pass the threshold, return the top 3 by similarity.
-6. Append always-included tools.
-7. If the query embedding fails, fall back to returning all tools.
+4. Select tools using a **relative threshold**: keep tools whose similarity >= `top_score * _RELATIVE_THRESHOLD` (0.97).
+5. If fewer than `_MIN_SELECTED` (3) tools pass the threshold, take the top 3 by similarity.
+6. Truncate to `_MAX_SELECTED` (8). Any relative cutoff is permissive when scores are tightly clustered, which is what a general-purpose embedding model does across tools that all sound like software. The threshold sharpens a good distribution; this bounds a bad one, so the worst case is a handful of mediocre candidates rather than every tool installed.
+7. Append always-included tools.
+8. If the query embedding fails, fall back to returning all tools. Routing that failed closed would leave the model with no tools at all.
 
-Note: embedding is **not** the default strategy because nomic-embed-text produces tightly clustered similarities across all tools — the filter struggles to separate "good match" from "generic cluster" when a realistic MCP catalogue (20–40 tools) is in play. The `llm` strategy is cheaper in prompt size and more discriminative on small chat models.
+**Tool embeddings are cached** in `_EMBED_CACHE`, keyed by `(model, summary)`. Tool text is fixed for the life of a catalogue while queries are not, so embedding it per turn makes routing cost scale with tools times turns. Keying on the summary means an edited description re-embeds by itself. The key cannot see which backend produced a vector, so a cached vector whose width does not match the current query's is treated as a miss: two providers can serve the same model name and return different dimensions, and scoring a query against another provider's vectors ranks nonsense.
+
+Cosine similarity is only meaningful between vectors of equal width, so a tool whose embedding does not match the query's width is skipped rather than compared.
 
 ### LLM Strategy (default)
 

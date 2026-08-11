@@ -74,6 +74,17 @@ _STOP_WORDS = frozenset({
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _CAMEL_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
 
+# MCP tools are registered as ``server__tool``; see ``run_tool_with_retries``.
+_MCP_NAME_SEP = "__"
+
+# Tool summaries embed to the same vector every time, so they are computed
+# once per catalogue rather than once per turn. Keyed by (model, summary):
+# the model matters because vectors from different models are not
+# comparable, and the summary matters because an edited description must
+# not keep scoring against its old text.
+_EMBED_CACHE: Dict[tuple, List[float]] = {}
+_EMBED_CACHE_MAX = 2048
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -91,10 +102,73 @@ def _build_tool_keywords(name: str, description: str) -> set:
     return set(name_tokens) | set(desc_tokens)
 
 
-def _tool_summary(name: str, description: str) -> str:
-    """One-line summary used as embedding input for a tool."""
-    readable_name = _CAMEL_RE.sub(" ", name).lower()
-    return f"{readable_name}: {description}"
+def _tool_summary(name: str, description: str, server: str = "") -> str:
+    """The text embedded to represent a tool.
+
+    Retrieval quality is bounded by what goes in this string. A bare name
+    and one-line description leave tools that do unrelated jobs sitting on
+    top of each other, which is what makes a similarity cutoff useless.
+
+    So the server is named too. People ask for tools by the product they
+    belong to ("use higgsfield to make a clip"), and that word appears
+    nowhere in the tool's own name or description. MCP tools are
+    registered as ``server__tool``, so it can be recovered from the name
+    when the caller does not supply it.
+    """
+    origin = server
+    bare_name = name
+    if _MCP_NAME_SEP in name:
+        derived, bare_name = name.split(_MCP_NAME_SEP, 1)
+        origin = origin or derived
+
+    readable_name = _CAMEL_RE.sub(" ", bare_name).replace("_", " ").lower()
+    subject = f"{readable_name} from {origin}" if origin else readable_name
+    return f"{subject}: {description}"
+
+
+def _embed_tool_text(
+    embedding_backend: LLMBackend,
+    text: str,
+    model: str,
+    timeout_sec: float,
+    expect_dim: int = 0,
+) -> Optional[List[float]]:
+    """Embed a tool summary, reusing the vector when the text is unchanged.
+
+    Tool text is fixed for the life of a catalogue while queries are not,
+    so embedding it per turn makes routing cost scale with tools times
+    turns. Keying on the summary means an edited description re-embeds by
+    itself, without anything having to remember to invalidate.
+
+    ``expect_dim`` guards the case the key cannot see. Two backends can
+    serve the same model name and return different dimensions, so pointing
+    ``embedding_provider`` somewhere new would otherwise score this turn's
+    query against the previous provider's vectors. A cached vector of the
+    wrong width is treated as a miss.
+    """
+    key = (model, text)
+    cached = _EMBED_CACHE.get(key)
+    if cached is not None:
+        if expect_dim and len(cached) != expect_dim:
+            debug_log(
+                "Embedding tool selection: cached vectors have the wrong width, "
+                "re-embedding the catalogue",
+                "planning",
+            )
+            _EMBED_CACHE.clear()
+        else:
+            return cached
+
+    vector = embedding_backend.embed(text, model, timeout_sec=timeout_sec)
+    if vector is None:
+        return None
+
+    # Summaries are stable, so this bound is reached only by catalogues
+    # churning through servers. Clearing wholesale beats tracking ages.
+    if len(_EMBED_CACHE) >= _EMBED_CACHE_MAX:
+        _EMBED_CACHE.clear()
+    _EMBED_CACHE[key] = vector
+    return vector
 
 
 def _ensure_always_included(
@@ -191,8 +265,14 @@ def _select_embedding(
         all_tools[name] = _tool_summary(name, spec.description)
 
     for name, summary in all_tools.items():
-        tool_vec = embedding_backend.embed(summary, embed_model, timeout_sec=embed_timeout_sec)
-        if tool_vec is None:
+        tool_vec = _embed_tool_text(
+            embedding_backend,
+            summary,
+            embed_model,
+            embed_timeout_sec,
+            expect_dim=len(query_arr),
+        )
+        if tool_vec is None or len(tool_vec) != len(query_arr):
             continue
         tool_arr = np.array(tool_vec, dtype=np.float32)
         t_norm = np.linalg.norm(tool_arr)
@@ -219,6 +299,15 @@ def _select_embedding(
     # Always return at least _MIN_SELECTED tools (the top-N by similarity).
     if len(selected) < _MIN_SELECTED:
         selected = [name for name, _ in similarities[:_MIN_SELECTED]]
+
+    # Hard ceiling, and the reason this strategy is usable on a large
+    # catalogue at all. Any relative cutoff is permissive when the scores
+    # are tightly clustered, which is exactly what a general-purpose
+    # embedding model does across tools that all sound like software. The
+    # threshold above sharpens a good distribution; this bounds a bad one,
+    # so the worst case is a handful of mediocre candidates rather than
+    # every tool installed.
+    selected = selected[:_MAX_SELECTED]
 
     selected = _ensure_always_included(selected, builtin_tools, mcp_tools)
 
