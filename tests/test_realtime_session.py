@@ -208,11 +208,32 @@ def test_both_sides_of_the_conversation_are_captured_for_memory():
 
 
 @pytest.mark.unit
+def test_a_recoverable_provider_error_does_not_end_the_conversation():
+    """Providers report routine failures as errors, barge-in among them.
+
+    Cancelling a response the server already finished is an error payload,
+    and it happens on every interruption. Ending the session there would
+    kill the conversation on the feature this subsystem exists for.
+    """
+    backend = ScriptedBackend([
+        RealtimeEvent(RealtimeEventType.ERROR, error="Cancellation failed: no active response"),
+        RealtimeEvent(RealtimeEventType.AUDIO_DELTA, audio=b"still here"),
+        RealtimeEvent(RealtimeEventType.CLOSED),
+    ])
+    session, played, _ = _session(backend)
+    session.start(RealtimeConfig(model="m", api_key="k"))
+    session.run_until_closed()
+
+    assert played == [b"still here"], "the session stopped on a recoverable error"
+
+
+@pytest.mark.unit
 def test_a_transcript_survives_a_session_that_errored():
     """A dropped socket must not discard what was already said."""
     backend = ScriptedBackend([
         RealtimeEvent(RealtimeEventType.USER_TRANSCRIPT, text="remember this"),
         RealtimeEvent(RealtimeEventType.ERROR, error="socket died"),
+        RealtimeEvent(RealtimeEventType.CLOSED),
     ])
     session, _, _ = _session(backend)
     session.start(RealtimeConfig(model="m", api_key="k"))
@@ -240,9 +261,9 @@ def test_consecutive_text_from_one_side_becomes_one_turn():
 
 
 @pytest.mark.unit
-def test_an_error_ends_the_session_and_closes_the_connection():
+def test_closing_the_connection_ends_the_session():
     backend = ScriptedBackend([
-        RealtimeEvent(RealtimeEventType.ERROR, error="socket died"),
+        RealtimeEvent(RealtimeEventType.CLOSED),
     ])
     session, _, _ = _session(backend)
     session.start(RealtimeConfig(model="m", api_key="k"))

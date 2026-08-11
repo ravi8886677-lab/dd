@@ -47,6 +47,11 @@ _USER_TRANSCRIPT_EVENTS = {
     "conversation.item.input_audio_transcription.completed",
 }
 
+# A socket that opens and then stalls must not hold the caller. The
+# session runner treats a failed connect as "use the local pipeline",
+# and that fallback is worthless if connect() never returns.
+CONNECT_TIMEOUT_SEC = 15.0
+
 _SENTINEL = object()
 
 
@@ -162,7 +167,13 @@ class OpenAIRealtimeBackend(RealtimeVoiceBackend):
         )
         self._thread.start()
 
-        outcome = ready.get()
+        try:
+            outcome = ready.get(timeout=CONNECT_TIMEOUT_SEC)
+        except queue.Empty:
+            self.close()
+            raise RuntimeError(
+                f"realtime connection timed out after {CONNECT_TIMEOUT_SEC}s"
+            )
         if isinstance(outcome, Exception):
             raise RuntimeError(f"realtime connection failed: {outcome}") from outcome
         debug_log("🎙️ realtime: connected")

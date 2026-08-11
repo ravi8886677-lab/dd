@@ -153,9 +153,20 @@ class RealtimeSession:
             return True
 
         if kind is RealtimeEventType.ERROR:
+            # An error is not the end of the session. Providers report
+            # routine, recoverable things this way: cancelling a response
+            # that already finished, an empty audio buffer, a transcription
+            # that failed. Barge-in produces one of those every time, since
+            # the server has usually cancelled the response before the
+            # cancel arrives, so treating errors as fatal would kill the
+            # session on the exact feature this subsystem exists to buy.
+            #
+            # The transport says when it is over, not the payload. A error
+            # the provider considers fatal is followed by a closed socket,
+            # which arrives as CLOSED.
             self._last_error = event.error
-            debug_log(f"⚠️ realtime: provider error: {event.error}")
-            return False
+            debug_log(f"⚠️ realtime: provider error (continuing): {event.error}")
+            return True
 
         if kind is RealtimeEventType.CLOSED:
             debug_log("🔇 realtime: session closed")

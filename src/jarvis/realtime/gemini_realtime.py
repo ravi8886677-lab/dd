@@ -47,6 +47,11 @@ INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 INPUT_MIME_TYPE = f"audio/pcm;rate={INPUT_SAMPLE_RATE}"
 
+# A socket that opens and then stalls must not hold the caller. The
+# session runner treats a failed connect as "use the local pipeline",
+# and that fallback is worthless if connect() never returns.
+CONNECT_TIMEOUT_SEC = 15.0
+
 _SENTINEL = object()
 
 
@@ -225,7 +230,13 @@ class GeminiRealtimeBackend(RealtimeVoiceBackend):
         )
         self._thread.start()
 
-        outcome = ready.get()
+        try:
+            outcome = ready.get(timeout=CONNECT_TIMEOUT_SEC)
+        except queue.Empty:
+            self.close()
+            raise RuntimeError(
+                f"realtime connection timed out after {CONNECT_TIMEOUT_SEC}s"
+            )
         if isinstance(outcome, Exception):
             raise RuntimeError(f"realtime connection failed: {outcome}") from outcome
         debug_log("🎙️ realtime: connected to Gemini Live")
