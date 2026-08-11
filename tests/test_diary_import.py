@@ -14,6 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.dashboard_assets import read_js
+
 # Mock modules that may not be available in the test environment
 _MOCK_MODULES = [
     "PyQt6", "PyQt6.QtWidgets", "PyQt6.QtCore", "PyQt6.QtGui",
@@ -248,32 +250,21 @@ class TestImportDiaryEndpoint:
 
 
 @pytest.mark.unit
-@pytest.mark.skipif(not _HAS_FLASK, reason="Flask not available")
-class TestImportDialogueDismissal:
+def test_dashboard_script_guards_against_reshowing_the_import_dialogue():
     """Regression: after diary import succeeds, loadStats must not re-show the modal."""
+    script = read_js()
 
-    def test_html_contains_diary_import_done_guard(self):
-        """The loadStats check should be gated by diaryImportDone flag."""
-        from src.desktop_app.memory_viewer import app
+    # The flag must be declared
+    assert "let diaryImportDone = false;" in script
 
-        app.config["TESTING"] = True
-        client = app.test_client()
-        from src.desktop_app import memory_viewer
-        client.environ_base["HTTP_X_DASHBOARD_TOKEN"] = memory_viewer._SESSION_TOKEN
-        resp = client.get("/")
-        html = resp.data.decode("utf-8")
+    # The flag must be set on import completion
+    assert "diaryImportDone = true;" in script
 
-        # The flag must be declared
-        assert "let diaryImportDone = false;" in html
+    # The loadStats check must include the guard
+    assert "&& !diaryImportDone" in script
 
-        # The flag must be set on import completion
-        assert "diaryImportDone = true;" in html
-
-        # The loadStats check must include the guard
-        assert "&& !diaryImportDone" in html
-
-        # The gate must be based on stored knowledge (total_tokens), not node count.
-        # Guards against a regression to the old `totalNodes <= 1` condition that kept
-        # re-prompting after a successful import filled the root node.
-        assert "totalTokens === 0" in html
-        assert "totalNodes <= 1" not in html
+    # The gate must be based on stored knowledge (total_tokens), not node count.
+    # Guards against a regression to the old `totalNodes <= 1` condition that kept
+    # re-prompting after a successful import filled the root node.
+    assert "totalTokens === 0" in script
+    assert "totalNodes <= 1" not in script

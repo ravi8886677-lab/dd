@@ -13,34 +13,28 @@ Jarvis "should only show 127.0.0.1 to Ollama".
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 
-try:
-    import flask  # noqa: F401
-
-    _HAS_FLASK = True
-except ImportError:
-    _HAS_FLASK = False
-
-pytestmark = pytest.mark.skipif(not _HAS_FLASK, reason="Flask not available")
+from tests.dashboard_assets import (
+    CSS_PATH,
+    JS_PATH,
+    TEMPLATE_PATH,
+    read_frontend_source,
+)
 
 
 @pytest.mark.unit
 def test_dashboard_frontend_is_stored_as_web_assets():
     """The browser source must be independently parseable and packageable."""
-    dashboard = Path(__file__).parents[1] / "src" / "desktop_app" / "dashboard"
-
-    assert (dashboard / "templates" / "index.html").is_file()
-    assert (dashboard / "static" / "dashboard.css").is_file()
-    assert (dashboard / "static" / "dashboard.js").is_file()
+    assert TEMPLATE_PATH.is_file()
+    assert CSS_PATH.is_file()
+    assert JS_PATH.is_file()
 
 
 @pytest.fixture
 def dashboard_html():
-    from src.desktop_app import memory_viewer
-    return memory_viewer._INDEX_HTML
+    return read_frontend_source()
 
 
 @pytest.mark.unit
@@ -122,11 +116,7 @@ def test_every_css_variable_used_is_also_defined():
     none — which made a failed MCP server look identical to a working
     one in the Connections tab. Nothing errors; the styling just stops.
     """
-    import re
-
-    from src.desktop_app import memory_viewer
-
-    source = memory_viewer._INDEX_HTML
+    source = read_frontend_source()
     used = set(re.findall(r"var\((--[a-z0-9-]+)\)", source))
     defined = set(re.findall(r"^\s*(--[a-z0-9-]+)\s*:", source, re.M))
 
@@ -142,11 +132,7 @@ def test_css_rules_key_off_classes_that_elements_actually_carry():
     against `.chat-shell.talking` never matched anything after the
     three-column rebuild, so the orb never shrank while Jarvis spoke.
     """
-    import re
-
-    from src.desktop_app import memory_viewer
-
-    source = memory_viewer._INDEX_HTML
+    source = read_frontend_source()
     styled = set(re.findall(r"\.([a-z][a-z0-9-]+)\.talking", source))
     for class_name in styled:
         assert f'class="{class_name}' in source or f"classList" in source, (

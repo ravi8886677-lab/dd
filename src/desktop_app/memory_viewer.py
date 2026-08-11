@@ -1691,25 +1691,6 @@ def index():
     return page
 
 
-def _load_dashboard_source() -> str:
-    """Return a self-contained source view for tests and static checks."""
-    template = (_DASHBOARD_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
-    css = (_DASHBOARD_ROOT / "static" / "dashboard.css").read_text(encoding="utf-8")
-    javascript = (_DASHBOARD_ROOT / "static" / "dashboard.js").read_text(encoding="utf-8")
-    return (
-        template.replace(
-            "    <link rel=\"stylesheet\" href=\"{{ url_for('static', filename='dashboard.css') }}\">",
-            f"    <style>\n{css}    </style>",
-        ).replace(
-            "    <script src=\"{{ url_for('static', filename='dashboard.js') }}\"></script>",
-            f"    <script>\n{javascript}    </script>",
-        )
-    )
-
-
-_INDEX_HTML = _load_dashboard_source()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
