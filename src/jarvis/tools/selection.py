@@ -59,6 +59,16 @@ _RELATIVE_THRESHOLD = 0.97
 # guarantees the downstream prompt stays compact regardless.
 _LLM_MAX_SELECTED = 5
 
+# How many candidates retrieval hands the router when the catalogue is
+# bigger than this. The router is good at discriminating between a few
+# plausible tools and bad at reading hundreds of descriptions, so it is
+# given a shortlist rather than the catalogue. Wider than the 5 it may
+# return, because retrieval ranks on similarity alone and the router needs
+# room to overrule it. A catalogue at or below this size is handed over
+# whole: there would be nothing to remove, and the embedding call would
+# buy nothing.
+_RERANK_CANDIDATES = 15
+
 # Common English stop-words excluded from keyword matching.
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -238,8 +248,15 @@ def _select_embedding(
     embedding_backend: LLMBackend,
     embed_model: str,
     embed_timeout_sec: float,
+    limit: int = _MAX_SELECTED,
 ) -> List[str]:
-    """Rank tools by cosine similarity between query and tool description embeddings."""
+    """Rank tools by cosine similarity between query and tool description embeddings.
+
+    ``limit`` caps how many survive. It is the final answer when this is
+    the selection strategy, and a candidate shortlist when retrieval is
+    feeding the router, which wants more to choose from than a user's
+    prompt should carry.
+    """
     import numpy as np
 
     # Embed the query.
@@ -307,7 +324,7 @@ def _select_embedding(
     # threshold above sharpens a good distribution; this bounds a bad one,
     # so the worst case is a handful of mediocre candidates rather than
     # every tool installed.
-    selected = selected[:_MAX_SELECTED]
+    selected = selected[:limit]
 
     selected = _ensure_always_included(selected, builtin_tools, mcp_tools)
 
@@ -468,6 +485,55 @@ def _select_llm(
 # Public API
 # ---------------------------------------------------------------------------
 
+def _shortlist_for_router(
+    query: str,
+    builtin_tools: Dict[str, "Tool"],
+    mcp_tools: Dict[str, "ToolSpec"],
+    embedding_backend: Optional[LLMBackend],
+    embed_model: str,
+    embed_timeout_sec: float,
+) -> tuple:
+    """Narrow a large catalogue to the candidates worth routing over.
+
+    The router's weakness is the size of what it reads, not the size of
+    what it returns, so retrieval reads the catalogue and the router reads
+    a shortlist. Below ``_RERANK_CANDIDATES`` there is nothing to remove
+    and the embedding call would buy nothing.
+
+    Fails open in every direction: no backend, a dead backend, or a
+    retrieval that cannot separate anything all return the catalogue
+    untouched, which is the behaviour that existed before retrieval did.
+    The cost of narrowing is that a tool retrieval misses is invisible for
+    that turn; ``toolSearchTool`` is the mid-loop escape hatch for it.
+    """
+    catalogue_size = len(builtin_tools) + len(mcp_tools)
+    if embedding_backend is None or catalogue_size <= _RERANK_CANDIDATES:
+        return builtin_tools, mcp_tools
+
+    candidates = set(
+        _select_embedding(
+            query, builtin_tools, mcp_tools,
+            embedding_backend, embed_model, embed_timeout_sec,
+            limit=_RERANK_CANDIDATES,
+        )
+    )
+
+    shortlisted_builtin = {n: t for n, t in builtin_tools.items() if n in candidates}
+    shortlisted_mcp = {n: s for n, s in mcp_tools.items() if n in candidates}
+    shortlisted_size = len(shortlisted_builtin) + len(shortlisted_mcp)
+
+    if not shortlisted_size:
+        debug_log("Tool routing: retrieval returned nothing, routing over the full catalogue", "planning")
+        return builtin_tools, mcp_tools
+
+    debug_log(
+        f"Tool routing: retrieval narrowed {catalogue_size} tools to {shortlisted_size} "
+        f"for the router",
+        "planning",
+    )
+    return shortlisted_builtin, shortlisted_mcp
+
+
 def select_tools(
     query: str,
     builtin_tools: Dict[str, "Tool"],
@@ -517,8 +583,13 @@ def select_tools(
         if llm_backend is None:
             debug_log("LLM tool selection: no backend supplied, falling back to keyword strategy", "planning")
             return _select_keyword(query, builtin_tools, mcp_tools)
-        return _select_llm(
+
+        routed_builtin, routed_mcp = _shortlist_for_router(
             query, builtin_tools, mcp_tools,
+            embedding_backend, embed_model, embed_timeout_sec,
+        )
+        return _select_llm(
+            query, routed_builtin, routed_mcp,
             llm_backend, llm_model, llm_timeout_sec,
             context_hint=context_hint,
         )

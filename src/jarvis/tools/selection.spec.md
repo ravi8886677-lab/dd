@@ -53,6 +53,14 @@ Cosine similarity is only meaningful between vectors of equal width, so a tool w
 
 ### LLM Strategy (default)
 
+Routing runs in two stages once the catalogue is large. The router's weakness is the size of what it reads, not the size of what it returns, so retrieval reads the catalogue and the router reads a shortlist.
+
+**Stage 1 — retrieval.** When an embedding backend is available and the catalogue holds more than `_RERANK_CANDIDATES` (15) tools, the embedding ranking above selects that many candidates. The shortlist is wider than the 5 tools the router may return, because retrieval ranks on similarity alone and the router needs room to overrule it. At or below that size the catalogue is handed over whole: there is nothing to remove, and the embedding call would buy nothing.
+
+Retrieval fails open in every direction. No backend, a dead backend, or a retrieval that separates nothing all route over the full catalogue, which is the behaviour that existed before this stage did. The cost of narrowing is that a tool retrieval misses is invisible for that turn; `toolSearchTool` is the mid-loop escape hatch for exactly that.
+
+**Stage 2 — the router**, over whatever survived:
+
 1. Build a catalogue of `- name: description` lines (descriptions truncated to 120 chars) for every registered tool except always-included ones.
 2. Send to `call_llm_direct` with a system prompt asking for the **top 5 most relevant** tool names as a comma-separated list. The prompt instructs the router to prefer 1–3 tools for narrow queries and to return `"none"` for greetings/small talk.
 3. Parse the response, matching tokens against known tool names (unknowns are dropped silently).
