@@ -249,6 +249,7 @@ def _select_embedding(
     embed_model: str,
     embed_timeout_sec: float,
     limit: int = _MAX_SELECTED,
+    floor: int = _MIN_SELECTED,
 ) -> List[str]:
     """Rank tools by cosine similarity between query and tool description embeddings.
 
@@ -256,6 +257,13 @@ def _select_embedding(
     the selection strategy, and a candidate shortlist when retrieval is
     feeding the router, which wants more to choose from than a user's
     prompt should carry.
+
+    ``floor`` is how many to return when the threshold keeps fewer. The two
+    callers want opposite things from a decisive result. As a selection
+    strategy, one clear winner should stay a short list. As a shortlist for
+    the router, it must still be ``limit`` wide, because the router's job
+    is to overrule a ranking built on similarity alone and it cannot
+    overrule candidates it was never shown.
     """
     import numpy as np
 
@@ -313,9 +321,9 @@ def _select_embedding(
     cutoff = top_sim * _RELATIVE_THRESHOLD
     selected = [name for name, sim in similarities if sim >= cutoff]
 
-    # Always return at least _MIN_SELECTED tools (the top-N by similarity).
-    if len(selected) < _MIN_SELECTED:
-        selected = [name for name, _ in similarities[:_MIN_SELECTED]]
+    # Always return at least `floor` tools (the top-N by similarity).
+    if len(selected) < floor:
+        selected = [name for name, _ in similarities[:floor]]
 
     # Hard ceiling, and the reason this strategy is usable on a large
     # catalogue at all. Any relative cutoff is permissive when the scores
@@ -515,6 +523,7 @@ def _shortlist_for_router(
             query, builtin_tools, mcp_tools,
             embedding_backend, embed_model, embed_timeout_sec,
             limit=_RERANK_CANDIDATES,
+            floor=_RERANK_CANDIDATES,
         )
     )
 

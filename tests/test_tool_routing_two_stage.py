@@ -108,6 +108,13 @@ def test_a_large_catalogue_reaches_the_router_already_narrowed():
     assert len(offered) <= _RERANK_CANDIDATES, (
         f"router was shown {len(offered)} tools out of {len(tools)}"
     )
+    # And not narrower than promised. A decisive embedder ranks one winner
+    # far above the rest, and if the shortlist collapses to that handful the
+    # router has nothing left to overrule and the rest of the catalogue is
+    # invisible for the turn.
+    assert len(offered) == _RERANK_CANDIDATES, (
+        f"shortlist collapsed to {len(offered)} of a promised {_RERANK_CANDIDATES}"
+    )
 
 
 @pytest.mark.unit
