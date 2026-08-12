@@ -1162,16 +1162,34 @@ class DictationEngine:
                 return ""
 
     def _sample_rate(self) -> int:
-        return int(getattr(self._cfg, "sample_rate", 16000) or 16000)
+        """The rate of the audio handed to transcription.
+
+        The stream runs at the device's native rate and is resampled to
+        ``_target_sample_rate`` before transcribing, so that is what the
+        samples actually are. Reading the rate from config instead would
+        mislabel them whenever the two differ, and a recogniser told the
+        wrong rate hears the speech at the wrong speed and returns
+        confident nonsense rather than an error.
+        """
+        return int(getattr(self, "_target_sample_rate", 16000) or 16000)
 
     def _hosted_stt(self):
         """The configured hosted recogniser, or ``None`` for local only.
 
-        Resolved once and kept: building it per utterance would re-read
-        the credential store on every dictation, and on macOS that can
-        raise an approval dialog mid-hotkey.
+        Resolved once per configuration rather than per utterance:
+        rebuilding it every time would re-read the credential store on
+        every dictation, and on macOS that can raise an approval dialog
+        mid-hotkey. Keyed on the settings it was built from, so turning
+        the provider off in the settings window takes effect on the next
+        dictation instead of persisting until restart.
         """
-        if not hasattr(self, "_hosted_stt_cache"):
+        signature = (
+            str(getattr(self._cfg, "stt_provider", "") or ""),
+            bool(getattr(self._cfg, "stt_api_key", "")),
+            str(getattr(self._cfg, "stt_model", "") or ""),
+            str(getattr(self._cfg, "stt_base_url", "") or ""),
+        )
+        if getattr(self, "_hosted_stt_signature", None) != signature:
             try:
                 from ..speech.factory import get_stt_backend
 
@@ -1179,6 +1197,7 @@ class DictationEngine:
             except Exception as exc:
                 debug_log(f"hosted STT unavailable: {exc}", "dictation")
                 self._hosted_stt_cache = None
+            self._hosted_stt_signature = signature
         return self._hosted_stt_cache
 
     def _transcribe_mlx(self, audio) -> str:
