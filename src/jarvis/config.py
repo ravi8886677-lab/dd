@@ -259,6 +259,14 @@ class Settings:
     location_cgnat_resolve_public_ip: bool
 
     # Web Search
+    # Hosted speech recognition. Local Whisper is the fallback and is
+    # always present; a provider here only makes it faster. Empty or
+    # unkeyed means local, so this can never break transcription.
+    stt_provider: str  # "local" | "groq"
+    stt_api_key: str
+    stt_model: str  # empty means the provider's default
+    stt_base_url: str  # empty means the provider's default endpoint
+
     web_search_enabled: bool
     # Optional Brave Search API key. When set, Brave is used as the primary
     # fallback when DuckDuckGo is rate-limited or returns no usable content.
@@ -747,6 +755,12 @@ def get_default_config() -> Dict[str, Any]:
         # Uses a single OpenDNS resolver lookup of myip.opendns.com over DNS (no HTTP services). Disable to avoid any external request.
         "location_cgnat_resolve_public_ip": True,
 
+        # Hosted speech recognition (local Whisper unless set)
+        "stt_provider": "local",
+        "stt_api_key": "",
+        "stt_model": "",
+        "stt_base_url": "",
+
         # Web Search
         "web_search_enabled": True,
         "brave_search_api_key": "",
@@ -982,6 +996,15 @@ def load_settings() -> Settings:
     location_auto_detect = bool(merged.get("location_auto_detect", True))
     location_cgnat_resolve_public_ip = bool(merged.get("location_cgnat_resolve_public_ip", True))
     web_search_enabled = bool(merged.get("web_search_enabled", True))
+    from .speech.factory import resolve_stt_provider
+
+    stt_provider = resolve_stt_provider(merged.get("stt_provider"))
+    stt_model = str(merged.get("stt_model", "") or "").strip()
+    stt_base_url = str(merged.get("stt_base_url", "") or "").strip()
+    stt_api_key = resolve_secret(
+        "stt_api_key", str(merged.get("stt_api_key", "") or "").strip()
+    )
+
     brave_search_api_key = resolve_secret(
         "brave_search_api_key",
         str(merged.get("brave_search_api_key", "") or "").strip(),
@@ -1124,6 +1147,12 @@ def load_settings() -> Settings:
         location_ip_address=location_ip_address,
         location_auto_detect=location_auto_detect,
         location_cgnat_resolve_public_ip=location_cgnat_resolve_public_ip,
+
+        # Hosted speech recognition
+        stt_provider=stt_provider,
+        stt_api_key=stt_api_key,
+        stt_model=stt_model,
+        stt_base_url=stt_base_url,
 
         # Web Search
         web_search_enabled=web_search_enabled,

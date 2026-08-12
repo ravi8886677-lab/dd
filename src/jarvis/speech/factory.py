@@ -1,0 +1,50 @@
+"""Pick the speech-to-text provider from settings.
+
+The one place that names an adapter. ``None`` means "no hosted provider",
+which is the default and leaves every caller on local Whisper.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from ..debug import debug_log
+from .backend import SpeechToText
+from .groq_stt import GroqSpeechToText
+
+LOCAL = "local"
+GROQ = "groq"
+PROVIDERS = (LOCAL, GROQ)
+
+
+def resolve_stt_provider(raw: Any) -> str:
+    """Normalise a configured provider name, defaulting to local."""
+    name = str(raw or "").strip().lower()
+    if name in PROVIDERS:
+        return name
+    if name:
+        debug_log(f"⚠️ stt: unknown provider {name!r}, using local", "whisper")
+    return LOCAL
+
+
+def get_stt_backend(settings: Any) -> Optional[SpeechToText]:
+    """Return the hosted recogniser, or ``None`` to use local Whisper.
+
+    A provider configured without a key resolves to ``None`` rather than to
+    a backend that fails on every call: the failure would be silent anyway,
+    since callers fall back, so it is better to never take the detour.
+    """
+    provider = resolve_stt_provider(getattr(settings, "stt_provider", None))
+    if provider != GROQ:
+        return None
+
+    api_key = str(getattr(settings, "stt_api_key", "") or "").strip()
+    if not api_key:
+        debug_log("⚠️ stt: groq selected but no key set, using local", "whisper")
+        return None
+
+    return GroqSpeechToText(
+        api_key=api_key,
+        model=str(getattr(settings, "stt_model", "") or "").strip(),
+        base_url=str(getattr(settings, "stt_base_url", "") or "").strip(),
+    )

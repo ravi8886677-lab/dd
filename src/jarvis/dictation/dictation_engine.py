@@ -1135,7 +1135,20 @@ class DictationEngine:
                     pass
 
     def _transcribe(self, audio) -> str:
-        """Transcribe audio using the shared Whisper model."""
+        """Transcribe audio, preferring a hosted recogniser when configured.
+
+        A hosted provider is a latency optimisation over local Whisper,
+        never a dependency: it returns ``None`` for every failure, and
+        this falls through to the local model unchanged. An empty string
+        is a real answer meaning silence, so it is returned as-is.
+        """
+        hosted = self._hosted_stt()
+        if hosted is not None:
+            text = hosted.transcribe(audio, sample_rate=self._sample_rate())
+            if text is not None:
+                return text
+            debug_log("hosted STT unavailable, using local Whisper", "dictation")
+
         backend = self._whisper_backend_ref()
         model = self._whisper_model_ref()
 
@@ -1147,6 +1160,26 @@ class DictationEngine:
             else:
                 debug_log("no whisper model available", "dictation")
                 return ""
+
+    def _sample_rate(self) -> int:
+        return int(getattr(self._cfg, "sample_rate", 16000) or 16000)
+
+    def _hosted_stt(self):
+        """The configured hosted recogniser, or ``None`` for local only.
+
+        Resolved once and kept: building it per utterance would re-read
+        the credential store on every dictation, and on macOS that can
+        raise an approval dialog mid-hotkey.
+        """
+        if not hasattr(self, "_hosted_stt_cache"):
+            try:
+                from ..speech.factory import get_stt_backend
+
+                self._hosted_stt_cache = get_stt_backend(self._cfg)
+            except Exception as exc:
+                debug_log(f"hosted STT unavailable: {exc}", "dictation")
+                self._hosted_stt_cache = None
+        return self._hosted_stt_cache
 
     def _transcribe_mlx(self, audio) -> str:
         repo = self._mlx_repo_ref()
