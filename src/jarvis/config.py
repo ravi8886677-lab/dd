@@ -689,7 +689,7 @@ def get_default_config() -> Dict[str, Any]:
         # UI/UX Features
         "tune_enabled": True,
         "hot_window_enabled": True,
-        "hot_window_seconds": 3.0,
+        "hot_window_seconds": 20.0,
         "echo_energy_threshold": 2.0,
         "echo_tolerance": 0.3,  # Time tolerance for echo detection timing
 
@@ -921,7 +921,7 @@ def load_settings() -> Settings:
     sample_rate = int(merged.get("sample_rate", 16000))
     tune_enabled = bool(merged.get("tune_enabled", True))
     hot_window_enabled = bool(merged.get("hot_window_enabled", True))
-    hot_window_seconds = float(merged.get("hot_window_seconds", 3.0))
+    hot_window_seconds = float(merged.get("hot_window_seconds", 20.0))
     echo_energy_threshold = float(merged.get("echo_energy_threshold", 2.0))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
 
