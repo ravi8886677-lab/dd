@@ -667,7 +667,7 @@ def get_default_config() -> Dict[str, Any]:
         "wake_fuzzy_ratio": 0.78,
 
         # Whisper Speech Recognition
-        "whisper_model": "medium",
+        "whisper_model": "base",
         "whisper_backend": "auto",  # "auto" (MLX on Apple Silicon, else faster-whisper), "mlx", or "faster-whisper"
         "whisper_device": "auto",  # "cuda" (recommended if available), "auto", or "cpu" (only for faster-whisper)
         "whisper_compute_type": "int8",
@@ -901,7 +901,7 @@ def load_settings() -> Settings:
     wake_fuzzy_ratio = float(merged.get("wake_fuzzy_ratio", 0.78))
     # whisper_model accepts a size name ("medium") or a local model
     # directory; _expand_path is a no-op for plain names.
-    whisper_model = _expand_path(merged.get("whisper_model")) or "medium"
+    whisper_model = _expand_path(merged.get("whisper_model")) or "base"
     whisper_backend = os.environ.get("JARVIS_WHISPER_BACKEND", "").lower() or str(merged.get("whisper_backend", "auto")).lower()
     if whisper_backend not in ("auto", "mlx", "faster-whisper"):
         whisper_backend = "auto"
