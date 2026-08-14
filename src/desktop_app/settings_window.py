@@ -242,6 +242,27 @@ def _build_field_metadata() -> List[FieldMeta]:
       "How loosely to match the wake word (0.0–1.0)",
       "wake", "float", min_val=0.5, max_val=1.0, step=0.01)
     # --- Whisper ---
+    # Where recognition happens. This is the only setting that decides
+    # whether microphone audio leaves the machine, so it says so plainly
+    # rather than leaving the user to infer it from a provider name.
+    f("stt_provider", "Recognition Provider",
+      "Local runs Whisper on this computer and nothing is uploaded. A hosted "
+      "provider is faster and more accurate, and sends your recorded speech to "
+      "that company while it transcribes. Local is the default, and is used "
+      "automatically whenever a hosted provider is unreachable.",
+      "whisper", "choice",
+      choices=[("local", "Local (Whisper on this computer)"),
+               ("groq", "Groq (sends audio to Groq)")])
+    f("stt_api_key", "Provider API Key",
+      "Required by a hosted provider. Without it, recognition stays local.",
+      "whisper", "password", nullable=True)
+    f("stt_model", "Provider Model",
+      "Recognition model to request. Leave empty for the provider's default.",
+      "whisper", "str", nullable=True)
+    f("stt_base_url", "Provider Endpoint",
+      "Override the provider's URL. Leave empty for their default.",
+      "whisper", "str", nullable=True)
+
     f("whisper_model", "Model Size",
       "Whisper model size (tiny/base/small/medium/large)",
       "whisper", "choice",

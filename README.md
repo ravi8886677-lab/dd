@@ -2,7 +2,7 @@
 
 **A 100% private AI voice assistant that lives on your computer** (works offline). Talk naturally as if Jarvis is a third person in the room — say its name anywhere in your sentence and get conversational, context-aware responses. It remembers everything, always knows the current location and time, can search the web, read your screen, control Chrome, track nutrition, and much more with support for unlimited MCPs and tools without context rot. Sensitive info is automatically redacted before anything is saved to disk.
 
-🔒 100% local processing. No subscriptions. No data harvesting. Automatic redaction of sensitive info. Free offline dictation included.
+🔒 Local by default. No data harvesting. Automatic redaction of sensitive info. Free offline dictation included. Hosted models are opt-in and off unless you add a key.
 
 ---
 
@@ -22,7 +22,7 @@
 
 ## Why Jarvis?
 
-**🔒 Your data stays yours** - 100% local AI processing. No cloud, no subscriptions, no data harvesting. Automatic redaction of sensitive info. This is non-negotiable.
+**🔒 Your data stays yours** - Local AI processing by default, no data harvesting, automatic redaction of sensitive info. Nothing is sent anywhere unless you deliberately configure a hosted provider and supply its key; leave those unset and Jarvis runs entirely on your machine. When a hosted provider is configured, only the speech or text that reaches it is sent, and the local path takes over whenever it is unavailable.
 
 **🗣️ A third person in the room** - Unlike voice assistants that only respond to rigid commands, Jarvis understands conversations. It maintains a short temporary rolling context of what's being discussed, so when you ask "Jarvis, what do you think?" it knows exactly what you're talking about. Have it chime into discussions with friends, help debug code while you talk through problems, or weigh in on decisions.
 
