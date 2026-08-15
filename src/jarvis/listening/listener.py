@@ -35,6 +35,28 @@ if TYPE_CHECKING:
     from ..memory.conversation import DialogueMemory
 
 
+# webrtcvad accepts only these rates, and only frames of exactly 10, 20 or
+# 30 ms. Anything else raises. This matters because the input stream does
+# not always run at the configured rate: a device that rejects 16 kHz sends
+# us back through the native-rate path, and 44.1 kHz is both an unsupported
+# rate and, at the frame size we slice to, an unsupported frame length.
+VAD_SUPPORTED_RATES = (8000, 16000, 32000, 48000)
+VAD_SUPPORTED_FRAME_MS = (10, 20, 30)
+
+
+def vad_accepts_frame(sample_rate: int, frame_samples: int) -> bool:
+    """Whether webrtcvad can judge a frame of this size at this rate.
+
+    Asking first is the difference between falling back to energy-based
+    detection and going deaf: ``is_speech`` raises on a bad frame, and a
+    caller that treats "raised" as "no speech" hears silence forever.
+    """
+    if sample_rate not in VAD_SUPPORTED_RATES or frame_samples <= 0:
+        return False
+    frame_ms = frame_samples * 1000.0 / sample_rate
+    return any(abs(frame_ms - ms) < 1e-6 for ms in VAD_SUPPORTED_FRAME_MS)
+
+
 def is_whisper_hallucination(no_speech_prob: float, threshold: float) -> bool:
     """Shared Whisper no-speech gate.
 
@@ -426,6 +448,10 @@ class VoiceListener(threading.Thread):
         self._frame_samples = 0
         self._samplerate = int(getattr(self.cfg, "sample_rate", 16000))
         self._vad: Optional = None
+
+        # Whether the VAD has been checked against the stream's actual rate
+        # and frame size. Deferred: neither is known until the stream opens.
+        self._vad_checked = False
 
         # Initialise VAD if available
         if webrtcvad is not None and bool(getattr(self.cfg, "vad_enabled", True)):
@@ -1313,6 +1339,23 @@ class VoiceListener(threading.Thread):
 
         debug_log("audio buffers cleared", "voice")
 
+    def _disable_vad(self, reason: str) -> None:
+        """Drop to energy-based detection, once, and say so.
+
+        Silently losing the VAD is survivable — the energy threshold is a
+        cruder gate but a working one. Silently losing *speech detection*
+        is not, and that is what happens if a raising VAD is left in place.
+        """
+        if self._vad is None:
+            return
+        self._vad = None
+        debug_log(f"VAD disabled ({reason}); using energy threshold", "voice")
+        print(
+            f"  ⚠️  Voice activity detection unavailable ({reason}) — "
+            "falling back to energy threshold",
+            flush=True,
+        )
+
     def _is_speech_frame(self, frame) -> bool:
         """Determine if audio frame contains speech."""
         if np is None:
@@ -1322,6 +1365,16 @@ class VoiceListener(threading.Thread):
         rms = float(np.sqrt(np.mean(np.square(frame))))
         self._recent_audio_energy.append(rms)
 
+        # The stream's real rate is only known once it is open, and it is not
+        # always the configured one, so the compatibility check happens here
+        # on the first frame rather than at construction.
+        if self._vad is not None and not self._vad_checked:
+            self._vad_checked = True
+            rate = int(getattr(self, "_stream_samplerate", self._samplerate))
+            samples = int(getattr(frame, "size", 0) or 0)
+            if not vad_accepts_frame(rate, samples):
+                self._disable_vad(f"{rate} Hz, {samples}-sample frames")
+
         if self._vad is None:
             return rms >= float(getattr(self.cfg, "voice_min_energy", 0.0045))
 
@@ -1329,8 +1382,12 @@ class VoiceListener(threading.Thread):
         try:
             pcm16 = np.clip(frame.flatten() * 32768.0, -32768, 32767).astype(np.int16).tobytes()
             return bool(self._vad.is_speech(pcm16, getattr(self, "_stream_samplerate", self._samplerate)))
-        except Exception:
-            return False
+        except Exception as exc:
+            # Whatever the cause, it will recur on every subsequent frame.
+            # Treating it as "no speech" and carrying on is how the listener
+            # ends up permanently deaf on hardware nobody tested.
+            self._disable_vad(f"detector error: {exc}")
+            return rms >= float(getattr(self.cfg, "voice_min_energy", 0.0045))
 
     def _filter_noisy_segments(self, segments):
         """Filter out low-confidence Whisper segments."""
