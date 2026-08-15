@@ -989,11 +989,15 @@ class PiperTTS:
                 noise_w_scale=self.noise_w,
             )
             audio_chunks = []
-            for chunk in self._voice.synthesize(text, syn_config):
+            # Not `chunk`: that name is this method's SpeechChunk parameter,
+            # and rebinding it here leaves every later chunk.* access reading
+            # a Piper AudioChunk instead — which raises, before any audio is
+            # played, on the engine that is the default.
+            for piper_chunk in self._voice.synthesize(text, syn_config):
                 if self._should_interrupt.is_set():
                     debug_log("Piper TTS interrupted during synthesis", "tts")
                     return
-                audio_chunks.append(chunk.audio_int16_array)
+                audio_chunks.append(piper_chunk.audio_int16_array)
 
             # Check for interruption after synthesis
             if self._should_interrupt.is_set():

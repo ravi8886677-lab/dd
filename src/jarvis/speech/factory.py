@@ -23,7 +23,11 @@ def resolve_stt_provider(raw: Any) -> str:
     if name in PROVIDERS:
         return name
     if name:
-        debug_log(f"⚠️ stt: unknown provider {name!r}, using local", "whisper")
+        # print, not debug_log: this runs inside load_settings, and
+        # debug_log asks load_settings whether debug output is on. That
+        # recursion re-reads config and re-queries the credential store
+        # on every level before it unwinds.
+        print(f"  ⚠️  Unknown speech provider {name!r} — using local", flush=True)
     return LOCAL
 
 
