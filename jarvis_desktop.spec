@@ -86,7 +86,35 @@ except Exception as e:
 # Manual collection can conflict with the hook and cause crashes
 
 # Hidden imports that PyInstaller might miss
+# pyaec loads its native library through ctypes, which PyInstaller cannot
+# trace: a ctypes call is opaque at analysis time, so the .so/.dll is not
+# collected and the frozen app raises OSError on first use. Collecting it
+# explicitly as a binary — not a hiddenimport, which would do nothing for a
+# file that is never imported — is what makes echo cancellation survive
+# freezing. Absent, the app falls back to no cancellation rather than
+# failing, so a miss here degrades quietly and is worth being loud about.
+aec_binaries = []
+try:
+    import pyaec as _pyaec
+    import glob as _glob
+    import os as _os
+
+    _pyaec_dir = _os.path.dirname(_pyaec.__file__)
+    for _pattern in ("*.so", "*.dll", "*.dylib"):
+        for _lib in _glob.glob(_os.path.join(_pyaec_dir, "**", _pattern), recursive=True):
+            aec_binaries.append((_lib, "pyaec"))
+    print(f"[spec] bundling {len(aec_binaries)} pyaec native librar(ies)")
+except Exception as _exc:
+    # Deliberately broad. pyaec's own __init__ swallows the OSError from a
+    # missing shared library and then dereferences None, so a half-installed
+    # copy raises AttributeError — and a build that dies during Analysis is
+    # a poor outcome for a feature whose entire contract is to degrade
+    # quietly when it cannot load.
+    print(f"[spec] pyaec unusable ({_exc.__class__.__name__}) — "
+          "echo cancellation will be unavailable in this build")
+
 hiddenimports = [
+    'pyaec',
     # Jarvis core modules
     'jarvis',
     'jarvis._version',
@@ -241,7 +269,7 @@ hiddenimports = [
 a = Analysis(
     ['src/desktop_app/app.py'],
     pathex=[str(src_path)],
-    binaries=[],
+    binaries=aec_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

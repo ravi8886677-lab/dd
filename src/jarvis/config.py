@@ -270,6 +270,15 @@ class Settings:
     # Faster to first audio; off until validated against a real microphone.
     tts_stream_sentences: bool
 
+    # Acoustic echo cancellation: subtract our own speaker output from the
+    # microphone so Jarvis can listen while it speaks. Off until the delay
+    # has been calibrated on the machine — an uncalibrated canceller removes
+    # the wrong audio.
+    aec_enabled: bool
+    aec_delay_ms: float          # speaker-to-microphone round trip, measured
+    aec_frame_ms: int
+    aec_filter_ms: int           # echo tail the filter can model
+
     web_search_enabled: bool
     # Optional Brave Search API key. When set, Brave is used as the primary
     # fallback when DuckDuckGo is rate-limited or returns no usable content.
@@ -764,6 +773,10 @@ def get_default_config() -> Dict[str, Any]:
         "stt_model": "",
         "stt_base_url": "",
         "tts_stream_sentences": False,
+        "aec_enabled": False,
+        "aec_delay_ms": 0.0,
+        "aec_frame_ms": 10,
+        "aec_filter_ms": 200,
 
         # Web Search
         "web_search_enabled": True,
@@ -1158,6 +1171,10 @@ def load_settings() -> Settings:
         stt_model=stt_model,
         stt_base_url=stt_base_url,
         tts_stream_sentences=bool(merged.get("tts_stream_sentences", False)),
+        aec_enabled=bool(merged.get("aec_enabled", False)),
+        aec_delay_ms=float(merged.get("aec_delay_ms", 0.0) or 0.0),
+        aec_frame_ms=int(merged.get("aec_frame_ms", 10) or 10),
+        aec_filter_ms=int(merged.get("aec_filter_ms", 200) or 200),
 
         # Web Search
         web_search_enabled=web_search_enabled,

@@ -30,6 +30,10 @@ PIPER_VOICE_BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0
 
 
 from .sentence_stream import SentenceStreamer, SpeechChunk, split_sentences
+# Piper alone publishes a playback reference: it plays through a
+# sample-level callback, where Chatterbox hands a file to pygame and
+# never sees the samples. Echo cancellation therefore needs Piper.
+from ..audio.reference_buffer import publish_playback
 
 
 def _get_piper_models_dir() -> Path:
@@ -1044,6 +1048,12 @@ class PiperTTS:
                     raise sd.CallbackStop()
                 else:
                     outdata[:, 0] = chunk
+
+                # Hand the samples actually leaving the speaker to the echo
+                # canceller's reference. Done in the playback callback, not at
+                # synthesis time, because the buffer's sense of "now" has to
+                # track real playback rather than how fast Piper produced it.
+                publish_playback(chunk, self._sample_rate)
 
                 play_position[0] = end
 

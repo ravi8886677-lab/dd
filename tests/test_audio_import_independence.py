@@ -115,3 +115,63 @@ def test_the_module_still_imports_when_every_audio_dependency_is_gone():
 
     assert module.np is None
     assert hasattr(module, "VoiceListener")
+
+
+@pytest.mark.unit
+def test_the_echo_cancellation_modules_do_not_reintroduce_a_numpy_hard_dep():
+    """listener.py and tts.py import the audio package at module scope.
+
+    An unguarded `import numpy` in any of those modules undoes the split
+    above by the back door: the listener would fail to import on a machine
+    with no numpy, and the `np is None` guards inside it would be
+    unreachable because the module dies first. This caught exactly that.
+    """
+    module = _reimport_listener_without("numpy", ImportError("no numpy"))
+
+    assert module.np is None
+    assert hasattr(module, "VoiceListener")
+
+
+@pytest.mark.unit
+def test_the_audio_package_imports_without_numpy():
+    """Same reversibility rule as the helper above, for the audio package.
+
+    An earlier draft reimported these modules and left the *new* objects in
+    sys.modules. Tests elsewhere had already bound names from the old ones,
+    so patching a module global stopped reaching the function that reads it —
+    two unrelated tests failed with no obvious connection to this file.
+    """
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "numpy" or name.startswith("numpy."):
+            raise ImportError("no numpy")
+        return real_import(name, *args, **kwargs)
+
+    names = ["jarvis.audio.reference_buffer", "jarvis.audio.echo_cancel",
+             "jarvis.audio.calibration"]
+    saved = {name: sys.modules.get(name) for name in names}
+    saved.update({name: module for name, module in list(sys.modules.items())
+                  if name == "numpy" or name.startswith("numpy.")})
+    for name in saved:
+        sys.modules.pop(name, None)
+
+    builtins.__import__ = fake_import
+    try:
+        for name in names:
+            assert importlib.import_module(name).np is None, name
+    finally:
+        builtins.__import__ = real_import
+        # Drop the numpy-less copies and put the originals back, including
+        # the parent package attribute that import_module rebound.
+        for name in names:
+            sys.modules.pop(name, None)
+        for name, module in saved.items():
+            if module is not None:
+                sys.modules[name] = module
+        parent = sys.modules.get("jarvis.audio")
+        if parent is not None:
+            for name in names:
+                original = saved.get(name)
+                if original is not None:
+                    setattr(parent, name.rsplit(".", 1)[1], original)

@@ -23,6 +23,9 @@ from .echo_detection import EchoDetector
 from .state_manager import StateManager, ListeningState
 from ..utils.backoff import retry_backoff_sleep
 from ..utils.audio_lock import portaudio_lock
+from ..audio.reference_buffer import playback_reference
+from ..audio.echo_cancel import create_echo_canceller
+from ..audio.calibration import delay_to_samples
 from .wake_detection import is_wake_word_detected, extract_query_after_wake, is_stop_command
 from .transcript_buffer import TranscriptBuffer
 from .intent_judge import IntentJudge, create_intent_judge, warm_up_chat_model
@@ -468,6 +471,20 @@ class VoiceListener(threading.Thread):
         self._frame_samples = 0
         self._samplerate = int(getattr(self.cfg, "sample_rate", 16000))
         self._vad: Optional = None
+
+        # Echo cancellation. Built eagerly because it is cheap and its
+        # absence must be visible at startup rather than on first speech;
+        # a disabled or unavailable canceller is a working configuration.
+        # Built with the capture loop's own frame size. Anything else and
+        # every frame is declined for a size mismatch, silently.
+        self._echo_canceller = create_echo_canceller(
+            self.cfg, self._samplerate,
+            frame_ms=int(getattr(self.cfg, "vad_frame_ms", 20) or 20),
+        )
+        self._aec_delay_samples = delay_to_samples(
+            max(0.0, float(getattr(self.cfg, "aec_delay_ms", 0.0))), self._samplerate
+        )
+        self._aec_size_warned = False
 
         # Whether the VAD has been checked against the stream's actual rate
         # and frame size. Deferred: neither is known until the stream opens.
@@ -1387,10 +1404,77 @@ class VoiceListener(threading.Thread):
             flush=True,
         )
 
+    def _announce_aec_idle(self, reason: str) -> None:
+        """Say, once and visibly, that cancellation is not actually running.
+
+        Startup prints that echo cancellation is active; these guards can
+        then decline every frame for the rest of the session. A debug_log is
+        not enough for that: the user sees a feature announced and silently
+        absent, concludes it works badly, and never learns it never ran.
+        Same reasoning as `_disable_vad` — a degraded feature is survivable,
+        a degraded feature that reports success is not.
+        """
+        if self._aec_size_warned:
+            return
+        self._aec_size_warned = True
+        debug_log(f"AEC idle: {reason}", "voice")
+        print(f"  ⚠️  Echo cancellation is not running ({reason})", flush=True)
+
+    def _cancel_own_voice(self, frame):
+        """Subtract Jarvis's own speaker output from a microphone frame.
+
+        The frame is returned untouched whenever cancellation cannot be done
+        honestly: no canceller configured, nothing playing, or the reference
+        buffer cannot say what was playing at the matching moment. Passing
+        the frame through is exactly today's behaviour, so every failure here
+        costs duplex and nothing else.
+        """
+        canceller = self._echo_canceller
+        if canceller is None or not canceller.active or np is None:
+            return frame
+
+        # The reference is held at the configured rate, and so is the delay.
+        # On the native-rate fallback the microphone runs at the device's
+        # rate instead, and frames are not resampled until the utterance is
+        # finalised — so cancelling here would subtract 16 kHz audio from
+        # 44.1 kHz audio. Declining loses duplex on those devices; not
+        # declining would lose the user's speech.
+        if int(getattr(self, "_stream_samplerate", self._samplerate)) != self._samplerate:
+            self._announce_aec_idle(
+                f"microphone is running at {getattr(self, '_stream_samplerate', 0)} Hz, "
+                f"not {self._samplerate} Hz"
+            )
+            return frame
+
+        samples = np.asarray(frame, dtype=np.float32).ravel()
+        if samples.size != canceller.frame_samples:
+            # The listener's frame size is configurable and the canceller's
+            # is not. Rather than resample on the audio thread, decline once
+            # and say so — a mismatch is a configuration problem, not a
+            # transient one.
+            self._announce_aec_idle(
+                f"{samples.size}-sample frames, canceller built for "
+                f"{canceller.frame_samples}"
+            )
+            return frame
+
+        far = playback_reference.read_aligned(samples.size, self._aec_delay_samples)
+        if far is None:
+            # Nothing was playing that long ago, so there is no echo to
+            # remove. Feeding silence instead would teach the adaptive filter
+            # that echoes do not exist.
+            return frame
+
+        return canceller.cancel(samples, far)
+
     def _is_speech_frame(self, frame) -> bool:
         """Determine if audio frame contains speech."""
         if np is None:
             return True
+
+        # Note: the frame arrives already cancelled. The capture loop does
+        # it once, before this and before the frame is stored, so that the
+        # VAD decision and the audio Whisper eventually sees never disagree.
 
         # Track energy for echo detection
         rms = float(np.sqrt(np.mean(np.square(frame))))
@@ -2520,6 +2604,14 @@ class VoiceListener(threading.Thread):
                 while offset + self._frame_samples <= total:
                     frame = mono[offset: offset + self._frame_samples]
                     offset += self._frame_samples
+
+                    # Remove our own voice once, here, so that every consumer
+                    # downstream sees the same audio: the VAD decision, the
+                    # energy baseline, the pre-roll, and the frames that end
+                    # up being transcribed. Cancelling inside the VAD check
+                    # alone would clean the decision and still hand Whisper
+                    # the echo.
+                    frame = self._cancel_own_voice(frame)
 
                     # VAD decision
                     is_voice = self._is_speech_frame(frame)

@@ -48,3 +48,8 @@ PyQt6-WebEngine>=6.6.0
 psutil>=5.9.0
 # Note: 6.13.0+ has VC runtime pre-loading fix for Windows
 pyinstaller>=6.13.0
+
+# Acoustic echo cancellation, so the microphone can be kept open while
+# Jarvis speaks. Optional: absent, the app falls back to passing microphone
+# audio through untouched, which is the pre-existing behaviour.
+pyaec>=1.0.1
