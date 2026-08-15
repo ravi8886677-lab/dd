@@ -68,33 +68,53 @@ def is_whisper_hallucination(no_speech_prob: float, threshold: float) -> bool:
     """
     return no_speech_prob >= threshold
 
-# Audio processing imports (optional)
+# Audio processing imports — optional, and independent of one another.
+#
+# These three used to share a single try block, so one failure took all
+# three names down. A machine with no PortAudio therefore also lost numpy,
+# and `_is_speech_frame` returns True for every frame when numpy is missing:
+# instead of hearing nothing, the listener heard everything, and every scrap
+# of room noise became an utterance to transcribe. Three unrelated
+# dependencies, three unrelated failure modes, so three separate blocks.
+#
+# OSError is caught alongside ImportError because a shared library that is
+# present but unloadable — the usual PortAudio failure — raises that instead.
+
+
+def _audio_dependency_hint() -> None:
+    """Point Linux users at the package they are actually missing."""
+    import sys as _sys
+
+    if _sys.platform == "linux":
+        print(
+            "     On Linux, ensure PortAudio is installed: sudo apt install libportaudio2",
+            flush=True,
+        )
+
+
 try:
-    import sounddevice as sd
-    import webrtcvad
     import numpy as np
 except ImportError as e:
-    sd = None
-    webrtcvad = None
     np = None
-    # Log import error for debugging
-    print(f"  ⚠️  Audio import error: {e}", flush=True)
-    print("     This may indicate PortAudio is not found", flush=True)
-    import sys as _sys
-    if _sys.platform == 'linux':
-        print("     On Linux, ensure PortAudio is installed: sudo apt install libportaudio2", flush=True)
-    del _sys
-except OSError as e:
-    # PortAudio loading errors appear as OSError
+    # Nothing in the listening path works without this: it is the only thing
+    # that turns frames into audio. Distinct message, distinct cause.
+    print(f"  ❌ numpy unavailable — voice input cannot run: {e}", flush=True)
+
+try:
+    import sounddevice as sd
+except (ImportError, OSError) as e:
     sd = None
+    print(f"  ❌ Audio input unavailable: {e}", flush=True)
+    print("     This usually means PortAudio is missing or unloadable", flush=True)
+    _audio_dependency_hint()
+
+try:
+    import webrtcvad
+except (ImportError, OSError) as e:
+    # The mildest of the three: there is already an energy-threshold path
+    # for exactly this case, so speech detection degrades rather than stops.
     webrtcvad = None
-    np = None
-    print(f"  ❌ PortAudio initialisation failed: {e}", flush=True)
-    print("     Please reinstall the application or check audio drivers", flush=True)
-    import sys as _sys
-    if _sys.platform == 'linux':
-        print("     On Linux, ensure PortAudio is installed: sudo apt install libportaudio2", flush=True)
-    del _sys
+    debug_log(f"webrtcvad unavailable ({e}); using energy threshold", "voice")
 
 # Whisper backend imports - try MLX first on Apple Silicon, fall back to faster-whisper
 MLX_WHISPER_AVAILABLE = False
