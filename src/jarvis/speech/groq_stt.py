@@ -6,19 +6,31 @@ exists is latency: local ``whisper_model: medium`` is the largest fixed
 cost in the voice loop, and a hosted turbo model answers in a fraction of
 the time.
 
+Groq offers no streaming or WebSocket transcription — the endpoint takes a
+complete audio file and returns a complete transcript. Anything that wants
+to feel incremental has to segment the audio itself and send the pieces,
+which is exactly what the listener's VAD already does.
+
 Every failure path returns ``None`` so the caller drops to local Whisper.
 A hosted recogniser being down must cost speed, never the feature.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from ..debug import debug_log
-from .backend import SpeechToText, pcm16_wav_bytes
+from .backend import SpeechToText, Transcription, pcm16_wav_bytes
+from .languages import normalise_language
 
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "whisper-large-v3-turbo"
+
+# ``verbose_json`` costs the same as ``json`` and adds the detected
+# language plus the per-segment ``avg_logprob`` and ``no_speech_prob``
+# that the listener's hallucination filters run on. Requesting the plain
+# shape would mean hosted audio skipping filters local audio must pass.
+RESPONSE_FORMAT = "verbose_json"
 
 # Below this there is nothing to recognise, and an upload costs a round
 # trip to be told so. The listener's own floor is comparable.
@@ -44,6 +56,17 @@ class GroqSpeechToText(SpeechToText):
         sample_rate: int = 16000,
         timeout_sec: float = 15.0,
     ) -> Optional[str]:
+        result = self.transcribe_detailed(audio, sample_rate, timeout_sec)
+        if result is None:
+            return None
+        return result.text
+
+    def transcribe_detailed(
+        self,
+        audio: Any,
+        sample_rate: int = 16000,
+        timeout_sec: float = 15.0,
+    ) -> Optional[Transcription]:
         if not self._api_key:
             return None
 
@@ -56,7 +79,7 @@ class GroqSpeechToText(SpeechToText):
             return None
 
         if samples.size < int(MIN_AUDIO_SECONDS * sample_rate):
-            return ""
+            return Transcription(text="")
 
         try:
             import requests
@@ -66,7 +89,7 @@ class GroqSpeechToText(SpeechToText):
                 f"{self._base_url}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 files={"file": ("audio.wav", wav, "audio/wav")},
-                data={"model": self._model, "response_format": "json"},
+                data={"model": self._model, "response_format": RESPONSE_FORMAT},
                 timeout=timeout_sec,
             )
         except Exception as exc:
@@ -83,10 +106,24 @@ class GroqSpeechToText(SpeechToText):
             return None
 
         try:
-            text = str(response.json().get("text") or "").strip()
+            payload = response.json()
+            text = str(payload.get("text") or "").strip()
         except Exception as exc:
             debug_log(f"⚠️ groq stt: unreadable response: {exc}", "whisper")
             return None
 
-        debug_log(f"🗣️ groq stt: {len(text)} chars", "whisper")
-        return text
+        # Groq reports the language by display name ("English"), where local
+        # Whisper reports the code ("en"). Downstream expects the code.
+        language = normalise_language(payload.get("language"))
+
+        segments: List[Dict[str, Any]] = []
+        raw_segments = payload.get("segments")
+        if isinstance(raw_segments, list):
+            segments = [seg for seg in raw_segments if isinstance(seg, dict)]
+
+        debug_log(
+            f"🗣️ groq stt: {len(text)} chars, {len(segments)} segments, "
+            f"language={language or 'unknown'}",
+            "whisper",
+        )
+        return Transcription(text=text, language=language, segments=tuple(segments))
