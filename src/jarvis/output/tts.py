@@ -475,6 +475,8 @@ class ChatterboxTTS:
         # Lazy start the worker thread and lazy init on first speak
         if self._thread is None:
             self.start()
+        # A new reply supersedes any interrupt aimed at the previous one.
+        self._should_interrupt.clear()
         self._completion_callback = completion_callback
         self._duration_callback = duration_callback
         # Preprocess text for speech (convert links to readable descriptions)
@@ -510,6 +512,7 @@ class ChatterboxTTS:
         if self._thread is None:
             self.start()
 
+        self._should_interrupt.clear()
         processed = _preprocess_for_speech(text)
         sentences = split_sentences(processed)
         if len(sentences) <= 1:
@@ -568,7 +571,12 @@ class ChatterboxTTS:
         text = chunk.text
         self._is_speaking.set()
         self._last_spoken_text = text
-        self._should_interrupt.clear()
+        # Deliberately NOT cleared here. A reply is many chunks now, and an
+        # interrupt landing after the worker has dequeued the next sentence
+        # but before it starts playing would be erased at this point — the
+        # user says "stop", the queue is drained, and the sentence already
+        # in hand plays out anyway. The flag belongs to the reply, so
+        # `speak`/`speak_sentences` clear it when a new reply is queued.
         interrupted = False
         
         # Signal speaking state to face widget
@@ -645,10 +653,14 @@ class ChatterboxTTS:
         except Exception as e:
             warnings.warn(f"Chatterbox TTS error: {e}")
         finally:
-            self._is_speaking.clear()
-            
-            # Signal speaking stopped to face widget
-            self._notify_speaking_state(False)
+            # Only report "not speaking" when the reply is actually over.
+            # Between sentences the engine is still mid-reply, and claiming
+            # otherwise makes the listener skip `interrupt()` on a stop
+            # command, mark Jarvis's own next sentence as user speech, and
+            # flash the face widget once per sentence.
+            if chunk.is_last or self._q.empty():
+                self._is_speaking.clear()
+                self._notify_speaking_state(False)
             
             # Call completion callback if set and not interrupted
             # Only the last piece of a reply completes it. Firing on every
@@ -854,6 +866,8 @@ class PiperTTS:
         # Lazy start the worker thread
         if self._thread is None:
             self.start()
+        # A new reply supersedes any interrupt aimed at the previous one.
+        self._should_interrupt.clear()
         self._completion_callback = completion_callback
         self._duration_callback = duration_callback
         # Preprocess text for speech
@@ -889,6 +903,7 @@ class PiperTTS:
         if self._thread is None:
             self.start()
 
+        self._should_interrupt.clear()
         processed = _preprocess_for_speech(text)
         sentences = split_sentences(processed)
         if len(sentences) <= 1:
@@ -955,7 +970,12 @@ class PiperTTS:
         text = chunk.text
         self._is_speaking.set()
         self._last_spoken_text = text
-        self._should_interrupt.clear()
+        # Deliberately NOT cleared here. A reply is many chunks now, and an
+        # interrupt landing after the worker has dequeued the next sentence
+        # but before it starts playing would be erased at this point — the
+        # user says "stop", the queue is drained, and the sentence already
+        # in hand plays out anyway. The flag belongs to the reply, so
+        # `speak`/`speak_sentences` clear it when a new reply is queued.
         interrupted = False
 
         # Signal speaking state to face widget
@@ -1100,8 +1120,14 @@ class PiperTTS:
             debug_log(f"Piper TTS error: {e}", "tts")
             print(f"  ⚠️ Piper TTS error: {e}", flush=True)
         finally:
-            self._is_speaking.clear()
-            self._notify_speaking_state(False)
+            # Only report "not speaking" when the reply is actually over.
+            # Between sentences the engine is still mid-reply, and claiming
+            # otherwise makes the listener skip `interrupt()` on a stop
+            # command, mark Jarvis's own next sentence as user speech, and
+            # flash the face widget once per sentence.
+            if chunk.is_last or self._q.empty():
+                self._is_speaking.clear()
+                self._notify_speaking_state(False)
 
             # Call completion callback if set and not interrupted
             # Only the last piece of a reply completes it. Firing on every

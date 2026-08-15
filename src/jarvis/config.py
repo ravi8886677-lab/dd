@@ -276,7 +276,8 @@ class Settings:
     # the wrong audio.
     aec_enabled: bool
     aec_delay_ms: float          # speaker-to-microphone round trip, measured
-    aec_frame_ms: int
+    # Frame size is not configurable here: it must match `vad_frame_ms`, and
+    # letting the two drift is how this shipped declining every frame.
     aec_filter_ms: int           # echo tail the filter can model
 
     web_search_enabled: bool
@@ -775,7 +776,6 @@ def get_default_config() -> Dict[str, Any]:
         "tts_stream_sentences": False,
         "aec_enabled": False,
         "aec_delay_ms": 0.0,
-        "aec_frame_ms": 10,
         "aec_filter_ms": 200,
 
         # Web Search
@@ -1173,7 +1173,6 @@ def load_settings() -> Settings:
         tts_stream_sentences=bool(merged.get("tts_stream_sentences", False)),
         aec_enabled=bool(merged.get("aec_enabled", False)),
         aec_delay_ms=float(merged.get("aec_delay_ms", 0.0) or 0.0),
-        aec_frame_ms=int(merged.get("aec_frame_ms", 10) or 10),
         aec_filter_ms=int(merged.get("aec_filter_ms", 200) or 200),
 
         # Web Search

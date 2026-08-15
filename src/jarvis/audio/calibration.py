@@ -29,7 +29,9 @@ from typing import Optional
 # than lose the listener.
 try:
     import numpy as np
-except ImportError:  # pragma: no cover - exercised by the import tests
+except (ImportError, OSError):  # pragma: no cover - see the import tests
+    # OSError covers numpy installed but unloadable (a broken BLAS), which
+    # is the failure this package's siblings already handle.
     np = None
 
 # Long enough for the correlation to have something distinctive to lock
@@ -213,18 +215,25 @@ def run_calibration(sample_rate: int = 16000,
     chirp = generate_chirp(sample_rate, duration_sec)
     # Record past the end of the chirp by the longest delay worth searching,
     # plus a margin: a recording that stops too early cannot contain the
-    # answer, and the failure would look like "no echo" rather than "too
-    # short".
+    # answer, and the failure would read as "no echo" rather than "too short".
     tail = int(sample_rate * (MAX_DELAY_SEC + 0.2))
-    recording = np.zeros(len(chirp) + tail, dtype=np.float32)
+    # One stream, not two. sounddevice's convenience API stops any previous
+    # stream when a new one starts, so `play()` followed by `rec()` aborts
+    # the sweep microseconds after it begins — the microphone then records
+    # a silent room and calibration can never succeed. `playrec` opens a
+    # single duplex stream, which is also the only way the two clocks are
+    # guaranteed to share a start.
+    padded = np.concatenate([chirp, np.zeros(tail, dtype=np.float32)])
 
     with portaudio_lock:
-        sd.play(chirp, samplerate=sample_rate, blocking=False)
-        captured = sd.rec(len(recording), samplerate=sample_rate,
-                          channels=1, dtype="float32")
-        sd.wait()
+        captured = sd.playrec(padded, samplerate=sample_rate,
+                              channels=1, dtype="float32")
+    # The wait happens outside the lock. audio_lock.py's own contract is to
+    # take it innermost, around the call only — holding it across a blocking
+    # wait stalls the listener and every other stream for a second or more.
+    sd.wait()
 
-    recording[:] = np.asarray(captured, dtype=np.float32).ravel()[:len(recording)]
+    recording = np.asarray(captured, dtype=np.float32).ravel()
     return measure_delay(chirp, recording, sample_rate)
 
 

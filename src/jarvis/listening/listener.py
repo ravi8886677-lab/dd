@@ -97,7 +97,12 @@ def _audio_dependency_hint() -> None:
 
 try:
     import numpy as np
-except ImportError as e:
+except (ImportError, OSError) as e:
+    # OSError, not just ImportError: numpy is the dependency most likely to
+    # be installed but unloadable — a broken MKL or OpenBLAS shared object
+    # raises that, and the sibling blocks below already catch it for the
+    # same reason. Catching only ImportError here made a broken BLAS crash
+    # the daemon where the old combined block degraded with a message.
     np = None
     # Nothing in the listening path works without this: it is the only thing
     # that turns frames into audio. Distinct message, distinct cause.

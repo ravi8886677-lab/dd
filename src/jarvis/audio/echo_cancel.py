@@ -29,7 +29,9 @@ from typing import Any, Optional
 # that mentions it. listener.py and tts.py import this at module scope.
 try:
     import numpy as np
-except ImportError:  # pragma: no cover - exercised by the import tests
+except (ImportError, OSError):  # pragma: no cover - see the import tests
+    # OSError covers numpy installed but unloadable (a broken BLAS), which
+    # is the failure this package's siblings already handle.
     np = None
 
 from ..debug import debug_log

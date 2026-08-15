@@ -20,6 +20,7 @@ own callbacks and knows whether it ends the reply.
 from __future__ import annotations
 
 import queue
+import threading
 
 import pytest
 
@@ -146,6 +147,9 @@ class _FakeEngine:
         self.enabled = True
         self._q: queue.Queue = queue.Queue()
         self._thread = object()          # pretend the worker is running
+        # A real Event, because queueing a reply now clears it: an interrupt
+        # aimed at the previous reply must not silence this one.
+        self._should_interrupt = threading.Event()
         self.speak = PiperTTS.speak.__get__(self)
         self.speak_sentences = PiperTTS.speak_sentences.__get__(self)
         self._drain_queue = PiperTTS._drain_queue.__get__(self)
@@ -252,3 +256,132 @@ def test_nothing_is_queued_for_empty_text():
 
     assert engine.speak_sentences("   ") == 0
     assert engine._q.empty()
+
+
+# ── _speak_once itself ────────────────────────────────────────────────
+#
+# Nothing above this line reaches `_speak_once`. That gap is how a real
+# defect shipped: the method's `chunk: SpeechChunk` parameter was rebound by
+# the pre-existing `for chunk in self._voice.synthesize(...)` loop, so every
+# later `chunk.*` access hit a Piper AudioChunk instead. Piper is the default
+# engine, so Jarvis was silent on every reply — and the `finally` raised a
+# second AttributeError that escaped into the worker, leaving the hot window
+# shut. Stubs that only exercise `speak()` cannot see any of it.
+
+
+class _FakeAudioChunk:
+    def __init__(self, samples):
+        self.audio_int16_array = samples
+
+
+def _piper_under_test(sentences_audio):
+    """A PiperTTS with synthesis and playback faked, but its real methods."""
+    import sys
+    from unittest.mock import MagicMock
+    import numpy as np
+
+    from jarvis.output.tts import PiperTTS
+
+    engine = PiperTTS.__new__(PiperTTS)
+    engine.enabled = True
+    engine._q = queue.Queue()
+    engine._is_speaking = threading.Event()
+    engine._should_interrupt = threading.Event()
+    engine._audio_lock = threading.Lock()
+    engine._audio_stream = None
+    engine._last_spoken_text = ""
+    engine._sample_rate = 22050
+    engine.speaker = None
+    engine.length_scale = 1.0
+    engine.noise_scale = 0.667
+    engine.noise_w = 0.8
+    engine._init_error = None
+    engine._ensure_initialized = lambda: True
+    engine._notify_speaking_state = lambda speaking: None
+
+    voice = MagicMock()
+    voice.synthesize.return_value = [
+        _FakeAudioChunk(np.asarray(sentences_audio, dtype=np.int16))
+    ]
+    engine._voice = voice
+
+    # `_speak_once` imports piper's SynthesisConfig before it synthesises.
+    # Without this the method raises on that import and never reaches the
+    # loop — which is how an earlier draft of these tests passed while the
+    # defect they were written for was still present.
+    fake_piper_config = MagicMock()
+    sys.modules["piper"] = MagicMock()
+    sys.modules["piper.config"] = fake_piper_config
+
+    fake_sd = MagicMock()
+    fake_sd.CallbackAbort = type("CallbackAbort", (Exception,), {})
+    fake_sd.CallbackStop = type("CallbackStop", (Exception,), {})
+    stream = MagicMock()
+    stream.active = False               # "playback finished immediately"
+    fake_sd.OutputStream.return_value = stream
+    sys.modules["sounddevice"] = fake_sd
+
+    return engine
+
+
+@pytest.mark.unit
+def test_speaking_a_chunk_does_not_lose_the_chunk_to_the_synthesis_loop():
+    """The showstopper: `chunk` rebound by `for chunk in ...synthesize()`."""
+    from jarvis.output.tts import PiperTTS
+
+    engine = _piper_under_test([100, 200, 300, 400])
+    fired = []
+
+    PiperTTS._speak_once(
+        engine,
+        SpeechChunk(text="Hello there.", is_last=True,
+                    completion_callback=lambda: fired.append(True)),
+    )
+
+    assert fired == [True], "completion callback never ran — chunk was clobbered"
+    # Proof the synthesis loop really ran: a vacuous pass would mean the
+    # method raised before reaching it and this test guarded nothing.
+    assert engine._voice.synthesize.called
+
+
+@pytest.mark.unit
+def test_a_non_final_chunk_leaves_the_engine_reporting_that_it_is_speaking():
+    """Between sentences Jarvis is still mid-reply.
+
+    Claiming otherwise makes the listener skip `interrupt()` on a stop
+    command and mark Jarvis's own next sentence as user speech.
+    """
+    from jarvis.output.tts import PiperTTS
+
+    engine = _piper_under_test([100, 200])
+    engine._q.put(SpeechChunk(text="and more.", is_last=True))   # queue not empty
+
+    PiperTTS._speak_once(engine, SpeechChunk(text="First part.", is_last=False))
+
+    assert engine._is_speaking.is_set()
+
+
+@pytest.mark.unit
+def test_the_final_chunk_ends_the_speaking_state():
+    from jarvis.output.tts import PiperTTS
+
+    engine = _piper_under_test([100, 200])
+
+    PiperTTS._speak_once(engine, SpeechChunk(text="All done.", is_last=True))
+
+    assert not engine._is_speaking.is_set()
+
+
+@pytest.mark.unit
+def test_an_interrupt_landing_between_chunks_is_not_cleared_by_the_next_one():
+    """`interrupt()` drains the queue and sets the flag, but the worker may
+    already hold the next sentence. Clearing the flag on entry played that
+    sentence in full — the user's "stop" silenced the tail, not the clause."""
+    from jarvis.output.tts import PiperTTS
+
+    engine = _piper_under_test([100, 200])
+    engine._should_interrupt.set()               # interrupt already pending
+
+    PiperTTS._speak_once(engine, SpeechChunk(text="Should not play.", is_last=True))
+
+    assert engine._should_interrupt.is_set(), "interrupt was swallowed"

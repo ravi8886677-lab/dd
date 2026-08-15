@@ -24,22 +24,48 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Iterator, List, Optional
 
-# A sentence ends at . ? ! or a line break, allowing for closing quotes and
-# brackets after the mark. Kept deliberately simple: the cost of splitting
-# slightly wrong is a marginally odd pause, not a wrong answer.
-_SENTENCE_END = re.compile(r'[.!?]["\')\]]*(?=\s|$)|\n+')
+# Sentence-final punctuation, Latin and CJK, plus line breaks. The CJK
+# marks matter: without 。！？ a Chinese or Japanese reply never splits at
+# all, so those users get none of the latency this feature exists for.
+# Full-width marks are sentence-final on their own and need no following
+# space, which Latin marks do — otherwise "3.5" splits.
+_SENTENCE_END = re.compile(
+    r'[.!?]["\')\]]*(?=\s|$)'      # Latin, followed by space or end
+    r'|[。！？…]["\')\]』」]*'        # CJK, self-delimiting
+    r'|\n+'
+)
 
 # Full stops that do not end a sentence. Splitting on these produces a pause
 # in the middle of a phrase, which sounds like a stutter.
+# Deliberately short. An entry here suppresses a real sentence boundary
+# whenever the word is also an ordinary word, and that is the worse error:
+# "The answer is no. Try again." became one chunk because "no" was listed
+# for "number", and the same went for am, pm, co, st and al. A missing
+# abbreviation costs one odd pause; a wrong one silently welds sentences.
 _ABBREVIATIONS = frozenset({
-    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt",
-    "vs", "etc", "eg", "ie", "approx", "dept", "est", "fig",
-    "inc", "ltd", "co", "corp", "no", "vol", "al", "am", "pm",
+    "mr", "mrs", "ms", "dr", "prof", "jr", "vs", "etc",
+    "eg", "ie", "approx", "dept", "fig", "inc", "ltd", "corp", "vol",
 })
 
 # Below this a "sentence" is usually a fragment — an initial, a list marker,
-# a stray "OK." — and speaking it alone sounds clipped.
+# a stray "OK." — and speaking it alone sounds clipped. Counted in
+# characters, which only means the same thing in a script where words are
+# several characters long: eight characters of Chinese is a whole sentence,
+# so the rule is applied by how much text a script packs per character
+# rather than uniformly.
 MIN_SENTENCE_CHARS = 12
+MIN_SENTENCE_CHARS_DENSE = 4
+
+# Scripts where one character carries roughly one word. Range-based rather
+# than a language list, so it covers scripts nobody thought to enumerate.
+_DENSE_SCRIPT = re.compile(
+    r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]'
+)
+
+
+def _min_chars_for(text: str) -> int:
+    """How short is too short to speak alone, for this text's script."""
+    return MIN_SENTENCE_CHARS_DENSE if _DENSE_SCRIPT.search(text) else MIN_SENTENCE_CHARS
 
 
 def _ends_in_abbreviation(text: str) -> bool:
@@ -86,7 +112,7 @@ def split_sentences(text: str) -> List[str]:
         if carry:
             piece = f"{carry} {piece}"
             carry = ""
-        if len(piece) < MIN_SENTENCE_CHARS:
+        if len(piece) < _min_chars_for(piece):
             if merged:
                 merged[-1] = f"{merged[-1]} {piece}"
             else:

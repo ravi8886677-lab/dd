@@ -50,6 +50,10 @@ psutil>=5.9.0
 pyinstaller>=6.13.0
 
 # Acoustic echo cancellation, so the microphone can be kept open while
-# Jarvis speaks. Optional: absent, the app falls back to passing microphone
-# audio through untouched, which is the pre-existing behaviour.
-pyaec>=1.0.1
+# Jarvis speaks. Genuinely optional — `create_echo_canceller` catches the
+# ImportError and falls back to passing microphone audio through untouched,
+# and the feature is off by default. Listing it unconditionally would make
+# `pip install -r requirements.txt` fail outright on any platform pyaec has
+# no wheel for, so it is a marker-guarded line rather than a hard one:
+# install it yourself, or use requirements-aec.txt, to enable the feature.
+pyaec>=1.0.1; platform_machine in "x86_64 AMD64 arm64 aarch64"
