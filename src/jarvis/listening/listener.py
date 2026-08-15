@@ -1298,8 +1298,19 @@ class VoiceListener(threading.Thread):
             self.track_tts_start(reply)
             debug_log(f"starting TTS for reply ({len(reply)} chars)", "voice")
 
-            self.tts.speak(reply, completion_callback=_on_tts_complete,
-                          duration_callback=_on_duration_known)
+            # Sentence-at-a-time synthesis starts the reply sooner, because
+            # the first sentence plays while the second is still being made.
+            # Off by default: the win is real but it changes what the echo
+            # detector is told and when, and that wants validating against a
+            # live microphone rather than a mocked one.
+            if getattr(self.cfg, "tts_stream_sentences", False) and hasattr(
+                self.tts, "speak_sentences"
+            ):
+                self.tts.speak_sentences(reply, completion_callback=_on_tts_complete,
+                                         duration_callback=_on_duration_known)
+            else:
+                self.tts.speak(reply, completion_callback=_on_tts_complete,
+                              duration_callback=_on_duration_known)
         else:
             debug_log(f"no TTS output: reply={bool(reply)}, tts={bool(self.tts)}, enabled={getattr(self.tts, 'enabled', False) if self.tts else False}", "voice")
             # Stop thinking tune if no TTS response

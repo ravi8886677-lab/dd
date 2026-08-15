@@ -29,6 +29,9 @@ PIPER_DEFAULT_VOICE = "en_GB-alan-medium"
 PIPER_VOICE_BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
 
 
+from .sentence_stream import SentenceStreamer, SpeechChunk, split_sentences
+
+
 def _get_piper_models_dir() -> Path:
     """Get the directory for storing Piper voice models."""
     base = Path.home() / ".local" / "share" / "jarvis" / "models" / "piper"
@@ -363,7 +366,7 @@ class ChatterboxTTS:
         self.cfg_weight = cfg_weight
 
         # Threading and queue setup (same as TextToSpeech)
-        self._q: queue.Queue[str] = queue.Queue()
+        self._q: queue.Queue = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._is_speaking = threading.Event()
@@ -473,13 +476,76 @@ class ChatterboxTTS:
         # Preprocess text for speech (convert links to readable descriptions)
         processed_text = _preprocess_for_speech(text)
         try:
-            self._q.put_nowait(processed_text)
+            self._q.put_nowait(SpeechChunk(
+                text=processed_text,
+                is_last=True,
+                completion_callback=completion_callback,
+                duration_callback=duration_callback,
+            ))
+        except Exception:
+            pass
+
+
+    def speak_sentences(self, text: str,
+                        completion_callback: Optional[Callable[[], None]] = None,
+                        duration_callback: Optional[Callable[[float], None]] = None) -> int:
+        """Speak ``text`` a sentence at a time, and report how many pieces.
+
+        Same audible result as ``speak``, reached sooner: synthesis runs per
+        sentence, so the first one plays while the second is still being
+        made, instead of the whole reply being synthesised before anything
+        is heard. Falls back to a single chunk when the text holds only one
+        sentence, which is the case where splitting buys nothing.
+
+        The duration reported to the caller is an estimate of the *whole*
+        reply, sent with the first chunk, because the echo detector measures
+        against the whole reply's text and cannot wait for the last one.
+        """
+        if not self.enabled or not text.strip():
+            return 0
+        if self._thread is None:
+            self.start()
+
+        processed = _preprocess_for_speech(text)
+        sentences = split_sentences(processed)
+        if len(sentences) <= 1:
+            self.speak(text, completion_callback, duration_callback)
+            return 1
+
+        total = _estimate_tts_duration(processed, DEFAULT_WPM)
+        for index, sentence in enumerate(sentences):
+            is_last = index == len(sentences) - 1
+            try:
+                self._q.put_nowait(SpeechChunk(
+                    text=sentence,
+                    is_last=is_last,
+                    completion_callback=completion_callback if is_last else None,
+                    # Only the first chunk reports, so the estimate is not
+                    # re-sent once per sentence.
+                    duration_callback=duration_callback if index == 0 else None,
+                    total_duration=total,
+                ))
+            except Exception:
+                break
+        return len(sentences)
+
+    def _drain_queue(self) -> None:
+        """Discard everything still waiting to be spoken.
+
+        Interrupting only the current chunk would silence one sentence and
+        let the next start — a barge-in "stop" has to stop the reply, not
+        just the clause in flight.
+        """
+        try:
+            while not self._q.empty():
+                self._q.get_nowait()
         except Exception:
             pass
 
     def interrupt(self) -> None:
         """Stop current speech immediately"""
         self._should_interrupt.set()
+        self._drain_queue()
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -490,11 +556,12 @@ class ChatterboxTTS:
             if not text:
                 continue
             try:
-                self._speak_once(text)
+                self._speak_once(SpeechChunk.coerce(text))
             except Exception:
                 continue
 
-    def _speak_once(self, text: str) -> None:
+    def _speak_once(self, chunk: SpeechChunk) -> None:
+        text = chunk.text
         self._is_speaking.set()
         self._last_spoken_text = text
         self._should_interrupt.clear()
@@ -528,9 +595,16 @@ class ChatterboxTTS:
             debug_log(f"Chatterbox TTS synthesis complete: {exact_duration:.2f}s", "tts")
 
             # Notify listener of exact duration for precise echo detection
-            if self._duration_callback is not None:
+            # Report the whole reply's duration when this is one piece of a
+            # streamed one: the echo detector divides the full reply's word
+            # count by whatever it last heard, so a per-chunk figure would
+            # misreport words-per-second by the number of chunks.
+            reported_duration = (
+                chunk.total_duration if chunk.total_duration else exact_duration
+            )
+            if chunk.duration_callback is not None:
                 try:
-                    self._duration_callback(exact_duration)
+                    chunk.duration_callback(reported_duration)
                 except Exception as e:
                     debug_log(f"Chatterbox TTS duration callback error: {e}", "tts")
 
@@ -573,9 +647,12 @@ class ChatterboxTTS:
             self._notify_speaking_state(False)
             
             # Call completion callback if set and not interrupted
-            if self._completion_callback is not None and not interrupted:
+            # Only the last piece of a reply completes it. Firing on every
+            # piece opens the listener's hot window while Jarvis is still
+            # talking, and it hears its own remaining sentences as input.
+            if chunk.completion_callback is not None and chunk.is_last and not interrupted:
                 try:
-                    self._completion_callback()
+                    chunk.completion_callback()
                 except Exception:
                     pass
                 self._completion_callback = None
@@ -640,7 +717,7 @@ class PiperTTS:
         self.sentence_silence = sentence_silence
 
         # Threading and queue setup (same pattern as other TTS engines)
-        self._q: queue.Queue[str] = queue.Queue()
+        self._q: queue.Queue = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._is_speaking = threading.Event()
@@ -778,13 +855,76 @@ class PiperTTS:
         # Preprocess text for speech
         processed_text = _preprocess_for_speech(text)
         try:
-            self._q.put_nowait(processed_text)
+            self._q.put_nowait(SpeechChunk(
+                text=processed_text,
+                is_last=True,
+                completion_callback=completion_callback,
+                duration_callback=duration_callback,
+            ))
+        except Exception:
+            pass
+
+
+    def speak_sentences(self, text: str,
+                        completion_callback: Optional[Callable[[], None]] = None,
+                        duration_callback: Optional[Callable[[float], None]] = None) -> int:
+        """Speak ``text`` a sentence at a time, and report how many pieces.
+
+        Same audible result as ``speak``, reached sooner: synthesis runs per
+        sentence, so the first one plays while the second is still being
+        made, instead of the whole reply being synthesised before anything
+        is heard. Falls back to a single chunk when the text holds only one
+        sentence, which is the case where splitting buys nothing.
+
+        The duration reported to the caller is an estimate of the *whole*
+        reply, sent with the first chunk, because the echo detector measures
+        against the whole reply's text and cannot wait for the last one.
+        """
+        if not self.enabled or not text.strip():
+            return 0
+        if self._thread is None:
+            self.start()
+
+        processed = _preprocess_for_speech(text)
+        sentences = split_sentences(processed)
+        if len(sentences) <= 1:
+            self.speak(text, completion_callback, duration_callback)
+            return 1
+
+        total = _estimate_tts_duration(processed, DEFAULT_WPM)
+        for index, sentence in enumerate(sentences):
+            is_last = index == len(sentences) - 1
+            try:
+                self._q.put_nowait(SpeechChunk(
+                    text=sentence,
+                    is_last=is_last,
+                    completion_callback=completion_callback if is_last else None,
+                    # Only the first chunk reports, so the estimate is not
+                    # re-sent once per sentence.
+                    duration_callback=duration_callback if index == 0 else None,
+                    total_duration=total,
+                ))
+            except Exception:
+                break
+        return len(sentences)
+
+    def _drain_queue(self) -> None:
+        """Discard everything still waiting to be spoken.
+
+        Interrupting only the current chunk would silence one sentence and
+        let the next start — a barge-in "stop" has to stop the reply, not
+        just the clause in flight.
+        """
+        try:
+            while not self._q.empty():
+                self._q.get_nowait()
         except Exception:
             pass
 
     def interrupt(self) -> None:
         """Stop current speech immediately."""
         self._should_interrupt.set()
+        self._drain_queue()
         with self._audio_lock:
             if self._audio_stream is not None:
                 try:
@@ -802,12 +942,13 @@ class PiperTTS:
             if not text:
                 continue
             try:
-                self._speak_once(text)
+                self._speak_once(SpeechChunk.coerce(text))
             except Exception as e:
                 debug_log(f"Piper TTS error in _speak_once: {e}", "tts")
                 continue
 
-    def _speak_once(self, text: str) -> None:
+    def _speak_once(self, chunk: SpeechChunk) -> None:
+        text = chunk.text
         self._is_speaking.set()
         self._last_spoken_text = text
         self._should_interrupt.clear()
@@ -871,9 +1012,16 @@ class PiperTTS:
             debug_log(f"Piper TTS synthesis complete: {exact_duration:.2f}s, {len(full_audio)} samples", "tts")
 
             # Notify listener of exact duration for precise echo detection
-            if self._duration_callback is not None:
+            # Report the whole reply's duration when this is one piece of a
+            # streamed one: the echo detector divides the full reply's word
+            # count by whatever it last heard, so a per-chunk figure would
+            # misreport words-per-second by the number of chunks.
+            reported_duration = (
+                chunk.total_duration if chunk.total_duration else exact_duration
+            )
+            if chunk.duration_callback is not None:
                 try:
-                    self._duration_callback(exact_duration)
+                    chunk.duration_callback(reported_duration)
                 except Exception as e:
                     debug_log(f"Piper TTS duration callback error: {e}", "tts")
 
@@ -942,9 +1090,12 @@ class PiperTTS:
             self._notify_speaking_state(False)
 
             # Call completion callback if set and not interrupted
-            if self._completion_callback is not None and not interrupted:
+            # Only the last piece of a reply completes it. Firing on every
+            # piece opens the listener's hot window while Jarvis is still
+            # talking, and it hears its own remaining sentences as input.
+            if chunk.completion_callback is not None and chunk.is_last and not interrupted:
                 try:
-                    self._completion_callback()
+                    chunk.completion_callback()
                 except Exception as e:
                     print(f"  ⚠️ Piper TTS completion callback error: {e}", flush=True)
                 self._completion_callback = None

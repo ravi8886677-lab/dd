@@ -266,6 +266,9 @@ class Settings:
     stt_api_key: str
     stt_model: str  # empty means the provider's default
     stt_base_url: str  # empty means the provider's default endpoint
+    # Speak a reply sentence at a time instead of synthesising it whole.
+    # Faster to first audio; off until validated against a real microphone.
+    tts_stream_sentences: bool
 
     web_search_enabled: bool
     # Optional Brave Search API key. When set, Brave is used as the primary
@@ -760,6 +763,7 @@ def get_default_config() -> Dict[str, Any]:
         "stt_api_key": "",
         "stt_model": "",
         "stt_base_url": "",
+        "tts_stream_sentences": False,
 
         # Web Search
         "web_search_enabled": True,
@@ -1153,6 +1157,7 @@ def load_settings() -> Settings:
         stt_api_key=stt_api_key,
         stt_model=stt_model,
         stt_base_url=stt_base_url,
+        tts_stream_sentences=bool(merged.get("tts_stream_sentences", False)),
 
         # Web Search
         web_search_enabled=web_search_enabled,
