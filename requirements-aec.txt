@@ -1,0 +1,14 @@
+# Acoustic echo cancellation — optional, so the microphone can stay open
+# while Jarvis is speaking.
+#
+# Install this on top of requirements.txt, then set `"aec_enabled": true`
+# and calibrate with `python -m jarvis.audio.calibration`.
+#
+# It is a separate file because pyaec has no wheel for every platform, and
+# listing it unconditionally would make `pip install -r requirements.txt`
+# fail outright where it cannot build. Without it, `create_echo_canceller`
+# catches the ImportError and microphone audio passes through untouched.
+#
+# The marker matches the architectures pyaec publishes wheels for.
+
+pyaec>=1.0.1; platform_machine in "x86_64 AMD64 arm64 aarch64"

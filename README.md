@@ -422,7 +422,12 @@ To use different Piper voices, download from [HuggingFace](https://huggingface.c
 }
 ```
 
-**Chatterbox** - AI voice with emotion control (requires running from source):
+**Chatterbox** - AI voice with emotion control. Optional, and a large download: it pulls PyTorch and the CUDA runtime, taking the install from ~1.4 GB to ~6.8 GB. Requires running from source.
+
+```bash
+pip install -r requirements-chatterbox.txt
+```
+
 ```json
 { "tts_engine": "chatterbox" }
 ```

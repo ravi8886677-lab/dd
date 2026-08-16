@@ -1,0 +1,20 @@
+# Chatterbox TTS — optional neural voice with emotion control and cloning.
+#
+# Install this on top of requirements.txt only if you want
+# `"tts_engine": "chatterbox"`. Piper is the default and needs nothing here.
+#
+# It is a separate file because of what it costs. Chatterbox pulls torch,
+# and torch pulls the CUDA runtime, triton and transformers. Measured on a
+# headless Linux container:
+#
+#   requirements.txt ................................ 1.4 GB
+#   + requirements-chatterbox.txt ................... 6.8 GB
+#
+# Nearly 4 GB of that is NVIDIA CUDA tooling, installed whether or not the
+# machine has an NVIDIA GPU. Speech *recognition* does not need any of it:
+# faster-whisper runs on ctranslate2 and onnxruntime, not torch.
+#
+# Selecting chatterbox without installing this degrades honestly — the
+# engine warns that its dependencies are missing and Jarvis keeps running.
+
+chatterbox-tts==0.1.2

@@ -30,7 +30,9 @@ mcp==1.13.1
 # Manager, Linux Secret Service) for API keys. Jarvis degrades to
 # config.json when no backend is present.
 keyring==25.7.0
-chatterbox-tts==0.1.2
+# Chatterbox TTS is optional and lives in requirements-chatterbox.txt.
+# It pulls torch and the CUDA stack, which is ~4 GB nobody using the
+# default Piper voice should have to download.
 piper-tts>=1.3.0
 pygame>=2.1.0
 faiss-cpu>=1.7.4
@@ -54,6 +56,4 @@ pyinstaller>=6.13.0
 # ImportError and falls back to passing microphone audio through untouched,
 # and the feature is off by default. Listing it unconditionally would make
 # `pip install -r requirements.txt` fail outright on any platform pyaec has
-# no wheel for, so it is a marker-guarded line rather than a hard one:
-# install it yourself, or use requirements-aec.txt, to enable the feature.
-pyaec>=1.0.1; platform_machine in "x86_64 AMD64 arm64 aarch64"
+# no wheel for, so it lives in requirements-aec.txt instead.
