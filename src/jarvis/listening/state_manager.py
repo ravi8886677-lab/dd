@@ -20,20 +20,23 @@ class StateManager:
     """Manages listening state transitions and timing."""
 
     def __init__(self, hot_window_seconds: float = 3.0, echo_tolerance: float = 0.3,
-                 voice_collect_seconds: float = 2.0, max_collect_seconds: float = 60.0):
+                 voice_collect_seconds: float = 2.0, max_collect_seconds: float = 60.0,
+                 follow_on_seconds: float = 0.6):
         """
         Initialize state manager.
 
         Args:
             hot_window_seconds: Duration of hot window listening
             echo_tolerance: Delay before activating hot window (for echo suppression)
-            voice_collect_seconds: Silence timeout for query collection
+            voice_collect_seconds: Silence timeout while the collection is empty
             max_collect_seconds: Maximum time to collect a single query
+            follow_on_seconds: Silence timeout once the collection holds a query
         """
         self.hot_window_seconds = hot_window_seconds
         self.echo_tolerance = echo_tolerance
         self.voice_collect_seconds = voice_collect_seconds
         self.max_collect_seconds = max_collect_seconds
+        self.follow_on_seconds = follow_on_seconds
 
         # Current state
         self._state = ListeningState.WAKE_WORD
@@ -146,9 +149,32 @@ class StateManager:
 
         return query
 
-    def check_collection_timeout(self) -> bool:
+    def silence_budget(self) -> float:
+        """How much silence ends the current collection.
+
+        An empty collection is a wake word with no query behind it yet, so it
+        gets the full window to let the user gather the thought. Once there is
+        a query in hand the endpointer has already seen the user stop talking,
+        and the only thing left to wait for is a possible continuation, so the
+        much shorter follow-on grace applies. The grace never outlasts the
+        window: a user who shortens the window means the whole wait.
+        """
+        with self._state_lock:
+            has_query = bool(self._pending_query)
+
+        if not has_query:
+            return self.voice_collect_seconds
+        return min(self.follow_on_seconds, self.voice_collect_seconds)
+
+    def check_collection_timeout(self, speech_active: bool = False) -> bool:
         """
         Check if collection should timeout due to silence or max duration.
+
+        Args:
+            speech_active: True while the endpointer is inside an utterance.
+                Suppresses the silence timeout so a sentence the user resumed
+                is not finalised underneath them. The max duration still
+                applies, so continuous noise cannot hold a turn open forever.
 
         Returns:
             True if collection should be finalized
@@ -157,7 +183,10 @@ class StateManager:
             return False
 
         current_time = time.time()
-        silence_timeout = current_time - self._last_voice_time >= self.voice_collect_seconds
+        silence_timeout = (
+            not speech_active
+            and current_time - self._last_voice_time >= self.silence_budget()
+        )
         max_timeout = current_time - self._collect_start_time >= self.max_collect_seconds
 
         if silence_timeout or max_timeout:

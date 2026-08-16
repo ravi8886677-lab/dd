@@ -153,6 +153,7 @@ class Settings:
     # Voice Collection & Timing
     voice_block_seconds: float
     voice_collect_seconds: float
+    voice_follow_on_seconds: float
     voice_max_collect_seconds: float
 
     # Wake Word Detection
@@ -672,6 +673,7 @@ def get_default_config() -> Dict[str, Any]:
         # Voice Collection & Timing
         "voice_block_seconds": 4.0,
         "voice_collect_seconds": 4.5,
+        "voice_follow_on_seconds": 0.6,
         "voice_max_collect_seconds": 180.0,
 
         # Wake Word Detection
@@ -912,6 +914,7 @@ def load_settings() -> Settings:
     voice_device = None if voice_device_val in (None, "", "default", "system") else str(voice_device_val)
     voice_block_seconds = float(merged.get("voice_block_seconds", 4.0))
     voice_collect_seconds = float(merged.get("voice_collect_seconds", 2.5))
+    voice_follow_on_seconds = float(merged.get("voice_follow_on_seconds", 0.6))
     voice_max_collect_seconds = float(merged.get("voice_max_collect_seconds", 60.0))
     wake_word = str(merged.get("wake_word", "jarvis")).strip().lower()
     wake_aliases = [a.strip().lower() for a in _ensure_list(merged.get("wake_aliases")) if a.strip()]
@@ -1102,6 +1105,7 @@ def load_settings() -> Settings:
         # Voice Collection & Timing
         voice_block_seconds=voice_block_seconds,
         voice_collect_seconds=voice_collect_seconds,
+        voice_follow_on_seconds=voice_follow_on_seconds,
         voice_max_collect_seconds=voice_max_collect_seconds,
 
         # Wake Word Detection

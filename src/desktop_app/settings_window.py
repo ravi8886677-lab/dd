@@ -315,6 +315,9 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("voice_collect_seconds", "Collect Window",
       "Time to collect speech after wake word",
       "timing", "float", min_val=1.0, max_val=30.0, step=0.5, suffix="s")
+    f("voice_follow_on_seconds", "Follow-on Grace",
+      "Silence to wait for a continuation once a query has been heard",
+      "timing", "float", min_val=0.1, max_val=5.0, step=0.1, suffix="s")
     f("voice_max_collect_seconds", "Max Collect Window",
       "Maximum time to collect continuous speech",
       "timing", "float", min_val=10.0, max_val=600.0, step=10, suffix="s")

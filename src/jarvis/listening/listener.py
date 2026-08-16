@@ -508,12 +508,7 @@ class VoiceListener(threading.Thread):
             energy_spike_threshold=float(getattr(self.cfg, "echo_energy_threshold", 2.0))
         )
 
-        self.state_manager = StateManager(
-            hot_window_seconds=float(getattr(self.cfg, "hot_window_seconds", 3.0)),
-            echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
-            voice_collect_seconds=float(getattr(self.cfg, "voice_collect_seconds", 2.0)),
-            max_collect_seconds=float(getattr(self.cfg, "voice_max_collect_seconds", 60.0))
-        )
+        self.state_manager = self._build_state_manager()
 
         # Energy tracking for echo detection
         self._recent_audio_energy: deque = deque(maxlen=50)
@@ -1748,9 +1743,19 @@ class VoiceListener(threading.Thread):
 
         return False
 
+    def _build_state_manager(self) -> StateManager:
+        """Construct the state manager from the listener's config."""
+        return StateManager(
+            hot_window_seconds=float(getattr(self.cfg, "hot_window_seconds", 3.0)),
+            echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
+            voice_collect_seconds=float(getattr(self.cfg, "voice_collect_seconds", 2.0)),
+            max_collect_seconds=float(getattr(self.cfg, "voice_max_collect_seconds", 60.0)),
+            follow_on_seconds=float(getattr(self.cfg, "voice_follow_on_seconds", 0.6)),
+        )
+
     def _check_query_timeout(self) -> None:
         """Check if there's a pending query that has timed out, and check hot window expiry."""
-        if self.state_manager.check_collection_timeout():
+        if self.state_manager.check_collection_timeout(speech_active=self.is_speech_active):
             query = self.state_manager.clear_collection()
             if query.strip():
                 self._dispatch_query(query)

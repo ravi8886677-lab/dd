@@ -40,6 +40,7 @@
   "voice_min_energy": 0.02,
   "voice_block_seconds": 4.0,
   "voice_collect_seconds": 4.5,
+  "voice_follow_on_seconds": 0.6,
   "voice_max_collect_seconds": 180.0,
   "wake_word": "jarvis",
   "wake_aliases": [

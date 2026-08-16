@@ -314,6 +314,10 @@ If the intent judge later rejects the query (and no hot window override applies)
   "hot_window_seconds": 20.0,
   "echo_tolerance": 0.3,
 
+  "voice_collect_seconds": 4.5,
+  "voice_follow_on_seconds": 0.6,
+  "voice_max_collect_seconds": 180.0,
+
   "stt_provider": "local",
   "aec_enabled": false,
   "aec_delay_ms": 0.0,
@@ -328,6 +332,9 @@ If the intent judge later rejects the query (and no hot window override applies)
 | `whisper_no_speech_threshold` | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
 
 | `hot_window_seconds` | 20.0 | How long the microphone stays live for a wake-word-free follow-up after a reply. |
+| `voice_collect_seconds` | 4.5 | Silence that ends a collection holding **no** query yet, i.e. the time a bare wake word buys the user to think of one. |
+| `voice_follow_on_seconds` | 0.6 | Silence that ends a collection that **already** holds a query. Capped at `voice_collect_seconds`, so shortening the window shortens both. |
+| `voice_max_collect_seconds` | 180.0 | Hard ceiling on a single collection, enforced even mid-utterance. |
 | `stt_provider` | `"local"` | Speech recogniser. `local` uses the in-process Whisper model; a hosted provider is tried first and falls back to local on any failure. See [speech.spec.md](../speech/speech.spec.md). |
 | `aec_enabled` | `false` | Acoustic echo cancellation. Off means microphone frames pass through untouched. See [audio.spec.md](../audio/audio.spec.md). |
 | `aec_delay_ms` | 0.0 | Speaker→microphone round trip, measured by `python -m jarvis.audio.calibration`. |
@@ -385,10 +392,41 @@ If wake detected OR in hot window:
     ↓
 If judge.directed and judge.query:
     → Verify wake word present (wake word mode) or non-echo (hot window)
-    → Dispatch query to Reply Engine
+    → Start collection
 If judge rejects but in hot window and non-echo:
-    → Override rejection, dispatch as query
+    → Override rejection, start collection
+    ↓
+Collection: further utterances append; silence budget elapses
+    ↓
+Dispatch query to Reply Engine
 ```
+
+## Query Collection
+
+Accepting an utterance opens a collection rather than dispatching it. Later
+utterances append to the same query, so a thought split across two breaths
+arrives as one request.
+
+The collection closes on silence, and how much silence depends on what is in
+it:
+
+| Collection holds | Budget | Why |
+|---|---|---|
+| No query yet (bare wake word) | `voice_collect_seconds` | There is nothing to answer. The user is still assembling the request and the long wait is the point. |
+| A query | `voice_follow_on_seconds`, capped at `voice_collect_seconds` | The endpointer already saw `endpoint_silence_ms` of silence and recognition already ran, so the user demonstrably stopped talking. The only thing left to wait for is a continuation, and that is a short wait. |
+
+The budget is re-evaluated on every check, so a bare wake word moves onto the
+short budget the moment the first words land.
+
+Both budgets are measured from the last utterance to reach the collection,
+which is *after* endpointing and recognition. The real silence before dispatch
+is therefore `endpoint_silence_ms` + recognition time + the budget. This is
+the dominant term in time-to-first-audio, ahead of any model choice.
+
+**A collection is never finalised mid-utterance.** While the endpointer is
+inside speech the silence budget is suspended, so a user who resumes inside
+the grace is not cut in half. `voice_max_collect_seconds` is not suspended:
+continuous noise ends the turn rather than holding it open forever.
 
 ## Fallback Behaviour
 
