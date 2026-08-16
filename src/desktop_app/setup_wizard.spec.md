@@ -35,13 +35,13 @@ The **Provider Choice page is the wizard's first step** (`setStartId`). After th
 | # | Page | Condition to show | Config written |
 |---|------|-------------------|----------------|
 | 1 | **Provider Choice** (start) | Always | `llm_provider` (Ollama clears the OpenAI-compatible overrides) |
-| 2 | **Whisper Setup** | Always | `whisper_model` |
+| 2 | **Whisper Setup** | Always | `voice_enabled` (only when off), `whisper_model` (only when voice is on) |
 | 3 | **OpenAI-compatible** | Provider Choice = OpenAI-compatible | `llm_provider`, `llm_base_url`, `llm_chat_model`, `llm_api_key`?, `embedding_model`?, `embedding_provider` (set to `ollama` when the embeddings-fallback box is ticked, else cleared), `fast_model` |
 | 4 | **Welcome / Status** | Ollama path | — |
 | 5 | **Ollama Install** | Ollama path + CLI not found | — |
 | 6 | **Ollama Server** | Ollama path + server not running | — |
 | 7 | **Models** | Ollama path | `ollama_chat_model`, `fast_model` |
-| 8 | **Dictation** | Always | `dictation_enabled`, `dictation_hotkey`, `dictation_filler_removal` |
+| 8 | **Dictation** | Voice on | `dictation_enabled`, `dictation_hotkey`, `dictation_filler_removal` |
 | 9 | **MCP Servers** | Always | `mcps` |
 | 10 | **Search Providers** | Always | `brave_search_api_key`, `wikipedia_fallback_enabled` |
 | 11 | **Location** | Location enabled but detection failing | `location_ip_address` |
@@ -53,11 +53,13 @@ Fields suffixed `?` are written only when non-empty (minimal-config invariant).
 
 **ProviderChoicePage** (start page) — Two cards (radio buttons in a shared `QButtonGroup` so they are mutually exclusive across the separate card frames): Ollama (recommended) and OpenAI-compatible server. The copy makes clear both options are local: the OpenAI-compatible card describes pointing at another local app (LM Studio, oMLX, llama.cpp, vLLM, LocalAI) on your own machine or network, not a cloud service. Preselects from the current `llm_provider`. On validate, writes `llm_provider`; selecting Ollama omits the key and clears the OpenAI-compatible overrides (`llm_base_url`, `llm_api_key`, `llm_chat_model`, `embedding_*`) so the Ollama settings become authoritative again. `nextId` routes to Whisper Setup (both branches) since it has no dependencies and its model choice informs the VRAM budget on the Models page.
 
+**WhisperSetupPage** (start page) — Opens with the question that decides how much of Jarvis gets installed: **voice and text**, or **text only**. Text only hides every speech-recognition control on the page, writes `voice_enabled: false`, and skips the Dictation page, because dictation runs on the listener's Whisper model and cannot exist without it. No Whisper model is chosen or downloaded, and the daemon opens no microphone. Voice is the default and writes no key, per the minimal-config invariant. The choice is reversible in Settings → Voice Input.
+
 **WelcomePage / Status** — Reached only on the Ollama branch. Status dashboard showing CLI, server, models, location, and MLX Whisper (Apple Silicon) readiness; a background `StatusCheckWorker` populates `wizard.ollama_status`. Leads into the first applicable Ollama page via `SetupWizard.ollama_entry_page_id()` (install if the CLI is missing, server if it is not running, else models).
 
 **OpenAICompatiblePage** — Shown only on the OpenAI-compatible path. Guided rather than freeform, designed so the common case is "Connect, then Next":
 
-- **App preset + auto-discovery.** An optional "Your app" picker prefills the base URL for a known server (LM Studio, Ollama, Jan, llama.cpp / LocalAI, vLLM, oMLX (ol.mlx)). On open, when no custom URL is saved, `_DiscoveryWorker` probes those well-known **loopback** ports (`_discover_servers`, never the network) and announces what it finds, prefilling the first hit. With a saved URL, discovery is skipped and the saved value is kept.
+- **Provider preset + auto-discovery.** An optional "Your provider" picker prefills the base URL so nobody has to remember a port or look up an endpoint. Local servers (`_KNOWN_SERVERS`: LM Studio, Ollama, Jan, llama.cpp / LocalAI, vLLM, oMLX) are listed first, then remote endpoints that speak the same protocol (`_REMOTE_SERVERS`). The two lists are separate for a reason: **auto-discovery probes `_KNOWN_SERVERS` only**, so it stays entirely on loopback (`_discover_servers`, never the network) and a remote preset is never contacted until the user presses Connect. With a saved URL, discovery is skipped and the saved value is kept.
 - **Connect.** **🔌 Connect & load models** fetches the model list (`GET /v1/models` via `OpenAICompatibleBackend.list_models`, off the UI thread in `_ModelFetchWorker`) and populates the chat- and embedding-model **editable** dropdowns. `_classify_models` routes `embed`-named ids to the embedding box and the rest to chat, and a sensible default is preselected (a typed/selected value is preserved). The editable combos still let power users type a model the listing omits.
 - **Capability probe.** Connect then runs `_CapabilityWorker` → `OpenAICompatibleBackend.check_capabilities`, which sends a tiny chat, a trivial tool call, and an embedding request against the chosen model. The status line reports an honest verdict (`✅ Chat   ✅ Tool calling   ⚠️ No embeddings …`) so a dud model or missing endpoint is caught during setup, not at runtime.
 - **Ollama-embeddings fallback.** When the probe shows the server can chat but not embed, a checkbox offers to route embeddings to Ollama (keeping full semantic memory). It is hidden otherwise.

@@ -9,7 +9,7 @@ from typing import Optional, TYPE_CHECKING
 
 from ..utils.redact import redact
 from ..system_prompt import build_system_prompt
-from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS
+from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS, available_builtin_tools
 from ..tools.builtin.stop import STOP_SIGNAL
 from ..debug import debug_log
 from ..llm import (
@@ -869,7 +869,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # A positive single-step ``["Reply to the user."]`` plan is NOT the
     # same as ``[]``: it's the planner deciding no memory or tools are
     # needed. Both cases are preserved for the engine to distinguish.
-    _all_builtin_names = list(BUILTIN_TOOLS.keys())
+    _offered_builtin = available_builtin_tools()
+    _all_builtin_names = list(_offered_builtin.keys())
     _all_mcp_names = list(mcp_tools.keys())
     _full_catalog_names = _all_builtin_names + _all_mcp_names
 
@@ -903,7 +904,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     _router_cache_key = (
         f"router:{redacted}|"
         f"{strategy.value}|"
-        f"{','.join(sorted(BUILTIN_TOOLS.keys()))}|"
+        f"{','.join(sorted(_offered_builtin.keys()))}|"
         f"{','.join(sorted((mcp_tools or {}).keys()))}"
     )
     _cached_routed = (
@@ -916,7 +917,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     else:
         routed_tools = select_tools(
             query=redacted,
-            builtin_tools=BUILTIN_TOOLS,
+            builtin_tools=_offered_builtin,
             mcp_tools=mcp_tools,
             strategy=strategy,
             llm_backend=get_llm_backend(cfg),

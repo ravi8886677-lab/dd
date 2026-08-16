@@ -223,6 +223,14 @@ def _build_field_metadata() -> List[FieldMeta]:
       "chatterbox", "str", nullable=True)
 
     # --- Voice Input ---
+    # The switch that decides whether the audio stack exists at all. Off
+    # means no Whisper model is downloaded or loaded and no microphone is
+    # opened, so an install that only ever types pays for neither.
+    f("voice_enabled", "Enable Voice",
+      "Listen for the wake word and answer out loud. Off makes Jarvis text "
+      "only: no Whisper model is downloaded, no microphone is opened, and "
+      "dictation is unavailable because it shares the same model.",
+      "voice_input", "bool")
     f("voice_device", "Input Device",
       "Microphone device (name or index). Leave empty for system default.",
       "voice_input", "device")
@@ -246,21 +254,26 @@ def _build_field_metadata() -> List[FieldMeta]:
     # whether microphone audio leaves the machine, so it says so plainly
     # rather than leaving the user to infer it from a provider name.
     f("stt_provider", "Recognition Provider",
-      "Local runs Whisper on this computer and nothing is uploaded. A hosted "
-      "provider is faster and more accurate, and sends your recorded speech to "
-      "that company while it transcribes. Local is the default, and is used "
-      "automatically whenever a hosted provider is unreachable.",
+      "Local runs Whisper on this computer and nothing is uploaded. A remote "
+      "endpoint can be faster and more accurate; if it belongs to someone else, "
+      "your recorded speech goes to them while it transcribes. Local is the "
+      "default, and is used automatically whenever a remote endpoint is "
+      "unreachable.",
       "whisper", "choice",
       choices=[("local", "Local (Whisper on this computer)"),
-               ("groq", "Groq (sends audio to Groq)")])
-    f("stt_api_key", "Provider API Key",
-      "Required by a hosted provider. Without it, recognition stays local.",
-      "whisper", "password", nullable=True)
-    f("stt_model", "Provider Model",
-      "Recognition model to request. Leave empty for the provider's default.",
+               ("openai_compatible", "Remote endpoint (OpenAI-compatible)")])
+    f("stt_base_url", "Endpoint URL",
+      "Where to send audio, e.g. http://localhost:8080/v1 for a whisper.cpp "
+      "server on this machine, or a hosted provider's URL. Empty means "
+      "unconfigured and recognition stays local.",
       "whisper", "str", nullable=True)
-    f("stt_base_url", "Provider Endpoint",
-      "Override the provider's URL. Leave empty for their default.",
+    f("stt_api_key", "Endpoint API Key",
+      "Required by most hosted endpoints, usually not by a local one. Without "
+      "a key where one is needed, recognition stays local.",
+      "whisper", "password", nullable=True)
+    f("stt_model", "Endpoint Model",
+      "Recognition model to request, e.g. whisper-large-v3-turbo. Leave empty "
+      "for the endpoint's default.",
       "whisper", "str", nullable=True)
 
     f("whisper_model", "Model Size",

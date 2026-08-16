@@ -1,15 +1,18 @@
-"""Groq speech-to-text adapter.
+"""Speech-to-text over an OpenAI-compatible transcriptions endpoint.
 
-Groq serves Whisper behind an OpenAI-compatible transcriptions endpoint, so
-this is a multipart upload of a WAV and a model name. The whole reason it
-exists is latency: local ``whisper_model: medium`` is the largest fixed
-cost in the voice loop, and a hosted turbo model answers in a fraction of
-the time.
+A multipart upload of a WAV and a model name, which is all the endpoint
+shape requires. The reason it exists is latency: local ``whisper_model:
+medium`` is the largest fixed cost in the voice loop, and a faster
+recogniser answers in a fraction of the time.
 
-Groq offers no streaming or WebSocket transcription — the endpoint takes a
-complete audio file and returns a complete transcript. Anything that wants
-to feel incremental has to segment the audio itself and send the pieces,
-which is exactly what the listener's VAD already does.
+The endpoint is whatever the user points ``stt_base_url`` at — a local
+``whisper.cpp`` server, an in-house box, or a hosted service. There is no
+default: an unset endpoint means unconfigured, so nothing reaches a third
+party the user did not name.
+
+This shape takes a complete audio file and returns a complete transcript.
+Anything that wants to feel incremental has to segment the audio itself
+and send the pieces, which is exactly what the listener's VAD already does.
 
 Every failure path returns ``None`` so the caller drops to local Whisper.
 A hosted recogniser being down must cost speed, never the feature.
@@ -23,7 +26,6 @@ from ..debug import debug_log
 from .backend import SpeechToText, Transcription, pcm16_wav_bytes
 from .languages import normalise_language
 
-DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "whisper-large-v3-turbo"
 
 # ``verbose_json`` costs the same as ``json`` and adds the detected
@@ -37,8 +39,8 @@ RESPONSE_FORMAT = "verbose_json"
 MIN_AUDIO_SECONDS = 0.15
 
 
-class GroqSpeechToText(SpeechToText):
-    """Transcribe through Groq's hosted Whisper."""
+class OpenAICompatibleSpeechToText(SpeechToText):
+    """Transcribe through any OpenAI-compatible transcriptions endpoint."""
 
     def __init__(
         self,
@@ -48,7 +50,7 @@ class GroqSpeechToText(SpeechToText):
     ) -> None:
         self._api_key = api_key
         self._model = model or DEFAULT_MODEL
-        self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+        self._base_url = base_url.rstrip("/")
 
     def transcribe(
         self,
@@ -75,7 +77,7 @@ class GroqSpeechToText(SpeechToText):
 
             samples = np.asarray(audio, dtype=np.float32).flatten()
         except Exception as exc:
-            debug_log(f"⚠️ groq stt: unusable audio: {exc}", "whisper")
+            debug_log(f"⚠️ hosted stt: unusable audio: {exc}", "whisper")
             return None
 
         if samples.size < int(MIN_AUDIO_SECONDS * sample_rate):
@@ -93,7 +95,7 @@ class GroqSpeechToText(SpeechToText):
                 timeout=timeout_sec,
             )
         except Exception as exc:
-            debug_log(f"⚠️ groq stt: request failed, using local: {exc}", "whisper")
+            debug_log(f"⚠️ hosted stt: request failed, using local: {exc}", "whisper")
             return None
 
         if response.status_code != 200:
@@ -101,7 +103,7 @@ class GroqSpeechToText(SpeechToText):
             # and a bad key look identical from the user's side otherwise,
             # since both silently become local transcription.
             debug_log(
-                f"⚠️ groq stt: HTTP {response.status_code}, using local", "whisper"
+                f"⚠️ hosted stt: HTTP {response.status_code}, using local", "whisper"
             )
             return None
 
@@ -109,7 +111,7 @@ class GroqSpeechToText(SpeechToText):
             payload = response.json()
             text = str(payload.get("text") or "").strip()
         except Exception as exc:
-            debug_log(f"⚠️ groq stt: unreadable response: {exc}", "whisper")
+            debug_log(f"⚠️ hosted stt: unreadable response: {exc}", "whisper")
             return None
 
         # Groq reports the language by display name ("English"), where local
@@ -122,7 +124,7 @@ class GroqSpeechToText(SpeechToText):
             segments = [seg for seg in raw_segments if isinstance(seg, dict)]
 
         debug_log(
-            f"🗣️ groq stt: {len(text)} chars, {len(segments)} segments, "
+            f"🗣️ hosted stt: {len(text)} chars, {len(segments)} segments, "
             f"language={language or 'unknown'}",
             "whisper",
         )

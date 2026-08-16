@@ -8,7 +8,7 @@ has, and what this package exists to *optionally* step in front of.
 |---|---|
 | `backend.py` | The `SpeechToText` contract, `Transcription`, WAV encoding |
 | `factory.py` | Resolves settings to an adapter, or to `None` |
-| `groq_stt.py` | Hosted Whisper over an OpenAI-compatible transcriptions endpoint |
+| `openai_stt.py` | Transcription over any OpenAI-compatible transcriptions endpoint |
 | `languages.py` | Display name → ISO-639-1 code |
 
 ## Why it exists
@@ -22,13 +22,15 @@ of the box, `get_stt_backend` returns `None` for it, and every failure path in
 every adapter returns `None` so the caller drops to local Whisper. A hosted
 recogniser being down costs speed, never the feature.
 
-> `groq_stt.py` is named for a vendor and defaults to Groq's URL, but the
-> adapter itself is generic: `stt_base_url` points anywhere that serves the
-> OpenAI transcriptions shape, including a local `whisper.cpp` server. Whether
-> the shipped default should name a vendor at all is a `CLAUDE.md` question
-> (line 3 forbids depending on a proprietary cloud vendor), and the compliant
-> shape is to rename the provider to `openai_compatible`, keep `groq` as an
-> accepted alias, and drop the baked-in URL so unset means unconfigured.
+**Nothing is assumed about where audio goes.** The provider is named for the
+protocol it speaks, never for a company, and there is no default endpoint:
+`stt_base_url` unset means unconfigured, so recognition stays local until the
+user names a destination. That destination can be a local `whisper.cpp` server
+as easily as a hosted one, which is what keeps the offline path real.
+
+Configs written by earlier releases name `groq`. `ALIASES` maps it to
+`openai_compatible` so those installs keep working; the adapter behind the name
+is unchanged.
 
 ## Contract
 
@@ -109,7 +111,7 @@ clipping it is.
 
 ### No streaming
 
-Groq offers no streaming or WebSocket transcription. `/openai/v1/realtime`
+The transcriptions shape offers no streaming. `/openai/v1/realtime`
 returns 404; the only endpoint is `POST /openai/v1/audio/transcriptions`,
 whole file in, whole transcript out.
 
@@ -119,7 +121,7 @@ lower-latency design around a streaming endpoint that does not exist.
 
 ## Language normalisation
 
-Local Whisper reports `"en"`. Groq's `verbose_json` reports `"English"` for the
+Local Whisper reports `"en"`. Some endpoints' `verbose_json` reports `"English"` for the
 same audio, because it serialises Whisper's display name rather than the key.
 
 Everything downstream — tool locale selection, the TTS voice picker — was
@@ -166,10 +168,10 @@ transcripts face.
 
 | Setting | Default | Description |
 |---|---|---|
-| `stt_provider` | `"local"` | `local` or `groq`. Unknown names warn and fall back to `local`. |
+| `stt_provider` | `"local"` | `local` or `openai_compatible`. `groq` is accepted as an alias. Unknown names warn and fall back to `local`. |
 | `stt_api_key` | `""` | Read through the credential store. Empty with a hosted provider selected resolves to `None`. |
 | `stt_model` | `""` | Empty means the adapter's default (`whisper-large-v3-turbo`). |
-| `stt_base_url` | `""` | Empty means the adapter's default. Point it at any OpenAI-compatible transcriptions endpoint, including a local one. |
+| `stt_base_url` | `""` | **Required** to reach anything: empty means unconfigured and recognition stays local. Point it at any OpenAI-compatible transcriptions endpoint, including a local one. |
 
 The README must not claim "100% local" while a hosted provider is selectable.
 

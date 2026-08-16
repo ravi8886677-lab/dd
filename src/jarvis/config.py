@@ -150,6 +150,9 @@ class Settings:
     sample_rate: int
     voice_min_energy: float
 
+    # Voice Input & Audio
+    voice_enabled: bool
+
     # Voice Collection & Timing
     voice_block_seconds: float
     voice_collect_seconds: float
@@ -263,7 +266,7 @@ class Settings:
     # Hosted speech recognition. Local Whisper is the fallback and is
     # always present; a provider here only makes it faster. Empty or
     # unkeyed means local, so this can never break transcription.
-    stt_provider: str  # "local" | "groq"
+    stt_provider: str  # "local" | "openai_compatible"
     stt_api_key: str
     stt_model: str  # empty means the provider's default
     stt_base_url: str  # empty means the provider's default endpoint
@@ -670,6 +673,10 @@ def get_default_config() -> Dict[str, Any]:
         "sample_rate": 16000,
         "voice_min_energy": 0.02,
 
+        # Voice on/off. False installs never load Whisper or open a
+        # microphone: Jarvis becomes a text assistant.
+        "voice_enabled": True,
+
         # Voice Collection & Timing
         "voice_block_seconds": 4.0,
         "voice_collect_seconds": 4.5,
@@ -912,6 +919,7 @@ def load_settings() -> Settings:
 
     voice_device_val = merged.get("voice_device")
     voice_device = None if voice_device_val in (None, "", "default", "system") else str(voice_device_val)
+    voice_enabled = bool(merged.get("voice_enabled", True))
     voice_block_seconds = float(merged.get("voice_block_seconds", 4.0))
     voice_collect_seconds = float(merged.get("voice_collect_seconds", 2.5))
     voice_follow_on_seconds = float(merged.get("voice_follow_on_seconds", 0.6))
@@ -1101,6 +1109,8 @@ def load_settings() -> Settings:
         voice_device=voice_device,
         sample_rate=sample_rate,
         voice_min_energy=voice_min_energy,
+
+        voice_enabled=voice_enabled,
 
         # Voice Collection & Timing
         voice_block_seconds=voice_block_seconds,

@@ -16,7 +16,7 @@ import pytest
 
 from jarvis.speech.backend import pcm16_wav_bytes
 from jarvis.speech.factory import get_stt_backend, resolve_stt_provider
-from jarvis.speech.groq_stt import GroqSpeechToText
+from jarvis.speech.openai_stt import OpenAICompatibleSpeechToText
 
 
 class _Cfg:
@@ -96,8 +96,15 @@ def test_an_unknown_provider_falls_back_to_local():
 
 
 @pytest.mark.unit
-def test_groq_with_a_key_produces_a_backend():
-    assert isinstance(get_stt_backend(_Cfg(provider="groq", api_key="k")), GroqSpeechToText)
+def test_a_key_without_an_endpoint_is_not_enough():
+    """No endpoint is assumed, so a key alone cannot reach anywhere."""
+    assert get_stt_backend(_Cfg(provider="openai_compatible", api_key="k")) is None
+
+
+@pytest.mark.unit
+def test_an_endpoint_and_a_key_produce_a_backend():
+    cfg = _Cfg(provider="openai_compatible", api_key="k", base_url="http://localhost:8080/v1")
+    assert isinstance(get_stt_backend(cfg), OpenAICompatibleSpeechToText)
 
 
 # ── Transcription outcomes ────────────────────────────────────────────
@@ -109,7 +116,7 @@ def test_a_transport_failure_returns_none_so_the_caller_uses_whisper(monkeypatch
         raise ConnectionError("network down")
 
     monkeypatch.setattr("requests.post", _boom)
-    stt = GroqSpeechToText(api_key="k")
+    stt = OpenAICompatibleSpeechToText(api_key="k")
 
     assert stt.transcribe(np.zeros(16000, dtype=np.float32)) is None
 
@@ -126,7 +133,7 @@ def test_an_error_status_returns_none_rather_than_an_empty_transcript(monkeypatc
             return {}
 
     monkeypatch.setattr("requests.post", lambda *a, **kw: _Resp())
-    stt = GroqSpeechToText(api_key="k")
+    stt = OpenAICompatibleSpeechToText(api_key="k")
 
     assert stt.transcribe(np.zeros(16000, dtype=np.float32)) is None
 
@@ -140,7 +147,7 @@ def test_a_successful_response_returns_the_transcript(monkeypatch):
             return {"text": "  hello jarvis  "}
 
     monkeypatch.setattr("requests.post", lambda *a, **kw: _Resp())
-    stt = GroqSpeechToText(api_key="k")
+    stt = OpenAICompatibleSpeechToText(api_key="k")
 
     assert stt.transcribe(np.zeros(16000, dtype=np.float32)) == "hello jarvis"
 
@@ -150,7 +157,7 @@ def test_audio_too_short_to_hold_speech_is_not_uploaded(monkeypatch):
     """A round trip to be told there was nothing is pure added latency."""
     called = []
     monkeypatch.setattr("requests.post", lambda *a, **kw: called.append(1))
-    stt = GroqSpeechToText(api_key="k")
+    stt = OpenAICompatibleSpeechToText(api_key="k")
 
     assert stt.transcribe(np.zeros(100, dtype=np.float32)) == ""
     assert not called
@@ -174,7 +181,7 @@ def test_the_request_carries_the_model_and_a_wav_file(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr("requests.post", _capture)
-    GroqSpeechToText(api_key="secret", model="whisper-large-v3-turbo").transcribe(
+    OpenAICompatibleSpeechToText(api_key="secret", model="whisper-large-v3-turbo").transcribe(
         np.zeros(16000, dtype=np.float32)
     )
 

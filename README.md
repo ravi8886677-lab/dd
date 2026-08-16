@@ -174,6 +174,11 @@ Jarvis starts listening automatically — just say "Jarvis" and talk!
 
 ## System Requirements
 
+**Voice is optional.** The setup wizard's first question is whether you want voice
+or text only. Text only downloads no speech model and opens no microphone, so the
+requirements below apply to the voice path; a text-only install needs only whatever
+your LLM provider needs.
+
 | Hardware | VRAM | Model |
 |----------|------|-------|
 | Low-VRAM / CPU | 2GB+ | `qwen3.5:0.8b` |

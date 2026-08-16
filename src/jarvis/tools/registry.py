@@ -52,6 +52,34 @@ BUILTIN_TOOLS = {
     "toolSearchTool": ToolSearchTool(),
 }
 
+
+def available_builtin_tools() -> Dict[str, Any]:
+    """The built-in tools this install can actually run.
+
+    ``BUILTIN_TOOLS`` stays complete so an explicit call by name still
+    reaches the tool and reports its real problem. This is the catalogue to
+    *advertise*: a name the model never sees is a turn it never wastes.
+    """
+    return {
+        name: tool
+        for name, tool in BUILTIN_TOOLS.items()
+        if _tool_is_available(tool)
+    }
+
+
+def _tool_is_available(tool: Any) -> bool:
+    """Ask a tool whether it can run, treating a broken answer as yes.
+
+    A tool that raises while reporting availability is a bug in that tool,
+    not a reason to silently remove it from the catalogue — failing open
+    keeps the old behaviour and surfaces the real error at call time.
+    """
+    try:
+        return bool(tool.is_available())
+    except Exception:
+        return True
+
+
 # Global MCP tools cache
 _mcp_tools_cache: Dict[str, "ToolSpec"] = {}
 _mcp_tools_cache_lock = threading.Lock()

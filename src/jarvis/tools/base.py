@@ -86,6 +86,22 @@ class Tool(ABC):
         """
         pass
 
+    def is_available(self) -> bool:
+        """Whether this install can actually run the tool.
+
+        Most tools need nothing beyond the base install and never override
+        this. A tool whose dependency is optional — a display, an input
+        injection library — reports honestly here so the catalogue offered
+        to the model matches what the machine can do. Advertising a tool
+        that raises ``ImportError`` on call costs a whole turn and tells
+        the user nothing useful.
+
+        Availability is a property of the install, not of the moment: this
+        is asked when the catalogue is built, so it must be cheap and must
+        not have side effects.
+        """
+        return True
+
     def execute(
         self,
         db,

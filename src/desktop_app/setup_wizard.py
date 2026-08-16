@@ -21,6 +21,7 @@ from enum import Enum, auto
 import requests
 
 from jarvis.config import SUPPORTED_CHAT_MODELS, DEFAULT_CHAT_MODEL
+from jarvis.debug import debug_log
 from jarvis.utils.vram import (
     detect_total_vram_mb,
     get_recommended_model_id,
@@ -558,6 +559,18 @@ class SetupWizard(QWizard):
         # install/server/models pages are only reached on the Ollama branch.
         self.setStartId(self.mlx_whisper_page_id)
 
+    def voice_wanted(self) -> bool:
+        """Whether the user asked for voice on the first page.
+
+        Pages downstream branch on this rather than re-reading config: the
+        choice is not written until that page is left, and a page can be
+        revisited.
+        """
+        try:
+            return self.mlx_whisper_page.voice_wanted()
+        except Exception:
+            return True
+
         # Custom button labels
         self.setButtonText(QWizard.WizardButton.NextButton, "Next →")
         self.setButtonText(QWizard.WizardButton.BackButton, "← Back")
@@ -1078,9 +1091,9 @@ class OpenAICompatiblePage(QWizardPage):
 
     _DEFAULT_BASE_URL = "http://localhost:1234/v1"  # LM Studio default
 
-    # Well-known local OpenAI-compatible servers, used both for the app preset
-    # picker and for auto-discovery. All loopback, so probing never leaves the
-    # machine.
+    # Well-known local OpenAI-compatible servers. Used for auto-discovery as
+    # well as the preset picker, and every entry is loopback, so probing
+    # never leaves the machine.
     _KNOWN_SERVERS = [
         ("LM Studio", "http://localhost:1234/v1"),
         ("Ollama (OpenAI API)", "http://localhost:11434/v1"),
@@ -1089,6 +1102,24 @@ class OpenAICompatiblePage(QWizardPage):
         ("vLLM", "http://localhost:8000/v1"),
         ("oMLX (ol.mlx)", "http://localhost:9876/v1"),
     ]
+
+    # Remote endpoints that speak the same protocol. Convenience only: they
+    # prefill a URL the user would otherwise look up, and nothing here is
+    # ever contacted until the user presses Connect. Discovery never probes
+    # these, so an install that picks a local server talks to nothing else.
+    _REMOTE_SERVERS = [
+        ("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai/"),
+        ("OpenAI", "https://api.openai.com/v1"),
+        ("Groq", "https://api.groq.com/openai/v1"),
+        ("Together AI", "https://api.together.xyz/v1"),
+        ("OpenRouter", "https://openrouter.ai/api/v1"),
+    ]
+
+    @classmethod
+    def _presets(cls):
+        """Preset rows in dropdown order: local first, then remote."""
+        return [(f"{label} (on this computer)", url) for label, url in cls._KNOWN_SERVERS] + \
+               [(f"{label} (remote, needs a key)", url) for label, url in cls._REMOTE_SERVERS]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1124,12 +1155,12 @@ class OpenAICompatiblePage(QWizardPage):
 
         # App preset: prefills the base URL for a known server so the user
         # never has to remember a port.
-        preset_label = QLabel("Your app")
+        preset_label = QLabel("Your provider")
         preset_label.setStyleSheet("font-size: 13px; font-weight: bold;")
         form.addWidget(preset_label)
         self._preset_combo = QComboBox()
-        self._preset_combo.addItem("Select your app (optional)…")
-        for label, _url in self._KNOWN_SERVERS:
+        self._preset_combo.addItem("Select your provider (optional)…")
+        for label, _url in self._presets():
             self._preset_combo.addItem(label)
         self._preset_combo.addItem("Other / custom")
         self._preset_combo.currentIndexChanged.connect(self._on_preset_changed)
@@ -1281,9 +1312,10 @@ class OpenAICompatiblePage(QWizardPage):
 
     def _on_preset_changed(self, idx: int):
         # idx 0 is the placeholder and the last item is "Other / custom"; the
-        # ones in between map to _KNOWN_SERVERS and prefill the base URL.
-        if 1 <= idx <= len(self._KNOWN_SERVERS):
-            _label, url = self._KNOWN_SERVERS[idx - 1]
+        # ones in between map to the preset rows and prefill the base URL.
+        presets = self._presets()
+        if 1 <= idx <= len(presets):
+            _label, url = presets[idx - 1]
             self._base_url_input.setText(url)
 
     def _on_openai_link_toggled(self, linked: bool):
@@ -2353,6 +2385,10 @@ class ModelsPage(QWizardPage):
     def nextId(self):
         w = self.wizard()
         if isinstance(w, SetupWizard):
+            # Dictation runs on the listener's Whisper model, so a text-only
+            # install has nothing to offer on that page.
+            if not w.voice_wanted():
+                return w.mcp_page_id
             return w.dictation_page_id
         return super().nextId()
 
@@ -2453,6 +2489,52 @@ class WhisperSetupPage(QWizardPage):
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
 
+        # Voice or text. Asked before anything is downloaded, because the
+        # answer decides whether a Whisper model is fetched at all. A user
+        # who only ever types should not pay for a model or a microphone.
+        mode_card = QFrame()
+        mode_card.setObjectName("card")
+        mode_layout = QVBoxLayout(mode_card)
+        mode_layout.setContentsMargins(16, 12, 16, 12)
+        mode_layout.setSpacing(8)
+
+        mode_title = QLabel("🎙️ How will you talk to Jarvis?")
+        mode_title.setStyleSheet(
+            "font-size: 14px; font-weight: bold; color: #fbbf24; background: transparent;")
+        mode_layout.addWidget(mode_title)
+
+        mode_btn_layout = QHBoxLayout()
+        mode_btn_layout.setSpacing(8)
+
+        self._voice_btn = QPushButton("🗣️ Voice and text")
+        self._voice_btn.setCheckable(True)
+        self._voice_btn.setChecked(True)
+        self._voice_btn.setFixedHeight(36)
+        self._voice_btn.clicked.connect(lambda: self._on_voice_mode_changed(True))
+
+        self._text_only_btn = QPushButton("⌨️ Text only")
+        self._text_only_btn.setCheckable(True)
+        self._text_only_btn.setFixedHeight(36)
+        self._text_only_btn.clicked.connect(lambda: self._on_voice_mode_changed(False))
+
+        mode_btn_layout.addWidget(self._voice_btn)
+        mode_btn_layout.addWidget(self._text_only_btn)
+        mode_layout.addLayout(mode_btn_layout)
+
+        self._mode_hint = QLabel(
+            "Text only skips the speech model download and never opens your "
+            "microphone. You can turn voice on later in Settings.")
+        self._mode_hint.setWordWrap(True)
+        self._mode_hint.setStyleSheet("font-size: 12px; background: transparent;")
+        mode_layout.addWidget(self._mode_hint)
+
+        layout.addWidget(mode_card)
+
+        # Everything below configures speech recognition, so it is hidden
+        # outright when the user has said they will only type.
+        self._voice_only_widgets: list = []
+        self._voice_widget_shown: dict = {}
+
         # Language selection card
         lang_card = QFrame()
         lang_card.setObjectName("card")
@@ -2513,6 +2595,7 @@ class WhisperSetupPage(QWizardPage):
         lang_layout.addWidget(self._lang_info_label)
 
         layout.addWidget(lang_card)
+        self._voice_only_widgets.append(lang_card)
 
         # Model selection card with slider
         selection_card = QFrame()
@@ -2601,6 +2684,7 @@ class WhisperSetupPage(QWizardPage):
         selection_layout.addWidget(self._model_info_label)
 
         layout.addWidget(selection_card)
+        self._voice_only_widgets.append(selection_card)
 
         # Store selected model (default to medium for best balance)
         self._selected_whisper_model: str = "medium"
@@ -2658,6 +2742,7 @@ class WhisperSetupPage(QWizardPage):
         mlx_layout.addLayout(btn_layout)
 
         layout.addWidget(self._mlx_section)
+        self._voice_only_widgets.append(self._mlx_section)
 
         # Hide MLX section on non-Apple Silicon
         if not self._is_apple_silicon:
@@ -3022,10 +3107,59 @@ class WhisperSetupPage(QWizardPage):
         """Page is complete when setup is done or skipped."""
         return self._is_complete
 
+    def voice_wanted(self) -> bool:
+        """Whether this install is having voice at all."""
+        return bool(self._voice_btn.isChecked())
+
+    def _on_voice_mode_changed(self, voice: bool) -> None:
+        """Show or hide everything that only matters when voice is on."""
+        self._voice_btn.setChecked(voice)
+        self._text_only_btn.setChecked(not voice)
+        if voice:
+            # Restore what each card was doing before, not a blanket show:
+            # the MLX section has its own platform rule and must not appear
+            # on a machine that cannot use it.
+            for widget in self._voice_only_widgets:
+                widget.setVisible(self._voice_widget_shown.get(id(widget), True))
+        else:
+            for widget in self._voice_only_widgets:
+                self._voice_widget_shown[id(widget)] = not widget.isHidden()
+                widget.setVisible(False)
+        debug_log(f"setup: voice {'enabled' if voice else 'disabled'}", "wizard")
+        # Qt compresses the remaining widgets instead of resizing the parent,
+        # so the wizard has to be told to recompute its own size.
+        self._is_complete = True
+        self.completeChanged.emit()
+        wizard = self.wizard()
+        if wizard:
+            wizard.adjustSize()
+
     def validatePage(self) -> bool:
-        """Save whisper model selection when leaving the page."""
-        self._save_whisper_model_to_config()
+        """Save the voice choice, and the model only if voice is on."""
+        self._save_voice_enabled_to_config()
+        if self.voice_wanted():
+            self._save_whisper_model_to_config()
         return True
+
+    def _save_voice_enabled_to_config(self) -> None:
+        """Persist the voice/text choice.
+
+        Written only when voice is off: True is the default, and the settings
+        file holds non-default values only.
+        """
+        try:
+            from jarvis.config import default_config_path, _load_json, _save_json
+
+            config_path = default_config_path()
+            config = _load_json(config_path) or {}
+            if self.voice_wanted():
+                config.pop("voice_enabled", None)
+            else:
+                config["voice_enabled"] = False
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            _save_json(config_path, config)
+        except Exception as e:
+            debug_log(f"setup: could not save voice choice: {e}", "wizard")
 
     def nextId(self) -> int:
         """Go to Provider Choice so the user can confirm or change

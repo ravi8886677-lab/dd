@@ -205,6 +205,21 @@ class ComputerUseTool(Tool):
         "required": ["action"],
     }
 
+    def is_available(self) -> bool:
+        """Only where the input injection library is installed.
+
+        ``pyautogui`` ships with the full requirements, not with the
+        audio-free chat subset, so a chat-only install has no way to move a
+        pointer. Offering the tool anyway means the model picks it, gets an
+        ``ImportError``, and the user watches a turn go nowhere.
+        """
+        import importlib.util
+
+        try:
+            return importlib.util.find_spec("pyautogui") is not None
+        except (ImportError, ValueError):
+            return False
+
     def run(self, args: Optional[Dict[str, Any]], context: ToolContext) -> ToolExecutionResult:
         args = args or {}
         action = str(args.get("action", "")).strip().lower()

@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from jarvis.speech.backend import SpeechToText, Transcription
-from jarvis.speech.groq_stt import GroqSpeechToText
+from jarvis.speech.openai_stt import OpenAICompatibleSpeechToText
 from jarvis.speech.languages import normalise_language
 
 
@@ -115,7 +115,7 @@ def test_the_adapter_asks_for_the_shape_that_carries_segments(monkeypatch):
     captured = {}
     _patch_post(monkeypatch, _Response(payload={"text": "hi"}), captured)
 
-    GroqSpeechToText(api_key="k").transcribe_detailed(np.zeros(16000, dtype=np.float32))
+    OpenAICompatibleSpeechToText(api_key="k").transcribe_detailed(np.zeros(16000, dtype=np.float32))
 
     assert captured["data"]["response_format"] == "verbose_json"
 
@@ -132,7 +132,7 @@ def test_language_and_segments_come_back_from_a_verbose_response(monkeypatch):
     }
     _patch_post(monkeypatch, _Response(payload=payload))
 
-    result = GroqSpeechToText(api_key="k").transcribe_detailed(
+    result = OpenAICompatibleSpeechToText(api_key="k").transcribe_detailed(
         np.zeros(16000, dtype=np.float32)
     )
 
@@ -147,7 +147,7 @@ def test_a_response_without_segments_is_still_a_transcript(monkeypatch):
     """Not every provider or model breaks the audio down; text still counts."""
     _patch_post(monkeypatch, _Response(payload={"text": "hello"}))
 
-    result = GroqSpeechToText(api_key="k").transcribe_detailed(
+    result = OpenAICompatibleSpeechToText(api_key="k").transcribe_detailed(
         np.zeros(16000, dtype=np.float32)
     )
 
@@ -161,7 +161,7 @@ def test_a_non_200_still_means_fall_back(monkeypatch):
     """The richer shape must not have widened the failure surface."""
     _patch_post(monkeypatch, _Response(status_code=429))
 
-    assert GroqSpeechToText(api_key="k").transcribe_detailed(
+    assert OpenAICompatibleSpeechToText(api_key="k").transcribe_detailed(
         np.zeros(16000, dtype=np.float32)
     ) is None
 
@@ -171,7 +171,7 @@ def test_the_plain_text_method_still_works_through_the_detailed_one(monkeypatch)
     """Dictation calls `transcribe`; it must not have been broken by this."""
     _patch_post(monkeypatch, _Response(payload={"text": " hello ", "language": "English"}))
 
-    assert GroqSpeechToText(api_key="k").transcribe(
+    assert OpenAICompatibleSpeechToText(api_key="k").transcribe(
         np.zeros(16000, dtype=np.float32)
     ) == "hello"
 
@@ -180,7 +180,7 @@ def test_the_plain_text_method_still_works_through_the_detailed_one(monkeypatch)
 def test_the_plain_text_method_propagates_fall_back(monkeypatch):
     _patch_post(monkeypatch, _Response(status_code=500))
 
-    assert GroqSpeechToText(api_key="k").transcribe(
+    assert OpenAICompatibleSpeechToText(api_key="k").transcribe(
         np.zeros(16000, dtype=np.float32)
     ) is None
 
@@ -188,7 +188,7 @@ def test_the_plain_text_method_propagates_fall_back(monkeypatch):
 @pytest.mark.unit
 def test_audio_too_short_to_hold_speech_is_silence_not_failure():
     """`""` means heard nothing, `None` means could not hear — different."""
-    result = GroqSpeechToText(api_key="k").transcribe_detailed(
+    result = OpenAICompatibleSpeechToText(api_key="k").transcribe_detailed(
         np.zeros(10, dtype=np.float32)
     )
 

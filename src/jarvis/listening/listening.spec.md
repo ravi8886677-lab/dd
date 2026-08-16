@@ -311,6 +311,8 @@ If the intent judge later rejects the query (and no hot window override applies)
   "fast_model": "gemma4:e2b",
   "intent_judge_timeout_sec": 6.0,
 
+  "voice_enabled": true,
+
   "hot_window_seconds": 20.0,
   "echo_tolerance": 0.3,
 
@@ -331,6 +333,7 @@ If the intent judge later rejects the query (and no hot window override applies)
 | `whisper_min_confidence` | 0.3 | Minimum `avg_logprob`-derived confidence score for a transcribed segment. Segments below this are discarded before the intent judge sees them. |
 | `whisper_no_speech_threshold` | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
 
+| `voice_enabled` | true | Whether the listener runs at all. False means no Whisper model is loaded, no microphone is opened, and dictation is unavailable because it shares that model. Jarvis answers what is typed at it. |
 | `hot_window_seconds` | 20.0 | How long the microphone stays live for a wake-word-free follow-up after a reply. |
 | `voice_collect_seconds` | 4.5 | Silence that ends a collection holding **no** query yet, i.e. the time a bare wake word buys the user to think of one. |
 | `voice_follow_on_seconds` | 0.6 | Silence that ends a collection that **already** holds a query. Capped at `voice_collect_seconds`, so shortening the window shortens both. |

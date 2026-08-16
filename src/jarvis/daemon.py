@@ -399,16 +399,25 @@ def main(smoke_test: bool = False) -> None:
     else:
         print("  TTS disabled", flush=True)
 
-    # Initialize voice listening (only if dependencies available)
-    print("🎤 Initializing voice listener (this may take a moment to load Whisper model)...", flush=True)
+    # Initialize voice listening. Off means no Whisper model is ever
+    # loaded and no microphone is ever opened — Jarvis answers what is
+    # typed at it and nothing else.
     voice_thread: Optional[threading.Thread] = None
-    voice_thread = VoiceListener(db, cfg, tts, _global_dialogue_memory)
-    voice_thread.start()
-    print("✓ Voice listener thread started (loading Whisper model in background)", flush=True)
+    voice_on = bool(getattr(cfg, "voice_enabled", True))
+    if voice_on:
+        print("🎤 Initializing voice listener (this may take a moment to load Whisper model)...", flush=True)
+        voice_thread = VoiceListener(db, cfg, tts, _global_dialogue_memory)
+        voice_thread.start()
+        print("✓ Voice listener thread started (loading Whisper model in background)", flush=True)
+    else:
+        print("🎤 Voice disabled — text only, no Whisper model and no microphone", flush=True)
 
-    # Initialize dictation engine (hold-to-dictate)
+    # Initialize dictation engine (hold-to-dictate). It shares the
+    # listener's Whisper model, so it cannot outlive the listener.
     dictation = None
-    if bool(getattr(cfg, "dictation_enabled", True)):
+    if bool(getattr(cfg, "dictation_enabled", True)) and voice_thread is None:
+        print("🎙️ Dictation disabled — it needs the voice listener's Whisper model", flush=True)
+    elif bool(getattr(cfg, "dictation_enabled", True)):
         try:
             from .dictation.dictation_engine import DictationEngine as _DE  # noqa: F811
 
@@ -550,9 +559,16 @@ def main(smoke_test: bool = False) -> None:
                 _check_and_update_diary(db, cfg, verbose=False)
                 last_diary_check = now
 
-        # Keep voice thread alive (unless stop requested)
+        # Keep the daemon alive. With voice on, the listener thread is what
+        # there is to wait on; with voice off there is no thread, and the
+        # daemon still has to stay up for the dashboard, MCP servers and the
+        # diary sweep.
         if voice_thread is not None:
             while voice_thread.is_alive() and not _global_stop_requested:
+                time.sleep(0.5)
+                _check_and_update_diary(db, cfg, verbose=False)
+        else:
+            while not _global_stop_requested:
                 time.sleep(0.5)
                 _check_and_update_diary(db, cfg, verbose=False)
 
