@@ -159,7 +159,9 @@ After TTS finishes, allow wake-word-free follow-up.
 
 **Activation:** `echo_tolerance` seconds after TTS ends (allows echo to settle)
 
-**Duration:** Configurable (default: 3 seconds)
+**Duration:** Configurable (default: 20 seconds)
+
+The window is how long the microphone stays live after a reply before the wake word is needed again. A few seconds is shorter than a person takes to think of a follow-up, so almost every second utterance would pay the full wake round trip. Twenty seconds covers a natural follow-up while staying short enough that unrelated room conversation is not being judged for minutes.
 
 **Behaviour:** Speech first passes through an early fuzzy echo check (rapidfuzz `partial_ratio`, threshold 70, with word-count guard to avoid catching mixed echo+speech). Pure echo is silently rejected **without calling the intent judge** — this keeps echo rejection instant and prevents it from blocking the audio loop. The hot window timer is **not** reset on echo rejection. Non-echo speech is sent to the intent judge, but if the judge rejects it, the rejection is overridden — all non-echo speech in the hot window is accepted as a follow-up query.
 
@@ -309,8 +311,13 @@ If the intent judge later rejects the query (and no hot window override applies)
   "fast_model": "gemma4:e2b",
   "intent_judge_timeout_sec": 6.0,
 
-  "hot_window_seconds": 3.0,
-  "echo_tolerance": 0.3
+  "hot_window_seconds": 20.0,
+  "echo_tolerance": 0.3,
+
+  "stt_provider": "local",
+  "aec_enabled": false,
+  "aec_delay_ms": 0.0,
+  "aec_filter_ms": 200
 }
 ```
 
@@ -319,6 +326,12 @@ If the intent judge later rejects the query (and no hot window override applies)
 | `transcript_buffer_duration_sec` | 120 | Duration (seconds) for rolling ambient speech transcript. Provides conversation context so the intent judge can synthesise a complete query when someone involves Jarvis. Separate from dialogue memory. |
 | `whisper_min_confidence` | 0.3 | Minimum `avg_logprob`-derived confidence score for a transcribed segment. Segments below this are discarded before the intent judge sees them. |
 | `whisper_no_speech_threshold` | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
+
+| `hot_window_seconds` | 20.0 | How long the microphone stays live for a wake-word-free follow-up after a reply. |
+| `stt_provider` | `"local"` | Speech recogniser. `local` uses the in-process Whisper model; a hosted provider is tried first and falls back to local on any failure. See [speech.spec.md](../speech/speech.spec.md). |
+| `aec_enabled` | `false` | Acoustic echo cancellation. Off means microphone frames pass through untouched. See [audio.spec.md](../audio/audio.spec.md). |
+| `aec_delay_ms` | 0.0 | Speaker→microphone round trip, measured by `python -m jarvis.audio.calibration`. |
+| `aec_filter_ms` | 200 | Adaptive filter length. Lower it if the user's speech comes out chopped. |
 
 Note: Intent judge is always used when available (no enable flag). Falls back to simple wake word detection when Ollama is unavailable.
 
@@ -349,11 +362,17 @@ Microphone Audio
     ↓
 Sounddevice Callback → _audio_q
     ↓
-Main Loop: Get Frames → VAD Check
+Main Loop: Get Frames
+    ↓
+_cancel_own_voice → subtract playback reference (when AEC is on and honest)
+    ↓
+VAD Check (compatibility-checked on the first frame; energy threshold on failure)
     ↓
 Speech Detected → Accumulate Frames
     ↓
-Silence Timeout → Whisper Transcription
+Silence Timeout → Transcription (hosted provider if configured, else local Whisper)
+    ↓
+Segment filters: no_speech_prob, then avg_logprob — hosted and local alike
     ↓
 Add to Transcript Buffer (with timestamps)
     ↓
@@ -380,6 +399,22 @@ When components are unavailable, the system degrades gracefully:
 | Intent Judge | Simple text-based wake word + query extraction; hot window override still applies |
 | 16 kHz sample rate | Stream at device native rate, resample to 16 kHz for Whisper |
 | Transcript Buffer | Process each utterance independently |
+| webrtcvad (missing, or an unsupported rate/frame size) | Energy threshold on `voice_min_energy`, announced once |
+| Hosted speech provider | Local Whisper, silently — a hosted recogniser being down costs speed, never the feature |
+| Echo cancellation (off, `pyaec` absent, or a frame it cannot honestly cancel) | Frame passes through untouched, announced once |
+
+### The VAD must never fail silently
+
+A device that rejects 16 kHz sends the listener down the native-rate path, where the stream runs at the device's own rate (44.1 kHz on a great deal of consumer hardware). `webrtcvad` accepts only 8/16/32/48 kHz at 10/20/30 ms frames and **raises** on anything else, so an exception handler that answers "not speech" leaves Jarvis printing "Listening!" and then ignoring the user for the rest of the session. No error, no warning, just silence that looks exactly like nobody talking.
+
+Two independent guards, because a rate check alone only covers the cause someone happened to think of:
+
+- `vad_accepts_frame(rate, samples)` is checked on the **first frame**, not at construction. The stream's real rate is only known once it is open, and it is not always the configured one.
+- Any exception from `is_speech` disables the detector rather than being read as silence, since whatever the cause, it will recur on every subsequent frame.
+
+Both land on the energy threshold that already exists for machines without webrtcvad, and both say so once. A cruder gate is survivable; a silent one is not.
+
+Known gap: the import block that supplies webrtcvad also supplies numpy, so a machine missing PortAudio loses numpy too and `_is_speech_frame` returns `True` for every frame.
 
 ## Download Recovery
 
@@ -393,11 +428,16 @@ If the HuggingFace model cache is corrupted (e.g. from an interrupted download),
 
 When HuggingFace returns HTTP 429 (Too Many Requests), both faster-whisper and MLX Whisper backends retry up to 4 times with exponential backoff (2s, 4s, 8s, 16s). Progress messages inform the user of each retry attempt. If all retries are exhausted, the user is advised to wait and restart.
 
-## Future: Acoustic Echo Cancellation
+## Acoustic Echo Cancellation
 
-Currently, echo is handled at the transcript level via fuzzy text matching and the intent judge. True acoustic echo cancellation (AEC) would:
-- Require the audio output signal (reference)
-- Process in real-time with adaptive filtering
-- Add 10-50ms latency
+Echo is handled at **two levels**, and they are not alternatives.
 
-**Current recommendation:** The transcript-level echo detection (fuzzy matching + intent judge) is sufficient and simpler. Consider AEC only if transcript-level detection proves inadequate in practice.
+**Signal level** (`aec_enabled`, default off): `_cancel_own_voice` subtracts what the speaker played from each microphone frame, using the playback reference ring and a measured speaker→microphone delay. This is what makes barge-in work, and it is specified in [audio.spec.md](../audio/audio.spec.md).
+
+**Transcript level** (always on): fuzzy text matching, the word-count guard, salvage, and the intent judge, as described under Hot Window Mode and Multi-Layer Echo Detection above.
+
+The transcript layer stays useful even with cancellation on. The adaptive filter needs a few hundred milliseconds of speech to converge and lets some echo through at the start of each utterance, which is inherent to the technique rather than a defect to tune away.
+
+The listener's side of the contract is that a frame it cannot cancel honestly passes through **untouched and visibly**. `_announce_aec_idle` prints once when cancellation is declining frames, because startup already printed that cancellation is active: a user who sees a feature announced and silently absent concludes it works badly and never learns it never ran. The declining conditions are listed in [audio.spec.md](../audio/audio.spec.md#when-the-listener-declines-a-frame); the native-rate one matters most here, since cancelling on that path would subtract 16 kHz audio from 44.1 kHz audio.
+
+Cancellation requires Piper. Chatterbox hands a file to pygame and never sees samples, so there is no playback reference to publish.

@@ -92,13 +92,18 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 
 ## 7. Tool Router (pre-loop tool selection)
 
-- **File**: [src/jarvis/tools/selection.py](src/jarvis/tools/selection.py) — `select_tools_with_llm()` (~line 331).
+- **File**: [src/jarvis/tools/selection.py](src/jarvis/tools/selection.py) — `select_tools_with_llm()` (~line 331), fed by `_shortlist_for_router()` (~line 496). Full contract: [selection.spec.md](../src/jarvis/tools/selection.spec.md).
 - **Trigger**: once per reply, **at the very front of the flow before the planner (#12)**. Always runs — the router is the authoritative tool picker, and its narrowed catalogue is what the planner sees. When the planner later references tools, those names are unioned into the router's allow-list but never replace it; small models tend to default to `webSearch` where a dedicated tool like `getWeather` should win, and the router is tuned for that classification. `tool_selection_strategy == "llm"` is the default; other strategies (`all`, `keyword`, `embedding`) also run here.
-- **Model / gating**: FAST tier — `resolve_model(cfg, Tier.FAST)`. Factory-dispatched.
+- **Two stages, two backends**: on the `llm` strategy the router reads a **shortlist**, not the whole catalogue. `_shortlist_for_router` first ranks tools by embedding similarity and keeps `_RERANK_CANDIDATES` (15), then the LLM router picks from those. The router's weakness is the size of what it reads, not the size of what it returns, so retrieval reads the catalogue and the router reads the shortlist. Below 15 tools there is nothing to remove and the embedding call is skipped entirely.
+  - **Fails open in every direction**: no embedding backend, a dead backend, or a retrieval that separates nothing all return the catalogue untouched. The cost of narrowing is that a tool retrieval misses is invisible for that turn; `toolSearchTool` (#8) is the mid-loop escape hatch for exactly that.
+  - The shortlist is requested with `limit = floor = _RERANK_CANDIDATES`, unlike the `embedding` strategy which returns a decisive short list. The router's job is to overrule a similarity-only ranking, and it cannot overrule candidates it was never shown.
+- **Model / gating**: FAST tier — `resolve_model(cfg, Tier.FAST)` via `get_llm_backend(cfg)`, factory-dispatched. The retrieval stage uses `get_embedding_backend(cfg)` with `cfg.embedding_model`, which is a **separate backend override** — embeddings can point at a different provider from chat, so the two stages need not share a runtime.
 - **Inputs**: user query, tool catalogue (builtin + MCP with descriptions), optional narrow-down hint. User-prompt order is KV-cache-disciplined: the mostly-static catalogue opens, the dynamic hint (time + dialogue) follows, the query is the final token — consecutive router calls in one conversation share the full catalogue as prefix. The MCP half of the catalogue excludes tools withheld by `TrustStore.review()`, so a changed description cannot reach the router either.
+- **Tool-vector cache**: `_EMBED_CACHE`, keyed on `(model, tool summary)` and capped at `_EMBED_CACHE_MAX` (2048, cleared wholesale on overflow). Tool text is fixed for the life of a catalogue while queries are not, so embedding it per turn would make routing cost scale with tools × turns. Keying on the summary means an edited description re-embeds by itself with nothing to invalidate. A cached vector whose width ≠ the query's is treated as a miss and clears the cache, since two backends can serve the same model name at different dimensions.
+  - **Known cost**: the cache is cold after every daemon restart and `_select_embedding` embeds **one tool per call**, so the first reply pays one sequential round trip per tool (~2.5 s on a 60-tool catalogue). Most embedding endpoints accept a batch list; the `LLMBackend.embed` contract is currently single-text.
 - **System prompt**: inline (~lines 260-315). Teaches pick up-to-5 tools or `none`.
 - **Output**: comma-separated tool names or `none`. Capped at `_LLM_MAX_SELECTED` (5). Always-included tools (`stop`, `toolSearchTool`) are unioned in regardless.
-- **Limits**: `llm_timeout_sec`. `max_tokens: 50`. On failure → all tools.
+- **Limits**: `llm_tools_timeout_sec` (8.0) for the router call, `max_tokens: 50`; `llm_embedding_timeout_sec` (60.0) for the retrieval stage. On failure → all tools.
 - **Caching**: `routed_tools` cached in `DialogueMemory._hot_cache` under key `router:{redacted_query}|{strategy}|{builtin-names}|{mcp-names}` for the lifetime of the active conversation. The catalogue signature lets a mid-conversation MCP refresh invalidate the cache; `context_hint` is intentionally excluded so time/location drift inside one conversation doesn't bust it. Cleared by `clear_hot_cache()` on the `stop` signal and on new-conversation entry.
 - **Carry-over guard (engine-side overlay)**: after the cache lookup/write, the engine inspects the previous assistant turn's tool calls. When a previous tool reported `success=False` on its `ToolExecutionResult` (read via the `tool_failed` flag stamped onto each recorded tool result), that tool name is unioned back into the local `routed_tools` for this turn only. Compensates for small routers that misroute follow-ups where the user is supplying missing info (e.g. "I'm in London" routing to `webSearch` after a stalled `getWeather` chain). Successful chains do not carry over — a genuine new short ask after a completed chain keeps the router pick clean. The augmentation never touches the cache; replays of the same query in future turns get the raw router output. See `src/jarvis/reply/reply.spec.md` §6 (Tool allow-list per turn) for the full contract.
 
@@ -197,7 +202,7 @@ Every distinct LLM call in Jarvis, what feeds it, what consumes it, and how it i
 | 4 | Memory digest | 0-N | auto by size | SMALL (uses chat model) |
 | 5 | Tool-result digest | 0-N | auto by size | SMALL (uses chat model) |
 | 6 | Max-turn digest | 0-1 | No | SMALL |
-| 7 | Tool router | 1 | always runs; planner picks unioned in | SMALL |
+| 7 | Tool router | 1 chat + 1 embed (+1 per uncached tool) | always runs; planner picks unioned in | SMALL + embedding backend |
 | 8 | Tool searcher | 0-3 | model-initiated | SMALL (reuses #7) |
 | 9 | Summariser | ~1/session | No (background) | LARGE |
 | 10 | Graph extraction | ~1/session | No (background) | LARGE |
@@ -242,7 +247,7 @@ Anything that reorders messages between calls, injects a changing value at the h
 ```
 user input
   └─▶ [2] Intent Judge            (voice only, SMALL)
-        └─▶ [7] Tool router (narrows catalogue for the planner)
+        └─▶ [7] Tool router (embedding retrieval → LLM pick; narrows catalogue for the planner)
               └─▶ [12] Planner (gates memory; advisory for the router allow-list)
                     ├─ plan requests searchMemory  → [3] Enrichment extract → [4] Memory digest (optional)
                     ├─ plan empty (fail-open)      → [3] Enrichment extract → [4] Memory digest
