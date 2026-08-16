@@ -114,6 +114,48 @@ class TestListenerWiring:
         assert state_manager.voice_collect_seconds == pytest.approx(4.5)
         assert state_manager.follow_on_seconds == pytest.approx(0.6)
 
+    def test_listener_does_not_dispatch_while_speech_is_active(self):
+        """The guard is only real if the listener reports speech to it.
+
+        `check_collection_timeout` defaults `speech_active` to False, so a
+        dropped keyword leaves every unit test above passing while the
+        listener finalises sentences underneath the user again. Assert the
+        behaviour at the listener, where the two halves meet.
+        """
+        listener = _wired_listener(is_speech_active=True)
+        listener.state_manager.start_collection("remind me to")
+        time.sleep(0.06)
+
+        listener._check_query_timeout()
+
+        assert listener.dispatched == []
+        assert listener.state_manager.get_pending_query() == "remind me to"
+
+    def test_listener_dispatches_once_speech_stops(self):
+        """The same listener finalises as soon as the endpointer is out of speech."""
+        listener = _wired_listener(is_speech_active=False)
+        listener.state_manager.start_collection("remind me to")
+        time.sleep(0.06)
+
+        listener._check_query_timeout()
+
+        assert listener.dispatched == ["remind me to"]
+
+
+def _wired_listener(*, is_speech_active: bool):
+    """A VoiceListener with only the collaborators `_check_query_timeout` uses."""
+    import jarvis.listening.listener as listener_module
+
+    listener = listener_module.VoiceListener.__new__(listener_module.VoiceListener)
+    listener.cfg = _voice_config(voice_collect_seconds=5.0)
+    listener.state_manager = StateManager(
+        voice_collect_seconds=5.0, follow_on_seconds=0.05
+    )
+    listener.is_speech_active = is_speech_active
+    listener.dispatched = []
+    listener._dispatch_query = listener.dispatched.append
+    return listener
+
 
 class TestConfigDefaults:
     """The shipped default has to be short enough to matter."""
@@ -136,6 +178,7 @@ def _voice_config(**overrides):
         "voice_collect_seconds": 4.5,
         "voice_follow_on_seconds": 0.6,
         "voice_max_collect_seconds": 180.0,
+        "voice_debug": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)

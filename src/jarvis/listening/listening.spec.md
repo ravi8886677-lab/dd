@@ -428,6 +428,22 @@ inside speech the silence budget is suspended, so a user who resumes inside
 the grace is not cut in half. `voice_max_collect_seconds` is not suspended:
 continuous noise ends the turn rather than holding it open forever.
 
+The suspension is only real if the listener reports speech to it.
+`check_collection_timeout` defaults `speech_active` to `False`, so a call
+site that omits it disables the guard without failing anything: the state
+manager's own tests still pass, because the state manager is behaving
+correctly on the argument it was given. The two call sites differ, and both
+are deliberate:
+
+| Call site | Passes | Why |
+|---|---|---|
+| `_check_query_timeout` (per frame, and on an empty audio queue) | `speech_active=self.is_speech_active` | Runs while the endpointer may be mid-utterance, which is exactly what the guard is for. |
+| `_process_transcript` (no text) | nothing, so `False` | `_finalize_utterance` clears `is_speech_active` **before** it transcribes, so the endpointer is provably out of speech by the time a transcript exists. |
+
+That second row is an ordering invariant, not a coincidence. Moving the
+reset in `_finalize_utterance` after transcription would silently start
+finalising collections mid-utterance again.
+
 ## Fallback Behaviour
 
 When components are unavailable, the system degrades gracefully:
