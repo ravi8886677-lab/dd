@@ -20,7 +20,7 @@ Controlled by `tool_selection_strategy` in config:
 |---------------|---------------------------------------------------------------------|-----------|------------------|
 | `"all"`       | Pass every registered tool.                                         | No        | None             |
 | `"keyword"`   | Score tools by keyword overlap with the query; return top matches.  | No        | None             |
-| `"embedding"` | Rank tools by cosine similarity between the query and enriched tool summaries. Tool vectors are cached, so the per-turn cost is one embedding call regardless of catalogue size. | No | numpy |
+| `"embedding"` | Rank tools by cosine similarity between the query and enriched tool summaries. Tool vectors are cached and embedded in one batch, so both the per-turn and the cold cost are one embedding request regardless of catalogue size. | No | numpy |
 | `"llm"`       | Ask a lightweight LLM call to pick the top 3–5 relevant tool names (default). | Yes | None |
 
 ### Always-included Tools
@@ -38,8 +38,8 @@ Regardless of strategy, these tools are **always** included:
 
 ### Embedding Strategy
 
-1. Embed the user query using the configured embedding backend.
-2. For each tool (excluding always-included), build a summary string and embed it. The summary names the tool (camelCase and `snake_case` split into words), the **server it comes from**, and its description. The server matters because people ask for tools by the product they belong to ("use higgsfield to make a clip"), a word that appears nowhere in the tool's own name or description. MCP tools are registered as `server__tool`, so the server is recovered from the name.
+1. Embed the user query **and every tool summary not already cached, in one `embed_many` request**. The query rides in the same batch because it is needed every turn regardless, so sending it separately would make a warm catalogue cost two round trips where one does. Cold cost is one round trip whatever the catalogue size; this is what lets the catalogue grow. A backend that cannot serve a batch returns `None`, and the summaries fall through to the per-text path below.
+2. For each tool (excluding always-included), build a summary string and read its vector — from the cache the batch just warmed, or by embedding it alone if the batch did not cover it. The summary names the tool (camelCase and `snake_case` split into words), the **server it comes from**, and its description. The server matters because people ask for tools by the product they belong to ("use higgsfield to make a clip"), a word that appears nowhere in the tool's own name or description. MCP tools are registered as `server__tool`, so the server is recovered from the name.
 3. Compute cosine similarity between the query embedding and each tool embedding.
 4. Select tools using a **relative threshold**: keep tools whose similarity >= `top_score * _RELATIVE_THRESHOLD` (0.97).
 5. If fewer than `_MIN_SELECTED` (3) tools pass the threshold, take the top 3 by similarity.

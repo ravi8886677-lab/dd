@@ -142,6 +142,31 @@ class LLMBackend(ABC):
         endpoint (e.g. some oMLX builds) may always return ``None`` —
         memory routing will then fall back per the embeddings config."""
 
+    def embed_many(
+        self,
+        texts: List[str],
+        model: str,
+        timeout_sec: float = 15.0,
+    ) -> Optional[List[Optional[List[float]]]]:
+        """Embed several texts, ideally in one request.
+
+        Returns one vector per input, in input order, or ``None`` when the
+        batch could not be served — the caller then falls back to
+        :meth:`embed` per text. ``None`` means "ask again one at a time",
+        never "these texts have no vectors", because a batch endpoint that
+        returns a short or reordered list would otherwise score every tool
+        against its neighbour's vector.
+
+        The default loops :meth:`embed`, so a backend gains nothing by
+        implementing it and loses nothing by ignoring it. Backends whose
+        endpoint accepts a list override it: that is what stops a cold tool
+        catalogue costing one round trip per tool.
+        """
+        out: List[Optional[List[float]]] = []
+        for text in texts:
+            out.append(self.embed(text, model, timeout_sec=timeout_sec))
+        return out
+
     @abstractmethod
     def list_models(self, timeout_sec: float = 5.0) -> List[str]:
         """List the model names the runtime currently has loaded /

@@ -371,6 +371,51 @@ class OpenAICompatibleBackend(LLMBackend):
             return None
         return None
 
+    def embed_many(
+        self,
+        texts: List[str],
+        model: str,
+        timeout_sec: float = 15.0,
+    ) -> Optional[List[Optional[List[float]]]]:
+        """Embed a list in one ``/embeddings`` call.
+
+        The endpoint takes ``input`` as an array, and the response carries an
+        ``index`` per item. Ordering is read from that index rather than from
+        arrival order: a server is free to answer out of order, and trusting
+        arrival would pair every tool with the wrong vector — a failure that
+        produces plausible rankings instead of an error.
+        """
+        if not texts:
+            return []
+        try:
+            resp = requests.post(
+                f"{self._base_url}/embeddings",
+                json={"model": model, "input": list(texts)},
+                headers=self._headers(),
+                timeout=timeout_sec,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            arr = data.get("data") if isinstance(data, dict) else None
+            if not isinstance(arr, list) or len(arr) != len(texts):
+                return None
+
+            out: List[Optional[List[float]]] = [None] * len(texts)
+            for position, item in enumerate(arr):
+                if not isinstance(item, dict):
+                    return None
+                index = item.get("index")
+                slot = index if isinstance(index, int) and 0 <= index < len(texts) else position
+                vec = item.get("embedding")
+                if not isinstance(vec, list):
+                    return None
+                out[slot] = [float(x) for x in vec]
+            if any(v is None for v in out):
+                return None
+            return out
+        except Exception:
+            return None
+
     def list_models(self, timeout_sec: float = 5.0) -> List[str]:
         try:
             resp = requests.get(

@@ -335,6 +335,42 @@ class OllamaBackend(LLMBackend):
             return None
         return None
 
+    def embed_many(
+        self,
+        texts: List[str],
+        model: str,
+        timeout_sec: float = 15.0,
+    ) -> Optional[List[Optional[List[float]]]]:
+        """Embed a list in one ``/api/embed`` call.
+
+        ``/api/embeddings`` takes a single ``prompt``; ``/api/embed`` takes
+        ``input`` as an array and answers in input order. Older servers do not
+        serve it, and a short or malformed list is treated as a miss rather
+        than trimmed, so the caller re-asks one at a time instead of scoring
+        tools against each other's vectors.
+        """
+        if not texts:
+            return []
+        try:
+            resp = requests.post(
+                f"{self._base_url}/api/embed",
+                json={"model": model, "input": list(texts)},
+                timeout=timeout_sec,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            arr = data.get("embeddings") if isinstance(data, dict) else None
+            if not isinstance(arr, list) or len(arr) != len(texts):
+                return None
+            out: List[Optional[List[float]]] = []
+            for vec in arr:
+                if not isinstance(vec, list):
+                    return None
+                out.append([float(x) for x in vec])
+            return out
+        except Exception:
+            return None
+
     def list_models(self, timeout_sec: float = 5.0) -> List[str]:
         """List installed Ollama models via ``GET /api/tags``."""
         try:

@@ -181,6 +181,68 @@ def _embed_tool_text(
     return vector
 
 
+def _embed_catalogue(
+    embedding_backend: LLMBackend,
+    query: str,
+    summaries: Dict[str, str],
+    model: str,
+    timeout_sec: float,
+) -> Optional[List[float]]:
+    """Embed the query and warm the cache for every uncached summary.
+
+    Returns the query's vector, or ``None`` when even that could not be
+    embedded — the one condition that makes retrieval impossible.
+
+    Everything else is best effort. A summary the batch did not cover is
+    left out of the cache and picked up by ``_embed_tool_text`` one at a
+    time, so a server that refuses lists costs latency and never
+    correctness. Tool vectors are only cached once the query's width is
+    known, because a cached vector of the wrong width is indistinguishable
+    from a stale one and would score against this turn's query.
+    """
+    pending = [text for text in summaries.values() if (model, text) not in _EMBED_CACHE]
+
+    batch = [query] + pending
+    # Read off the object rather than the type. The annotation says
+    # LLMBackend, but anything with an `embed` reaches here, and a backend
+    # that predates batching must degrade rather than raise.
+    embed_many = getattr(embedding_backend, "embed_many", None)
+    vectors = None
+    if callable(embed_many):
+        try:
+            vectors = embed_many(batch, model, timeout_sec=timeout_sec)
+        except Exception as exc:
+            debug_log(f"Embedding tool selection: batch embed raised, embedding one at a time: {exc}", "planning")
+            vectors = None
+
+    if not isinstance(vectors, list) or len(vectors) != len(batch):
+        # No usable batch. The query still has to be embedded, and the
+        # summaries fall through to the per-text path.
+        return embedding_backend.embed(query, model, timeout_sec=timeout_sec)
+
+    query_vec = vectors[0]
+    if query_vec is None:
+        return None
+
+    width = len(query_vec)
+    stored = 0
+    for text, vector in zip(pending, vectors[1:]):
+        if vector is None or len(vector) != width:
+            continue
+        if len(_EMBED_CACHE) >= _EMBED_CACHE_MAX:
+            _EMBED_CACHE.clear()
+        _EMBED_CACHE[(model, text)] = vector
+        stored += 1
+
+    if pending:
+        debug_log(
+            f"Embedding tool selection: embedded {stored}/{len(pending)} tool "
+            f"summaries in one request",
+            "planning",
+        )
+    return query_vec
+
+
 def _ensure_always_included(
     selected: List[str],
     builtin_tools: Dict[str, "Tool"],
@@ -267,8 +329,21 @@ def _select_embedding(
     """
     import numpy as np
 
-    # Embed the query.
-    query_vec = embedding_backend.embed(query, embed_model, timeout_sec=embed_timeout_sec)
+    all_tools: Dict[str, str] = {}
+    for name, tool in builtin_tools.items():
+        if name in _ALWAYS_INCLUDED:
+            continue
+        all_tools[name] = _tool_summary(name, tool.description)
+    for name, spec in mcp_tools.items():
+        all_tools[name] = _tool_summary(name, spec.description)
+
+    # The query and every summary not already cached go in one request. The
+    # query rides along because it is needed on every turn regardless, so
+    # sending it separately would make a warm catalogue cost two round trips
+    # where one does.
+    query_vec = _embed_catalogue(
+        embedding_backend, query, all_tools, embed_model, embed_timeout_sec,
+    )
     if query_vec is None:
         debug_log("Embedding tool selection: failed to embed query, falling back to all tools", "planning")
         return _all_tool_names(builtin_tools, mcp_tools)
@@ -278,16 +353,7 @@ def _select_embedding(
     if q_norm > 0:
         query_arr = query_arr / q_norm
 
-    # Embed each tool description and compute cosine similarity.
     similarities: List[tuple] = []
-
-    all_tools: Dict[str, str] = {}
-    for name, tool in builtin_tools.items():
-        if name in _ALWAYS_INCLUDED:
-            continue
-        all_tools[name] = _tool_summary(name, tool.description)
-    for name, spec in mcp_tools.items():
-        all_tools[name] = _tool_summary(name, spec.description)
 
     for name, summary in all_tools.items():
         tool_vec = _embed_tool_text(
