@@ -12,6 +12,10 @@ from pathlib import Path
 
 import pytest
 
+# CI runs `pytest -m unit`. Without this every test in this file is
+# deselected there and the guards below only fire on a local pre-push hook.
+pytestmark = pytest.mark.unit
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Packages that pull a deep-learning runtime (torch, and through it the CUDA

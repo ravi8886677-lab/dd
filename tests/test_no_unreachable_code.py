@@ -17,6 +17,12 @@ where it last went wrong.
 import ast
 from pathlib import Path
 
+import pytest
+
+# CI runs `pytest -m unit`. Without this every test in this file is
+# deselected there and the guard only fires on a local pre-push hook.
+pytestmark = pytest.mark.unit
+
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 
 

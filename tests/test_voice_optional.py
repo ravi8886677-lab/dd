@@ -11,6 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
+# CI runs `pytest -m unit`. Without this every test in this file is
+# deselected there and the guards below only fire on a local pre-push hook.
+pytestmark = pytest.mark.unit
+
 from jarvis.config import load_settings
 
 

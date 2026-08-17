@@ -13,6 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
+# CI runs `pytest -m unit`. Without this every test in this file is
+# deselected there and the guards below only fire on a local pre-push hook.
+pytestmark = pytest.mark.unit
+
 from jarvis.speech.factory import OPENAI_COMPATIBLE, resolve_stt_provider, get_stt_backend
 
 

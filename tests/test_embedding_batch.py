@@ -14,6 +14,10 @@ from unittest.mock import patch
 
 import pytest
 
+# CI runs `pytest -m unit`. Without this every test in this file is
+# deselected there and the guards below only fire on a local pre-push hook.
+pytestmark = pytest.mark.unit
+
 from jarvis.llm.backend import LLMBackend
 from jarvis.llm.ollama import OllamaBackend
 from jarvis.llm.openai_compatible import OpenAICompatibleBackend
