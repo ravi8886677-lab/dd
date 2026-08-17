@@ -206,3 +206,86 @@ class TestBackendsSendOneRequest:
 
         with patch("jarvis.llm.ollama.requests.post", lambda url, **k: _Resp()):
             assert backend.embed_many(["a", "b", "c"], "m") is None
+
+
+class TestTheDefaultStrategyGetsTheBatch:
+    """The win has to land on the path users actually run.
+
+    Every test above calls `_select_embedding` directly, but the shipped
+    default is `tool_selection_strategy: "llm"`, which reaches embedding
+    through `_shortlist_for_router`. A change that bypassed retrieval, or
+    that narrowed before batching, would restore the per-tool cold cost
+    while leaving all of them green.
+    """
+
+    def test_llm_strategy_embeds_a_cold_catalogue_in_one_request(self):
+        """The default strategy, cold, on a catalogue worth narrowing."""
+        shown = {}
+
+        class _Router:
+            def direct(self, model, system, user, **kwargs):
+                # Pick from what retrieval actually shortlisted, so the
+                # assertion is about round trips rather than about which
+                # tools a stand-in embedding happens to rank highest.
+                shown["names"] = _tool_names_in(user)
+                return shown["names"][0]
+
+        embedding = _CountingBackend()
+        picked = selection.select_tools(
+            query="what is the weather",
+            builtin_tools=_tools(60),
+            mcp_tools={},
+            strategy=selection.ToolSelectionStrategy.LLM,
+            llm_backend=_Router(),
+            llm_model="chat-model",
+            embedding_backend=embedding,
+            embed_model="embed-model",
+        )
+
+        assert len(embedding.batch_calls) == 1, (
+            f"cold catalogue cost {len(embedding.batch_calls)} batch calls"
+        )
+        assert len(embedding.embed_calls) == 0, (
+            f"fell back to {len(embedding.embed_calls)} single-text calls"
+        )
+        assert shown["names"][0] in picked
+
+    def test_the_router_only_sees_the_shortlist(self):
+        """Retrieval still narrows; batching must not widen what the router reads."""
+        seen = {}
+
+        class _Router:
+            def direct(self, model, system, user, **kwargs):
+                seen["names"] = _tool_names_in(user)
+                return seen["names"][0]
+
+        selection.select_tools(
+            query="what is the weather",
+            builtin_tools=_tools(60),
+            mcp_tools={},
+            strategy=selection.ToolSelectionStrategy.LLM,
+            llm_backend=_Router(),
+            llm_model="chat-model",
+            embedding_backend=_CountingBackend(),
+            embed_model="embed-model",
+        )
+
+        assert len(seen["names"]) == selection._RERANK_CANDIDATES, (
+            f"router read {len(seen['names'])} tools, expected "
+            f"{selection._RERANK_CANDIDATES}"
+        )
+
+
+def _tool_names_in(prompt: str) -> List[str]:
+    """Tool names in a router prompt, deduped, in order of appearance.
+
+    Whole-word matching: a substring test pairs `tool1` with `tool19` and
+    silently inflates the count.
+    """
+    import re
+
+    seen: List[str] = []
+    for name in re.findall(r"\btool\d+\b", prompt):
+        if name not in seen:
+            seen.append(name)
+    return seen
