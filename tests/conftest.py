@@ -64,6 +64,10 @@ class MockConfig:
     db_path: str = ":memory:"
     sqlite_vss_path: Optional[str] = None
     voice_debug: bool = True
+    # Mirrors the real `Settings`. Defaults on, so every existing test keeps
+    # the behaviour it was written against; a test that wants a text-only
+    # install sets it false.
+    voice_enabled: bool = True
     tts_enabled: bool = False
     tts_engine: str = "piper"
     tts_voice: Optional[str] = None

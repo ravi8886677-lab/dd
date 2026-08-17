@@ -1161,7 +1161,7 @@ class TestDaemonSmokeTest:
         # needing a real database, Whisper model, TTS engine, etc.
         with patch("jarvis.daemon.load_settings") as mock_load, \
              patch("jarvis.daemon.Database") as mock_db, \
-             patch("jarvis.daemon.initialize_mcp_tools", return_value=({}, {})), \
+             patch("jarvis.daemon.discover_and_report_mcp_tools", return_value={}), \
              patch("jarvis.daemon.DialogueMemory") as mock_dm, \
              patch("jarvis.daemon.get_location_context", return_value="Location: Test"), \
              patch("jarvis.daemon.create_tts_engine") as mock_tts, \
@@ -1214,7 +1214,7 @@ class TestDaemonSmokeTest:
 
         with patch("jarvis.daemon.load_settings") as mock_load, \
              patch("jarvis.daemon.Database") as mock_db, \
-             patch("jarvis.daemon.initialize_mcp_tools", return_value=({}, {})), \
+             patch("jarvis.daemon.discover_and_report_mcp_tools", return_value={}), \
              patch("jarvis.daemon.DialogueMemory") as mock_dm, \
              patch("jarvis.daemon.get_location_context", return_value="Location: Test"), \
              patch("jarvis.daemon.create_tts_engine") as mock_tts, \

@@ -45,11 +45,66 @@ class TestBaseInstallStaysLight:
         )
 
     def test_the_chat_subset_stays_a_subset(self):
-        """The audio-free set must not grow past the full one."""
+        """The audio-free set must not grow past the full one.
+
+        One statement, deliberately: an assertion with an `or` in it passes
+        whenever either half holds, so it keeps passing for a reason nobody
+        chose. `requirements-chat.txt` is a strict subset today and there is
+        no package it needs that the full install does not, so that is what
+        gets asserted. A future entry that genuinely belongs only in the chat
+        set should fail this and be added here with its reason.
+        """
         base = _requirement_names(REPO_ROOT / "requirements.txt")
         chat = _requirement_names(REPO_ROOT / "requirements-chat.txt")
-        assert not (chat & _HEAVY_PACKAGES)
-        assert chat - base == set() or chat.issubset(base | {"webrtcvad-wheels"})
+
+        assert not (chat & _HEAVY_PACKAGES), (
+            f"the audio-free set pulls {sorted(chat & _HEAVY_PACKAGES)}"
+        )
+        assert chat <= base, (
+            f"requirements-chat.txt lists packages the full install does not: "
+            f"{sorted(chat - base)}"
+        )
+
+
+class TestOptionalDependenciesDegrade:
+    """Moving a dependency out of the base install must not make it required.
+
+    Splitting the files only helps if the feature behind them fails softly.
+    An engine that raises on a missing import turns an optional extra into a
+    crash for anyone who selected it and did not read the README.
+    """
+
+    def test_selecting_chatterbox_without_its_requirements_does_not_crash(self):
+        """The degradation path the split depends on, asserted rather than tried by hand."""
+        try:
+            import chatterbox  # noqa: F401
+            pytest.skip("chatterbox is installed; the degradation path cannot be exercised")
+        except ImportError:
+            pass
+
+        from jarvis.output.tts import create_tts_engine
+
+        engine = create_tts_engine(engine="chatterbox", enabled=True)
+        assert engine is not None, "selecting an uninstalled engine returned nothing"
+
+        # Initialisation is where the missing import lands. It must record the
+        # problem rather than propagate it: the daemon builds the TTS engine
+        # during startup, so raising here takes the whole assistant down.
+        engine._initialize_with_logging()
+
+        assert engine._model is None
+        assert engine._model_error, "the missing dependency was not recorded"
+        assert "depend" in str(engine._model_error).lower(), (
+            f"the recorded error does not name the cause: {engine._model_error}"
+        )
+
+    def test_the_default_engine_needs_nothing_optional(self):
+        """Piper is the default precisely so the base install is enough."""
+        from jarvis.output.tts import create_tts_engine
+
+        engine = create_tts_engine(engine="piper", enabled=False)
+        assert engine is not None
+        assert type(engine).__name__ == "PiperTTS"
 
 
 class TestOptionalFilesExist:

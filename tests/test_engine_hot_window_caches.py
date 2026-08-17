@@ -110,8 +110,13 @@ def test_router_fallback_to_all_tools_is_not_cached(
     chat model produced an empty reply ("Sorry, I had trouble processing
     that"). Pre-#281 this didn't happen because the router re-rolled per turn.
     """
-    from src.jarvis.tools.registry import BUILTIN_TOOLS
-    full_catalogue = list(BUILTIN_TOOLS.keys())
+    # The catalogue the engine hands `select_tools` is the *advertised* one,
+    # which omits tools this install cannot run. Hardcoding `BUILTIN_TOOLS`
+    # makes the fall-open signal unrecognisable on exactly the machines the
+    # availability gate exists for — a chat-only install without pyautogui —
+    # so the engine would cache the fallback there and nowhere else.
+    from src.jarvis.tools.registry import available_builtin_tools
+    full_catalogue = list(available_builtin_tools().keys())
 
     mock_chat.side_effect = [
         {"message": {"content": "hello"}},
