@@ -559,6 +559,17 @@ class SetupWizard(QWizard):
         # install/server/models pages are only reached on the Ollama branch.
         self.setStartId(self.mlx_whisper_page_id)
 
+        # Custom button labels
+        self.setButtonText(QWizard.WizardButton.NextButton, "Next →")
+        self.setButtonText(QWizard.WizardButton.BackButton, "← Back")
+        self.setButtonText(QWizard.WizardButton.FinishButton, "🎉 Start Jarvis")
+        self.setButtonText(QWizard.WizardButton.CancelButton, "Exit")
+
+        # Store status for sharing between pages
+        self.ollama_status: Optional[OllamaStatus] = None
+        self.mlx_whisper_status: Optional[MLXWhisperStatus] = None
+        self._location_working: Optional[bool] = None
+
     def voice_wanted(self) -> bool:
         """Whether the user asked for voice on the first page.
 
@@ -570,17 +581,6 @@ class SetupWizard(QWizard):
             return self.mlx_whisper_page.voice_wanted()
         except Exception:
             return True
-
-        # Custom button labels
-        self.setButtonText(QWizard.WizardButton.NextButton, "Next →")
-        self.setButtonText(QWizard.WizardButton.BackButton, "← Back")
-        self.setButtonText(QWizard.WizardButton.FinishButton, "🎉 Start Jarvis")
-        self.setButtonText(QWizard.WizardButton.CancelButton, "Exit")
-
-        # Store status for sharing between pages
-        self.ollama_status: Optional[OllamaStatus] = None
-        self.mlx_whisper_status: Optional[MLXWhisperStatus] = None
-        self._location_working: Optional[bool] = None
 
     def ollama_entry_page_id(self) -> int:
         """First Ollama-flow page to show, based on detection status:

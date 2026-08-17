@@ -647,6 +647,45 @@ class TestProviderChoicePage:
         finally:
             cfg_path.unlink(missing_ok=True)
 
+    def test_construction_finishes_every_step_of_init(self, qapp):
+        """Nothing after the page wiring may be stranded in `__init__`.
+
+        A method defined between two halves of `__init__` swallows the rest
+        of it: the statements below the `def` become unreachable body of the
+        new method, and Python reports nothing. The wizard still builds and
+        still shows its pages, so a smoke test passes, while the shared
+        status attributes are never created and every page that reads them
+        raises `AttributeError` at the moment the user clicks Next.
+
+        Asserting on the tail of `__init__` is what catches that, so this
+        checks the last things it does rather than the first.
+        """
+        import tempfile
+        from pathlib import Path
+        from PyQt6.QtWidgets import QWizard
+        from desktop_app.setup_wizard import SetupWizard
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write("{}")
+            cfg_path = Path(f.name)
+        try:
+            with patch("jarvis.config.default_config_path", return_value=cfg_path):
+                wiz = SetupWizard()
+
+            # Read by ollama_entry_page_id() and is_location_working().
+            assert wiz.ollama_status is None
+            assert wiz.mlx_whisper_status is None
+            assert wiz._location_working is None
+
+            # The visible half of the same statement block.
+            assert wiz.buttonText(QWizard.WizardButton.NextButton) == "Next →"
+            assert wiz.buttonText(QWizard.WizardButton.BackButton) == "← Back"
+
+            # And the method that was inserted mid-`__init__` still works.
+            assert wiz.voice_wanted() is True
+        finally:
+            cfg_path.unlink(missing_ok=True)
+
 
 class TestWelcomePageFlow:
     """The Welcome/status page is reached only on the Ollama branch."""
