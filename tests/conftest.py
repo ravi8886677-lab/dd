@@ -199,3 +199,45 @@ def qapp():
         app = QApplication([])
     yield app
 
+
+
+# ── Audio worker teardown ──────────────────────────────────────────────
+#
+# The tune player and the TTS engines run their work on daemon threads. A
+# test that starts one and does not stop it leaves it running for the rest
+# of the session, and the thread is still alive when the interpreter shuts
+# down. That was survivable while everything it touched was pure Python;
+# with `faster-whisper` installed, PyAV and ctranslate2 native extensions
+# are loaded, and a thread inside native code during shutdown can take the
+# process down with a segmentation fault instead of an error.
+#
+# Keyed on the worker's qualified name, because the thread is the only
+# handle a teardown has — its `_target` is a bound method, so the owning
+# object comes back through `__self__`.
+_AUDIO_WORKERS = {
+    "TunePlayer._play_tune": "stop_tune",
+    "PiperTTS._run": "stop",
+    "ChatterboxTTS._run": "stop",
+}
+
+
+@pytest.fixture(autouse=True)
+def _stop_audio_workers():
+    """Stop any audio worker a test left running."""
+    yield
+
+    import threading
+
+    for thread in threading.enumerate():
+        target = getattr(thread, "_target", None)
+        owner = getattr(target, "__self__", None)
+        stop_method = _AUDIO_WORKERS.get(getattr(target, "__qualname__", ""))
+        if owner is None or stop_method is None:
+            continue
+        try:
+            getattr(owner, stop_method)()
+        except Exception:
+            # A worker that cannot stop is this test's problem, not the
+            # next test's. Never let teardown fail the run.
+            pass
+        thread.join(timeout=2.0)
