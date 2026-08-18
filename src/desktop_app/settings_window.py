@@ -627,6 +627,15 @@ class SettingsWindow(QDialog):
             idx = w.findData(cur_str)
             if idx >= 0:
                 w.setCurrentIndex(idx)
+            elif cur_str:
+                # A stored value this build offers no option for: a name from
+                # another release, or a hand-edited config. Leaving the combo
+                # on index 0 would show the first option as if it were the
+                # setting, and Save would then write it over a value the user
+                # never touched — losing a working configuration during a
+                # visit to change something else.
+                w.addItem(f"{cur_str} (unrecognised)", cur_str)
+                w.setCurrentIndex(w.count() - 1)
             w.setToolTip(fm.description)
             return w
 

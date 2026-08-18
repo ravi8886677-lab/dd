@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -439,7 +440,22 @@ def _repin_catalogue_servers(cfg_json: Dict[str, Any]) -> list:
 
 # The migration level a freshly-migrated config carries. Bump this in the
 # same change that adds a migration block below.
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
+
+# The endpoint `openai_stt.py` used to supply when `stt_base_url` was empty.
+# Referenced by the v5 migration only. It is deliberately not a default: a
+# config that names the provider without an endpoint is unconfigured, and
+# audio must never reach a third party the user did not name.
+_GROQ_HISTORICAL_BASE_URL = "https://api.groq.com/openai/v1"
+
+
+# `load_settings` re-enters itself: `_load_keyring` calls `debug_log`, which
+# asks `_is_debug_enabled`, which calls `load_settings` again — from inside
+# the first one, before it has saved. The inner call sees the pre-migration
+# version and migrates a second time, repeating the credential-store queries
+# and printing every upgrade notice twice. Per-thread so two threads loading
+# at once still each migrate.
+_migration_in_progress = threading.local()
 
 
 def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
@@ -447,7 +463,23 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
     Apply config migrations for version upgrades.
 
     Returns the (possibly modified) config dict.
+
+    Re-entrant calls return the dict untouched. The outer call is mid-flight
+    and will finish and save; the inner one exists only to answer whether
+    debug logging is on, which no migration changes.
     """
+    if getattr(_migration_in_progress, "active", False):
+        return cfg_json
+
+    _migration_in_progress.active = True
+    try:
+        return _apply_migrations(cfg_path, cfg_json)
+    finally:
+        _migration_in_progress.active = False
+
+
+def _apply_migrations(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
+    """The migration chain itself. Call through `_migrate_config`."""
     modified = False
 
     # Get current migration version (0 if not set = pre-migration config)
@@ -514,6 +546,34 @@ def _migrate_config(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any]:
         if repinned:
             print("   A floating version re-downloads on every launch, so it "
                   "is no longer accepted.", flush=True)
+        cfg_json["_config_version"] = 4
+        modified = True
+
+    # Migration v5: the speech provider is named for its protocol rather
+    # than for a company, and the adapter no longer carries that company's
+    # URL as a default. Both are `CLAUDE.md` line 3 compliance, and on
+    # their own they silently break every install that relied on the
+    # default: the name still resolves through `ALIASES`, but the endpoint
+    # is empty, so the factory returns `None` and recognition drops to
+    # local Whisper without a word. On a voice-optional install with no
+    # Whisper model that means no recognition at all.
+    #
+    # The URL below is a historical value, not a default. It is written
+    # only into a config that already chose this vendor and left the
+    # endpoint implied; a config written after the rename inherits nothing,
+    # so unset still means unconfigured.
+    if migration_version < 5:
+        if str(cfg_json.get("stt_provider", "") or "").strip().lower() == "groq":
+            cfg_json["stt_provider"] = "openai_compatible"
+            if not str(cfg_json.get("stt_base_url", "") or "").strip():
+                cfg_json["stt_base_url"] = _GROQ_HISTORICAL_BASE_URL
+                print("🗣️  Speech provider renamed: groq → openai_compatible", flush=True)
+                print(f"   Kept your endpoint as {_GROQ_HISTORICAL_BASE_URL}", flush=True)
+                print("   Point stt_base_url anywhere else to change it, "
+                      "including a local whisper.cpp server", flush=True)
+            else:
+                print("🗣️  Speech provider renamed: groq → openai_compatible "
+                      "(your endpoint is unchanged)", flush=True)
         cfg_json["_config_version"] = CONFIG_VERSION
         modified = True
 
