@@ -574,7 +574,7 @@ def _apply_migrations(cfg_path: Path, cfg_json: Dict[str, Any]) -> Dict[str, Any
             else:
                 print("🗣️  Speech provider renamed: groq → openai_compatible "
                       "(your endpoint is unchanged)", flush=True)
-        cfg_json["_config_version"] = CONFIG_VERSION
+        cfg_json["_config_version"] = 5
         modified = True
 
     # Credentials are swept on every load, not once at a version bump.
