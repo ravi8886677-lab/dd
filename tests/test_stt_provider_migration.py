@@ -187,3 +187,63 @@ class TestMigrationRunsOnce:
             "_is_debug_enabled, so every notice is printed twice and the "
             "credential store is queried twice."
         )
+
+
+class TestALocalEndpointNeedsNoKey:
+    """The offline path the rename exists for must actually be reachable.
+
+    A `whisper.cpp` server on this machine authenticates nobody. Requiring a
+    key before the adapter is even built blocks the one configuration that
+    makes the provider rename worth doing, and contradicts both the settings
+    tooltip ("usually not [required] by a local one") and the module
+    docstring's claim that pointing at a local server keeps the offline path
+    real.
+
+    The original rule — refuse without a key rather than build something that
+    fails on every call — was written for a hosted endpoint, where a missing
+    key means certain failure. An endpoint the user named is configured; if it
+    rejects the request, the adapter returns `None` and the caller drops to
+    local Whisper, which is the contract everywhere else in this package.
+    """
+
+    def test_a_keyless_local_endpoint_produces_a_backend(self):
+        from types import SimpleNamespace
+
+        from jarvis.speech.factory import get_stt_backend
+
+        settings = SimpleNamespace(
+            stt_provider="openai_compatible",
+            stt_api_key="",
+            stt_model="",
+            stt_base_url="http://localhost:8080/v1",
+        )
+        assert get_stt_backend(settings) is not None, (
+            "a local whisper.cpp server, which needs no key, could not be used"
+        )
+
+    def test_an_endpoint_with_a_key_still_produces_a_backend(self):
+        from types import SimpleNamespace
+
+        from jarvis.speech.factory import get_stt_backend
+
+        settings = SimpleNamespace(
+            stt_provider="openai_compatible",
+            stt_api_key="a-key",
+            stt_model="",
+            stt_base_url="https://example.invalid/v1",
+        )
+        assert get_stt_backend(settings) is not None
+
+    def test_no_endpoint_is_still_unconfigured(self):
+        """The endpoint, not the key, is what decides configured-ness."""
+        from types import SimpleNamespace
+
+        from jarvis.speech.factory import get_stt_backend
+
+        settings = SimpleNamespace(
+            stt_provider="openai_compatible",
+            stt_api_key="a-key",
+            stt_model="",
+            stt_base_url="",
+        )
+        assert get_stt_backend(settings) is None

@@ -51,14 +51,24 @@ class TestNoAssumedEndpoint:
         )
         assert get_stt_backend(settings) is None
 
-    def test_provider_without_a_key_is_unconfigured(self):
+    def test_an_endpoint_without_a_key_is_still_configured(self):
+        """The endpoint decides configured-ness, not the key.
+
+        This asserted `None` when the rename landed, which blocked the local
+        `whisper.cpp` server the rename exists to enable — that server
+        authenticates nobody, and the settings tooltip added in the same
+        change already said a key is "usually not [required] by a local one".
+        A destination that wants a key and did not get one answers with an
+        error, the adapter returns `None`, and the caller drops to local
+        Whisper: the contract every other failure here follows.
+        """
         settings = SimpleNamespace(
             stt_provider="openai_compatible",
             stt_api_key="",
             stt_model="",
             stt_base_url="https://example.invalid/v1",
         )
-        assert get_stt_backend(settings) is None
+        assert get_stt_backend(settings) is not None
 
     def test_endpoint_and_key_together_produce_a_backend(self):
         settings = SimpleNamespace(

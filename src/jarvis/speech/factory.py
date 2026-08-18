@@ -43,12 +43,11 @@ def resolve_stt_provider(raw: Any) -> str:
 def get_stt_backend(settings: Any) -> Optional[SpeechToText]:
     """Return the hosted recogniser, or ``None`` to use local Whisper.
 
-    A provider configured without an endpoint or without a key resolves to
-    ``None`` rather than to a backend that fails on every call: the failure
-    would be silent anyway, since callers fall back, so it is better to
-    never take the detour. There is no default endpoint, so an unset
-    ``stt_base_url`` means unconfigured — never a third party the user did
-    not name.
+    The endpoint decides whether this is configured, not the key. Without an
+    endpoint there is nowhere to send audio and this resolves to ``None``;
+    there is no default, so unset means unconfigured rather than a third
+    party the user did not name. A key is optional, because a local
+    recogniser does not want one.
     """
     provider = resolve_stt_provider(getattr(settings, "stt_provider", None))
     if provider != OPENAI_COMPATIBLE:
@@ -59,10 +58,14 @@ def get_stt_backend(settings: Any) -> Optional[SpeechToText]:
         debug_log("⚠️ stt: hosted provider selected but no endpoint set, using local", "whisper")
         return None
 
+    # No key requirement. A `whisper.cpp` server on this machine
+    # authenticates nobody, and refusing to build the adapter without a key
+    # would block the one configuration that makes naming the provider for
+    # its protocol worth doing. An endpoint the user named is configured; a
+    # destination that wants a key and did not get one answers with an error,
+    # the adapter returns None, and the caller drops to local Whisper — the
+    # same contract every other failure here follows.
     api_key = str(getattr(settings, "stt_api_key", "") or "").strip()
-    if not api_key:
-        debug_log("⚠️ stt: hosted provider selected but no key set, using local", "whisper")
-        return None
 
     return OpenAICompatibleSpeechToText(
         api_key=api_key,

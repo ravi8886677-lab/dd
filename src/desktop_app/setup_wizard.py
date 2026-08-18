@@ -2534,6 +2534,9 @@ class WhisperSetupPage(QWizardPage):
         # outright when the user has said they will only type.
         self._voice_only_widgets: list = []
         self._voice_widget_shown: dict = {}
+        # The mode the widgets are currently laid out for, so the handler can
+        # tell a real change from a repeat click on the selected button.
+        self._voice_mode: bool = True
 
         # Language selection card
         lang_card = QFrame()
@@ -3112,19 +3115,31 @@ class WhisperSetupPage(QWizardPage):
         return bool(self._voice_btn.isChecked())
 
     def _on_voice_mode_changed(self, voice: bool) -> None:
-        """Show or hide everything that only matters when voice is on."""
+        """Show or hide everything that only matters when voice is on.
+
+        Acts on the *transition*, not on the click. The buttons are
+        independently checkable, so clicking the selected one again re-enters
+        here; snapshotting on every call would record the hidden state over
+        the real one and leave every control hidden for good on the way back.
+        Restoring on every call has the mirror problem — with nothing
+        snapshotted yet it would reveal the MLX section on a machine whose
+        platform rule hid it.
+        """
         self._voice_btn.setChecked(voice)
         self._text_only_btn.setChecked(not voice)
-        if voice:
-            # Restore what each card was doing before, not a blanket show:
-            # the MLX section has its own platform rule and must not appear
-            # on a machine that cannot use it.
-            for widget in self._voice_only_widgets:
-                widget.setVisible(self._voice_widget_shown.get(id(widget), True))
-        else:
-            for widget in self._voice_only_widgets:
-                self._voice_widget_shown[id(widget)] = not widget.isHidden()
-                widget.setVisible(False)
+
+        if voice != self._voice_mode:
+            if voice:
+                # Restore what each card was doing before, not a blanket show:
+                # the MLX section has its own platform rule and must not
+                # appear on a machine that cannot use it.
+                for widget in self._voice_only_widgets:
+                    widget.setVisible(self._voice_widget_shown.get(id(widget), True))
+            else:
+                for widget in self._voice_only_widgets:
+                    self._voice_widget_shown[id(widget)] = not widget.isHidden()
+                    widget.setVisible(False)
+            self._voice_mode = voice
         debug_log(f"setup: voice {'enabled' if voice else 'disabled'}", "wizard")
         # Qt compresses the remaining widgets instead of resizing the parent,
         # so the wizard has to be told to recompute its own size.

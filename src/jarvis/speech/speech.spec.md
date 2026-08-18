@@ -83,9 +83,13 @@ get_stt_backend(settings) -> Optional[SpeechToText]
 `factory.py` is the one place that names an adapter. `None` means "no hosted
 provider" and leaves every caller on local Whisper.
 
-A provider selected **without a key resolves to `None`**, not to a backend that
-fails on every call. The failure would be invisible anyway (callers fall back),
-so it is better never to take the detour.
+**The endpoint decides configured-ness, not the key.** A provider named with no
+`stt_base_url` resolves to `None`: there is nowhere to send audio, and no
+default to inherit. A key is optional, because a local `whisper.cpp` server
+authenticates nobody and requiring one would block the offline path this
+package is named for. A destination that wants a key and did not get one
+answers with an error, the adapter returns `None`, and the caller drops to
+local Whisper.
 
 `resolve_stt_provider` warns about an unknown name with `print`, not
 `debug_log`. It runs inside `load_settings`, and `debug_log` asks
@@ -169,7 +173,7 @@ transcripts face.
 | Setting | Default | Description |
 |---|---|---|
 | `stt_provider` | `"local"` | `local` or `openai_compatible`. `groq` is accepted as an alias. Unknown names warn and fall back to `local`. |
-| `stt_api_key` | `""` | Read through the credential store. Empty with a hosted provider selected resolves to `None`. |
+| `stt_api_key` | `""` | Read through the credential store. Optional: a local endpoint needs none, and a remote one that wants a key answers with an error, which falls back to local. |
 | `stt_model` | `""` | Empty means the adapter's default (`whisper-large-v3-turbo`). |
 | `stt_base_url` | `""` | **Required** to reach anything: empty means unconfigured and recognition stays local. Point it at any OpenAI-compatible transcriptions endpoint, including a local one. |
 
