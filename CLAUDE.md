@@ -40,6 +40,8 @@ Any code change must either adhere to our spec files perfectly or you should ask
 | `src/jarvis/memory/recall_gate.spec.md` | Deterministic skip-enrichment heuristic when the hot window covers a follow-up | Fail-open; language-agnostic via `\w{3,}` + `re.UNICODE`; planner intent always wins |
 | `src/jarvis/llm/llm.spec.md` | Pluggable LLM backend abstraction: `LLMBackend` ABC, `OllamaBackend`, `OpenAICompatibleBackend`, factory dispatch on `llm_provider`, `get_embedding_backend` override, config migrations, the two-tier model system (`Tier.FAST` / `Tier.CHAT` via `resolve_model`), function-style helpers | Provider-agnostic interface so Jarvis can run on Ollama, OpenAI-compatible (LM Studio / oMLX / llama.cpp / vLLM / LocalAI), or Anthropic-compatible servers; every context states its tier instead of defining a model fallback chain |
 
+`BUILD_ORDER.md` decides what gets built next. Before starting any new feature, read it: it carries the slice order (one vertical slice at a time, never two half-built), what "done" means for a slice, and a ledger of what every existing subsystem does. When a slice lands, add its row to that ledger so the next session does not have to re-derive the tree.
+
 The LLM contexts graph at `docs/llm_contexts.md` maps every LLM call in the app (model, gating, inputs, outputs, limits, flow). Keep it up-to-date at all times: any change that adds, removes, or alters an LLM context (model resolution, timeout, cap, prompt source, gating flag, data-flow edge) must update `docs/llm_contexts.md` in the same PR.
 
 Avoid hardcoded language patterns as this assistant needs to support an arbitrary amount of different languages.
