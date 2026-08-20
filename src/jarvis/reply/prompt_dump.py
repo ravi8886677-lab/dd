@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..debug import debug_log
+from ..utils.paths import ensure_data_dir
 
 
 _ENV_VAR = "JARVIS_DUMP_PROMPTS"
@@ -42,9 +43,7 @@ def new_session_id() -> str:
 
 
 def _dump_dir() -> Path:
-    base = Path.home() / ".local" / "share" / "jarvis" / "prompts"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+    return ensure_data_dir("prompts")
 
 
 def dump_reply_turn(

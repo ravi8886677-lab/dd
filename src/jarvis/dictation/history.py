@@ -13,12 +13,12 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..utils.paths import ensure_data_dir
+
 
 def _default_history_path() -> Path:
     """Return the default path for dictation history storage."""
-    base = Path.home() / ".local" / "share" / "jarvis"
-    base.mkdir(parents=True, exist_ok=True)
-    return base / "dictation_history.json"
+    return ensure_data_dir() / "dictation_history.json"
 
 
 class DictationHistory:

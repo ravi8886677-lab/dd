@@ -9,6 +9,7 @@ import random
 import threading
 import sys
 from ..debug import debug_log
+from .paths import data_dir, ensure_data_dir
 
 try:
     import geoip2.database
@@ -51,7 +52,7 @@ _CGNAT_RESOLUTION_TTL = timedelta(hours=1)
 
 # Disk cache paths (share directory with geoip DB for locality)
 def _cache_base_dir() -> Path:
-    return Path.home() / ".local" / "share" / "jarvis"
+    return data_dir()
 
 _LOCATION_CACHE_FILE = _cache_base_dir() / "location_cache.json"
 _CGNAT_CACHE_FILE = _cache_base_dir() / "cgnat_cache.json"
@@ -61,8 +62,11 @@ _cache_lock = threading.RLock()
 def _load_disk_caches() -> None:
     """Load caches from disk into memory (best-effort)."""
     try:
-        base = _cache_base_dir()
-        base.mkdir(parents=True, exist_ok=True)
+        # Nothing cached yet is the normal state on a new machine.
+        # Loading is a read, so it must not create the directory: this
+        # runs on import.
+        if not _cache_base_dir().is_dir():
+            return
     except Exception:
         return
     now = datetime.now(timezone.utc)
@@ -121,8 +125,7 @@ def _persist_disk_caches(location_cache_minutes: int = 60) -> None:
     """Persist in-memory caches to disk (best-effort)."""
     with _cache_lock:
         try:
-            base = _cache_base_dir()
-            base.mkdir(parents=True, exist_ok=True)
+            ensure_data_dir()
         except Exception:
             return
         # Location cache serialisation
@@ -301,9 +304,7 @@ def _get_external_ip_automatically() -> Optional[str]:
 
 def _get_database_path() -> Path:
     """Get the path where the GeoLite2 database should be stored."""
-    base_dir = Path.home() / ".local" / "share" / "jarvis" / "geoip"
-    base_dir.mkdir(parents=True, exist_ok=True)
-    return base_dir / "GeoLite2-City.mmdb"
+    return ensure_data_dir("geoip") / "GeoLite2-City.mmdb"
 
 
 def _print_location_setup_instructions(db_path: Path) -> None:

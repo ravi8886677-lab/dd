@@ -136,6 +136,45 @@ def _isolate_user_config_path(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("JARVIS_CONFIG_PATH", str(sandbox / "config.json"))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_user_data_dir(tmp_path_factory):
+    """Redirect the database to a per-session tempfile so no test reads or
+    writes ``~/.local/share/jarvis/jarvis.db``.
+
+    The companion to ``_isolate_user_config_path``, and it matters for the
+    same two reasons. A test run must not edit the diary of whoever runs
+    it, and a suite that quietly creates the user's database on first run
+    hides every defect that only appears on a fresh install: red once on a
+    cold machine, green forever after, reproducible by nobody.
+
+    Session-scoped because the dashboard caches its connection and its
+    graph store in module globals. One database for the run keeps those
+    valid, which is the arrangement the suite already had, only pointed
+    somewhere harmless.
+    """
+    sandbox = tmp_path_factory.mktemp("jarvis_data_sandbox")
+    db_path = sandbox / "jarvis.db"
+
+    # ``jarvis.config`` and ``src.jarvis.config`` are separate module
+    # objects with separate globals, and different test files reach for
+    # different ones. Patch whichever are loaded, the same way
+    # ``_clear_dashboard_rate_limits`` does below.
+    import jarvis.config  # noqa: F401  (ensure at least one is present)
+
+    targets = [
+        module for name, module in list(sys.modules.items())
+        if name.endswith("jarvis.config") and hasattr(module, "_default_db_path")
+    ]
+    originals = [(m, m._default_db_path) for m in targets]
+    for module in targets:
+        module._default_db_path = lambda: str(db_path)
+    try:
+        yield db_path
+    finally:
+        for module, original in originals:
+            module._default_db_path = original
+
+
 @pytest.fixture(autouse=True)
 def _clear_dashboard_rate_limits():
     """Empty the dashboard's rate-limit buckets between tests.

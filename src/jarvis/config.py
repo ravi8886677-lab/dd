@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 
 from .utils.secret_store import migrate_plaintext_secrets, resolve_secret
+from .utils.paths import data_dir
 
 
 # ============================================================================
@@ -76,9 +77,16 @@ def _default_dictation_hotkey() -> str:
 
 
 def _default_db_path() -> str:
-    base = Path.home() / ".local" / "share" / "jarvis"
-    base.mkdir(parents=True, exist_ok=True)
-    return str(base / "jarvis.db")
+    """Where the database lives when the config does not say.
+
+    Resolving a path does not create it. Reading settings is something
+    almost every import does, and a data directory must not appear on a
+    machine merely because a module was imported. Every opener of the
+    database (``Database``, ``open_database``, ``GraphMemoryStore``)
+    creates the parent directory itself, at the point where something is
+    actually about to be written.
+    """
+    return str(data_dir() / "jarvis.db")
 
 
 @dataclass(frozen=True)

@@ -77,39 +77,31 @@ Nothing in Phase 2 or Phase 3 of the spec starts before all five land.
 
 ## 3. The slices, in order
 
-### Slice 0 — the dashboard is broken on a fresh install 🔴
+### Slice 0 — the dashboard works on a fresh install ✅
 
-**Why first:** it is the only place in the tree where a shipped feature
-does not work for a new user, and the rule at the top of this file is
-that we do not add features while an existing one is broken. It is also
-half a day, not a week.
+**Why it came first:** it was the only place where a shipped feature did
+not work for a new user, and the rule at the top of this file is that we
+do not add features while an existing one is broken.
 
-Two defects, both confirmed against this tree:
+What now holds:
 
-- `src/desktop_app/memory_viewer.py:236` opens the SQLite file with a
-  raw `sqlite3.connect` and never applies the schema. `Database.__init__`
-  in `src/jarvis/memory/db.py` is what creates the tables, and it only
-  runs when the daemon starts. A user who installs Jarvis and opens the
-  dashboard before ever speaking to it gets `500 {"error":"no such table:
-  conversation_summaries"}` from `/api/stats`, `/api/memories` and
-  `/api/meals`. `/api/graph/stats` returns 200 because `GraphMemoryStore`
-  initialises its own schema on access, and that is the shape to copy.
-- `tests/test_memory_viewer_auth.py` runs against the real
-  `~/.local/share/jarvis/jarvis.db` rather than a tmp path. On a cold
-  machine the five tests touching `/api/stats` fail, the run creates the
-  database as a side effect, and every run after it is green. A cold CI
-  runner goes red and nobody can reproduce it locally. It also means the
-  suite writes to the user's own data directory.
+- The dashboard applies the schema when it opens the database, so an
+  install that has never run Jarvis answers `/api/stats`,
+  `/api/memories`, `/api/meals` and `/api/topics` with empty results
+  rather than `500 no such table`. The schema has one definition, in
+  `jarvis.memory.db`, which both the daemon and the dashboard apply.
+- Resolving a path no longer creates it. The data directory appears when
+  a connection is opened, not because something imported a module.
+- The suite runs against a temporary database. `tests/conftest.py`
+  redirects it session-wide, alongside the config-path guard that was
+  already there, and a full run leaves the user's data directory
+  untouched. This is what made the fresh-install defect invisible: the
+  first run on a cold machine created the database as a side effect and
+  every run after it was green.
 
-Fixing the first makes the second's symptom vanish, which is exactly why
-the second needs its own fix with a tmp path.
-
-**Done when:** a container that has never run Jarvis can start the
-dashboard against an empty data directory and get 200 with empty results
-from all four endpoints, and the dashboard test files point at a tmp
-database that the run deletes.
-
----
+Verified against a real server on a fresh home: all four endpoints 200,
+then the daemon wrote a summary and a meal to the file the dashboard had
+created, and the dashboard read both back, full-text search included.
 
 ### Slice 1 — data model and local identity (§29, §35.1)
 
@@ -256,7 +248,8 @@ rows in the present tense: what the code does now, not what changed.
 
 | Slice | Piece | Where | What it does |
 |---|---|---|---|
-| _(none yet)_ | | | |
+| 0 | Data directory | `src/jarvis/utils/paths.py` | One answer to where Jarvis keeps its files. `data_dir()` resolves and touches nothing; `ensure_data_dir(*parts)` creates and belongs where a write is about to happen. Every module that needs the directory (config, location, GeoIP, Piper voices, dictation history, prompt dumps, dashboard) reads it from here, so nothing can drift into a second location. |
+| 0 | Shared schema | `src/jarvis/memory/db.py` | `ensure_schema(conn)` applies the diary and meal tables to any open connection, and `open_database(path)` does the whole opening: parent directory, connection, row factory, schema. `Database` and the dashboard both go through it, so the daemon and the dashboard cannot disagree about what the file contains. |
 
 ---
 

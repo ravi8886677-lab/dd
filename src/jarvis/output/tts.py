@@ -16,6 +16,7 @@ from typing import Optional, Callable
 from urllib.parse import urlparse
 
 from ..utils.backoff import retry_backoff_sleep
+from ..utils.paths import ensure_data_dir
 from ..debug import debug_log
 from ..utils.audio_lock import portaudio_lock
 
@@ -38,9 +39,7 @@ from ..audio.reference_buffer import publish_playback
 
 def _get_piper_models_dir() -> Path:
     """Get the directory for storing Piper voice models."""
-    base = Path.home() / ".local" / "share" / "jarvis" / "models" / "piper"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+    return ensure_data_dir("models", "piper")
 
 
 def _get_default_piper_model_path() -> str:

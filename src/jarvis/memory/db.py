@@ -75,6 +75,37 @@ CREATE TABLE IF NOT EXISTS summary_vec (
 """
 
 
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    """Apply the diary and meal schema to an open connection.
+
+    Two processes open this file: the daemon, through ``Database``, and
+    the dashboard, which reads it directly. Whichever gets there first
+    has to create the tables, so both call this rather than assuming the
+    other has already run. ``CREATE ... IF NOT EXISTS`` throughout makes
+    the second call a no-op.
+
+    Defining it once is the point: a second copy of the schema would
+    drift, and the drift would only surface on the one endpoint reading
+    the column that only one side knows about.
+    """
+    conn.executescript(_SCHEMA_SQL)
+    conn.commit()
+
+
+def open_database(db_path: str) -> sqlite3.Connection:
+    """Open the Jarvis database ready to query, creating it if needed.
+
+    Creates the parent directory, applies the schema and sets the row
+    factory. For readers that want a plain connection rather than the
+    full ``Database`` object and its vector store.
+    """
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    return conn
+
+
 def _normalize_fts_query(raw: str) -> str:
     # Use improved fuzzy search query generation
     try:
@@ -125,11 +156,10 @@ class Database:
 
     def _init_schema(self) -> None:
         with self._lock:
-            cur = self.conn.cursor()
-            cur.executescript(_SCHEMA_SQL)
+            ensure_schema(self.conn)
             if self.is_vss_enabled:
-                cur.executescript(_VSS_SCHEMA_SQL)
-            self.conn.commit()
+                self.conn.executescript(_VSS_SCHEMA_SQL)
+                self.conn.commit()
 
     
 

@@ -22,7 +22,9 @@ from flask import Flask, jsonify, render_template, request, Response
 
 from jarvis.config import load_settings
 from jarvis.debug import debug_log
+from jarvis.memory.db import open_database
 from jarvis.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
+from jarvis.utils.paths import data_dir
 
 
 def _dashboard_root() -> Path:
@@ -229,17 +231,24 @@ def _get_db_path() -> str:
         return settings.db_path
     except Exception:
         # Fallback to default path
-        base = Path.home() / ".local" / "share" / "jarvis"
-        return str(base / "jarvis.db")
+        return str(data_dir() / "jarvis.db")
 
 
 def get_db() -> sqlite3.Connection:
-    """Get or create database connection."""
+    """Get or create the database connection.
+
+    The dashboard can be opened before Jarvis has ever run: the tray menu
+    offers it on a fresh install and people click it. So it applies the
+    schema itself rather than assuming the daemon has already started,
+    which is what ``GraphMemoryStore`` has always done for the knowledge
+    graph. ``open_database`` is the daemon's own definition, so the two
+    cannot drift apart.
+    """
     global _db_conn
     if _db_conn is None:
         db_path = _get_db_path()
-        _db_conn = sqlite3.connect(db_path, check_same_thread=False)
-        _db_conn.row_factory = sqlite3.Row
+        debug_log(f"Opening dashboard database at {db_path}", "dashboard")
+        _db_conn = open_database(db_path)
     return _db_conn
 
 
