@@ -90,14 +90,17 @@ What now holds:
   `/api/memories`, `/api/meals` and `/api/topics` with empty results
   rather than `500 no such table`. The schema has one definition, in
   `jarvis.memory.db`, which both the daemon and the dashboard apply.
-- Resolving a path no longer creates it. The data directory appears when
-  a connection is opened, not because something imported a module.
-- The suite runs against a temporary database. `tests/conftest.py`
-  redirects it session-wide, alongside the config-path guard that was
-  already there, and a full run leaves the user's data directory
-  untouched. This is what made the fresh-install defect invisible: the
-  first run on a cold machine created the database as a side effect and
-  every run after it was green.
+- Resolving a path never creates it, in any of the writers. The
+  database, the GeoIP database, Piper voices and dictation history are
+  all named by pure resolvers; the directory appears at the write site.
+  Nothing arrives on disk because a module was imported.
+- The whole data directory is redirected during tests, not just the
+  database. `JARVIS_DATA_DIR` points `paths.data_dir()` elsewhere, and
+  `tests/conftest.py` sets it session-wide alongside the config-path
+  guard that was already there, so every writer moves together and one
+  added later cannot slip through. This is what made the fresh-install
+  defect invisible: the first run on a cold machine created the database
+  as a side effect and every run after it was green.
 
 Verified against a real server on a fresh home: all four endpoints 200,
 then the daemon wrote a summary and a meal to the file the dashboard had
@@ -248,7 +251,7 @@ rows in the present tense: what the code does now, not what changed.
 
 | Slice | Piece | Where | What it does |
 |---|---|---|---|
-| 0 | Data directory | `src/jarvis/utils/paths.py` | One answer to where Jarvis keeps its files. `data_dir()` resolves and touches nothing; `ensure_data_dir(*parts)` creates and belongs where a write is about to happen. Every module that needs the directory (config, location, GeoIP, Piper voices, dictation history, prompt dumps, dashboard) reads it from here, so nothing can drift into a second location. |
+| 0 | Data directory | `src/jarvis/utils/paths.py` | One answer to where Jarvis keeps its files. `data_dir()` resolves and touches nothing; `ensure_data_dir(*parts)` creates, and belongs at the write site rather than the resolver. `JARVIS_DATA_DIR` moves the lot at once, which is what lets the suite guarantee it never writes the real one. Every module that needs the directory (config, location, GeoIP, Piper voices, dictation history, prompt dumps, dashboard) reads it from here, so nothing can drift into a second location. |
 | 0 | Shared schema | `src/jarvis/memory/db.py` | `ensure_schema(conn)` applies the diary and meal tables to any open connection, and `open_database(path)` does the whole opening: parent directory, connection, row factory, schema. `Database` and the dashboard both go through it, so the daemon and the dashboard cannot disagree about what the file contains. |
 
 ---

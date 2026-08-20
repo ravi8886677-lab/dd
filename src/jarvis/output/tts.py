@@ -16,7 +16,7 @@ from typing import Optional, Callable
 from urllib.parse import urlparse
 
 from ..utils.backoff import retry_backoff_sleep
-from ..utils.paths import ensure_data_dir
+from ..utils.paths import data_dir
 from ..debug import debug_log
 from ..utils.audio_lock import portaudio_lock
 
@@ -38,8 +38,9 @@ from ..audio.reference_buffer import publish_playback
 
 
 def _get_piper_models_dir() -> Path:
-    """Get the directory for storing Piper voice models."""
-    return ensure_data_dir("models", "piper")
+    """Where Piper voice models live. Does not create the directory:
+    resolving the default voice is not a decision to download one."""
+    return data_dir() / "models" / "piper"
 
 
 def _get_default_piper_model_path() -> str:
@@ -86,6 +87,7 @@ def _download_piper_voice(voice_name: str, progress_callback: Optional[Callable[
 
     # Target paths
     models_dir = _get_piper_models_dir()
+    models_dir.mkdir(parents=True, exist_ok=True)
     onnx_path = models_dir / f"{voice_name}.onnx"
     json_path = models_dir / f"{voice_name}.onnx.json"
 

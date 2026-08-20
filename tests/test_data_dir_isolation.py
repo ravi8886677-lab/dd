@@ -49,6 +49,7 @@ class TestTheUserDataDirectoryIsOffLimits:
             "PYTHONPATH": os.pathsep.join(sys.path),
         }
         env.pop("JARVIS_CONFIG_PATH", None)
+        env.pop("JARVIS_DATA_DIR", None)  # or the child never resolves from HOME
         subprocess.run(
             [sys.executable, "-c", code], env=env, check=True, capture_output=True,
         )
@@ -61,6 +62,51 @@ class TestTheUserDataDirectoryIsOffLimits:
         existence.
         """
         self._run_in_a_fresh_home("import jarvis.reply", tmp_path)
+
+        assert not (tmp_path / ".local" / "share" / "jarvis").exists()
+
+    def test_the_run_itself_is_pointed_at_a_sandbox(self):
+        """Checked from inside the run, because this is the property that
+        makes every other writer safe.
+
+        Asserted as "the directory is redirected" rather than "the real
+        one is empty": on a developer's own machine the real one is full
+        of their diary, and a test that failed for that would be telling
+        them off for using the software.
+        """
+        import os
+
+        from jarvis.utils import paths
+
+        assert os.environ.get(paths.DATA_DIR_ENV_VAR), "the suite must redirect it"
+        assert _is_isolated(paths.data_dir())
+
+    def test_asking_whether_geoip_is_available_creates_nothing(self, tmp_path):
+        """Three callers ask `does the GeoLite2 database exist?`. None of
+        them is a download, so none should bring a directory into being."""
+        self._run_in_a_fresh_home(
+            "import jarvis.utils.location as loc; loc._get_database_path()", tmp_path,
+        )
+
+        assert not (tmp_path / ".local" / "share" / "jarvis").exists()
+
+    def test_reading_dictation_history_creates_nothing(self, tmp_path):
+        """Constructing the store reads it. A user who has never dictated
+        must not gain a history file by something asking for the count."""
+        self._run_in_a_fresh_home(
+            "from jarvis.dictation.history import DictationHistory;"
+            " DictationHistory().get_all()",
+            tmp_path,
+        )
+
+        assert not (tmp_path / ".local" / "share" / "jarvis").exists()
+
+    def test_resolving_the_default_voice_creates_nothing(self, tmp_path):
+        """A config default resolver, reached without any intent to speak."""
+        self._run_in_a_fresh_home(
+            "import jarvis.output.tts as tts; tts._get_default_piper_model_path()",
+            tmp_path,
+        )
 
         assert not (tmp_path / ".local" / "share" / "jarvis").exists()
 
@@ -110,6 +156,7 @@ class TestTheDataDirectoryHelper:
     def test_resolving_creates_nothing(self, tmp_path, monkeypatch):
         from jarvis.utils import paths
 
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
         monkeypatch.setattr(paths.Path, "home", lambda: tmp_path)
 
         assert not paths.data_dir().exists()
@@ -117,6 +164,7 @@ class TestTheDataDirectoryHelper:
     def test_ensuring_creates_the_directory(self, tmp_path, monkeypatch):
         from jarvis.utils import paths
 
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
         monkeypatch.setattr(paths.Path, "home", lambda: tmp_path)
 
         assert paths.ensure_data_dir().is_dir()
@@ -124,6 +172,7 @@ class TestTheDataDirectoryHelper:
     def test_ensuring_creates_a_named_subdirectory(self, tmp_path, monkeypatch):
         from jarvis.utils import paths
 
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
         monkeypatch.setattr(paths.Path, "home", lambda: tmp_path)
         created = paths.ensure_data_dir("geoip")
 
@@ -133,7 +182,54 @@ class TestTheDataDirectoryHelper:
     def test_ensuring_an_existing_directory_is_not_an_error(self, tmp_path, monkeypatch):
         from jarvis.utils import paths
 
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
         monkeypatch.setattr(paths.Path, "home", lambda: tmp_path)
         paths.ensure_data_dir("models", "piper")
 
         assert paths.ensure_data_dir("models", "piper").is_dir()
+
+
+@pytest.mark.unit
+class TestTheDataDirectoryCanBePointedElsewhere:
+    """`JARVIS_DATA_DIR` is the companion to `JARVIS_CONFIG_PATH`.
+
+    It is what lets the suite guarantee it never writes the real one: the
+    database was redirected on its own once, and dictation history, the
+    GeoIP database and Piper voices went on landing in the user's home.
+    One override covers every writer, present and future, whichever
+    import path reaches it.
+    """
+
+    def test_the_override_is_honoured(self, tmp_path, monkeypatch):
+        from jarvis.utils import paths
+
+        monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path / "elsewhere"))
+
+        assert paths.data_dir() == tmp_path / "elsewhere"
+
+    def test_a_tilde_in_the_override_is_expanded(self, tmp_path, monkeypatch):
+        from jarvis.utils import paths
+
+        monkeypatch.setenv(paths.DATA_DIR_ENV_VAR, "~/somewhere-else")
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        assert paths.data_dir() == tmp_path / "somewhere-else"
+
+    def test_an_empty_override_falls_back_to_the_default(self, tmp_path, monkeypatch):
+        from jarvis.utils import paths
+
+        monkeypatch.setenv(paths.DATA_DIR_ENV_VAR, "")
+        monkeypatch.setattr(paths.Path, "home", lambda: tmp_path)
+
+        assert paths.data_dir() == tmp_path / ".local" / "share" / "jarvis"
+
+    def test_the_database_follows_the_override(self, tmp_path, monkeypatch):
+        """What the fixture relies on: redirect the directory, and every
+        path derived from it moves with it."""
+        import jarvis.config
+
+        monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path / "elsewhere"))
+
+        assert jarvis.config._default_db_path() == str(
+            tmp_path / "elsewhere" / "jarvis.db",
+        )

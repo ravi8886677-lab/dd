@@ -54,8 +54,12 @@ _CGNAT_RESOLUTION_TTL = timedelta(hours=1)
 def _cache_base_dir() -> Path:
     return data_dir()
 
-_LOCATION_CACHE_FILE = _cache_base_dir() / "location_cache.json"
-_CGNAT_CACHE_FILE = _cache_base_dir() / "cgnat_cache.json"
+def _location_cache_file() -> Path:
+    return _cache_base_dir() / "location_cache.json"
+
+
+def _cgnat_cache_file() -> Path:
+    return _cache_base_dir() / "cgnat_cache.json"
 
 _cache_lock = threading.RLock()
 
@@ -73,8 +77,8 @@ def _load_disk_caches() -> None:
     with _cache_lock:
         # Location cache
         try:
-            if _LOCATION_CACHE_FILE.exists():
-                with _LOCATION_CACHE_FILE.open("r", encoding="utf-8") as f:
+            if _location_cache_file().exists():
+                with _location_cache_file().open("r", encoding="utf-8") as f:
                     raw = json.load(f)
                 # Expect mapping ip -> {data: {...}, ts: iso}
                 for ip, payload in raw.items():
@@ -100,8 +104,8 @@ def _load_disk_caches() -> None:
             pass
         # CGNAT resolution cache
         try:
-            if _CGNAT_CACHE_FILE.exists():
-                with _CGNAT_CACHE_FILE.open("r", encoding="utf-8") as f:
+            if _cgnat_cache_file().exists():
+                with _cgnat_cache_file().open("r", encoding="utf-8") as f:
                     raw = json.load(f)
                 for cgnat_ip, payload in raw.items():
                     if not isinstance(payload, dict):
@@ -134,7 +138,7 @@ def _persist_disk_caches(location_cache_minutes: int = 60) -> None:
             now = datetime.now(timezone.utc).isoformat()
             for ip, data in _location_cache.items():
                 loc_out[ip] = {"data": data, "ts": now, "ttl": int(location_cache_minutes)}
-            with _LOCATION_CACHE_FILE.open("w", encoding="utf-8") as f:
+            with _location_cache_file().open("w", encoding="utf-8") as f:
                 json.dump(loc_out, f)
         except Exception:
             pass
@@ -143,7 +147,7 @@ def _persist_disk_caches(location_cache_minutes: int = 60) -> None:
             cgnat_out = {}
             for ip, (ts, resolved) in _cgnat_resolution_cache.items():
                 cgnat_out[ip] = {"ts": ts.isoformat(), "resolved": resolved}
-            with _CGNAT_CACHE_FILE.open("w", encoding="utf-8") as f:
+            with _cgnat_cache_file().open("w", encoding="utf-8") as f:
                 json.dump(cgnat_out, f)
         except Exception:
             pass
@@ -304,7 +308,7 @@ def _get_external_ip_automatically() -> Optional[str]:
 
 def _get_database_path() -> Path:
     """Get the path where the GeoLite2 database should be stored."""
-    return ensure_data_dir("geoip") / "GeoLite2-City.mmdb"
+    return data_dir() / "geoip" / "GeoLite2-City.mmdb"
 
 
 def _print_location_setup_instructions(db_path: Path) -> None:
@@ -316,6 +320,14 @@ def _print_location_setup_instructions(db_path: Path) -> None:
         return
 
     _location_warning_shown = True
+
+    # We are about to ask the user to drop a file in here, so make sure
+    # the folder they are pointed at exists. This is the only place in
+    # the location module that creates anything.
+    try:
+        ensure_data_dir("geoip")
+    except Exception:
+        pass
 
     print("  📍 Location features are not available")
     print()

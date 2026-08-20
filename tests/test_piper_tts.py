@@ -2,6 +2,8 @@
 
 import pytest
 from unittest.mock import Mock, patch, MagicMock
+
+from src.jarvis.utils.paths import data_dir
 import threading
 import time
 
@@ -362,14 +364,48 @@ class TestPiperTTSAutoDownload:
         assert "piper" in path
 
     def test_get_piper_models_dir(self):
-        """Models directory should be created under jarvis data dir."""
+        """Names where voices live, under the Jarvis data directory."""
         from src.jarvis.output.tts import _get_piper_models_dir
 
         models_dir = _get_piper_models_dir()
 
-        assert models_dir.exists()
-        assert "jarvis" in str(models_dir)
         assert "piper" in str(models_dir)
+        assert models_dir.parent.parent == data_dir()
+
+    def test_asking_where_voices_live_does_not_create_the_directory(self, tmp_path, monkeypatch):
+        """Resolving is not downloading.
+
+        `_get_default_piper_model_path` is a config default resolver, so
+        it runs whether or not the user has ever asked Jarvis to speak. A
+        voices directory must not appear because something read settings.
+        """
+        from src.jarvis.utils import paths
+        from src.jarvis.output.tts import _get_piper_models_dir
+
+        monkeypatch.setenv(paths.DATA_DIR_ENV_VAR, str(tmp_path / "data"))
+
+        assert not _get_piper_models_dir().exists()
+
+    def test_downloading_a_voice_creates_the_directory(self, tmp_path, monkeypatch):
+        """The write site is where creation belongs."""
+        import requests
+        from src.jarvis.utils import paths
+        from src.jarvis.output.tts import _download_piper_voice, _get_piper_models_dir
+
+        monkeypatch.setenv(paths.DATA_DIR_ENV_VAR, str(tmp_path / "data"))
+
+        def mock_get(url, **kwargs):
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.headers = {"content-length": "4"}
+            resp.iter_content.return_value = [b"data"]
+            return resp
+
+        with patch("requests.get", side_effect=mock_get):
+            result = _download_piper_voice("en_GB-alan-medium")
+
+        assert result is not None
+        assert _get_piper_models_dir().is_dir()
 
     def test_piper_uses_default_when_no_path(self):
         """PiperTTS should use default model path when none configured."""

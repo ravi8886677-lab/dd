@@ -1,3 +1,4 @@
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -138,41 +139,41 @@ def _isolate_user_config_path(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_user_data_dir(tmp_path_factory):
-    """Redirect the database to a per-session tempfile so no test reads or
-    writes ``~/.local/share/jarvis/jarvis.db``.
+    """Point the whole data directory at a per-session tempfile so no test
+    reads or writes anything under ``~/.local/share/jarvis``.
 
     The companion to ``_isolate_user_config_path``, and it matters for the
-    same two reasons. A test run must not edit the diary of whoever runs
-    it, and a suite that quietly creates the user's database on first run
-    hides every defect that only appears on a fresh install: red once on a
-    cold machine, green forever after, reproducible by nobody.
+    same two reasons. A test run must not edit the diary, the dictation
+    history or the voice models of whoever runs it, and a suite that
+    quietly creates the user's database on first run hides every defect
+    that only appears on a fresh install: red once on a cold machine,
+    green forever after, reproducible by nobody.
+
+    Redirecting the directory rather than the database is what makes this
+    hold. Every writer derives its path from ``paths.data_dir()``, so one
+    override moves all of them, including writers added later, and it
+    works through the environment rather than by patching module globals
+    (``jarvis.utils.paths`` and ``src.jarvis.utils.paths`` are separate
+    module objects, and each importer binds the name into its own
+    namespace).
 
     Session-scoped because the dashboard caches its connection and its
-    graph store in module globals. One database for the run keeps those
-    valid, which is the arrangement the suite already had, only pointed
-    somewhere harmless.
+    graph store in module globals; one data directory for the run keeps
+    those valid.
     """
     sandbox = tmp_path_factory.mktemp("jarvis_data_sandbox")
-    db_path = sandbox / "jarvis.db"
 
-    # ``jarvis.config`` and ``src.jarvis.config`` are separate module
-    # objects with separate globals, and different test files reach for
-    # different ones. Patch whichever are loaded, the same way
-    # ``_clear_dashboard_rate_limits`` does below.
-    import jarvis.config  # noqa: F401  (ensure at least one is present)
+    from jarvis.utils.paths import DATA_DIR_ENV_VAR
 
-    targets = [
-        module for name, module in list(sys.modules.items())
-        if name.endswith("jarvis.config") and hasattr(module, "_default_db_path")
-    ]
-    originals = [(m, m._default_db_path) for m in targets]
-    for module in targets:
-        module._default_db_path = lambda: str(db_path)
+    previous = os.environ.get(DATA_DIR_ENV_VAR)
+    os.environ[DATA_DIR_ENV_VAR] = str(sandbox)
     try:
-        yield db_path
+        yield sandbox
     finally:
-        for module, original in originals:
-            module._default_db_path = original
+        if previous is None:
+            os.environ.pop(DATA_DIR_ENV_VAR, None)
+        else:
+            os.environ[DATA_DIR_ENV_VAR] = previous
 
 
 @pytest.fixture(autouse=True)

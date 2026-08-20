@@ -6,6 +6,9 @@ voice models, dictation history and prompt dumps. Seven copies of
 ``Path.home() / ".local" / "share" / "jarvis"`` drift, and the drift is
 invisible until a user's data is split across two directories.
 
+``JARVIS_DATA_DIR`` moves all of it at once, which is what lets the test
+suite guarantee it never writes the real one.
+
 Resolving a path and creating it are separate calls on purpose.
 ``data_dir`` answers where something lives and touches nothing;
 ``ensure_data_dir`` creates, and belongs at the point where something is
@@ -17,11 +20,20 @@ module.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+#: Points the data directory somewhere else. The companion to
+#: ``JARVIS_CONFIG_PATH``, and the one hook that moves every writer at
+#: once rather than each of them needing its own.
+DATA_DIR_ENV_VAR = "JARVIS_DATA_DIR"
 
 
 def data_dir() -> Path:
     """The Jarvis data directory. Does not create it."""
+    override = os.environ.get(DATA_DIR_ENV_VAR)
+    if override:
+        return Path(override).expanduser()
     return Path.home() / ".local" / "share" / "jarvis"
 
 
