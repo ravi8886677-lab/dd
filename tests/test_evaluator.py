@@ -6,6 +6,8 @@ import pytest
 
 from jarvis.reply.evaluator import evaluate_turn, EvaluatorResult, _parse_result
 
+pytestmark = pytest.mark.unit
+
 
 class TestParseResult:
     def test_parses_terminal_true(self):

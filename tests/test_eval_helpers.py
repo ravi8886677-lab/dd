@@ -27,6 +27,8 @@ from helpers import (  # noqa: E402
     is_max_turns_digest,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestIsFallbackReply:
     """The helper must recognise every canned fallback string the reply

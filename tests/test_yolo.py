@@ -19,6 +19,8 @@ import pytest
 
 from jarvis import approval
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture(autouse=True)
 def _clean():

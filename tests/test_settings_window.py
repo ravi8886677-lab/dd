@@ -25,6 +25,8 @@ from desktop_app.settings_window import (
 from desktop_app.mcp_catalogue import CATALOGUE_BY_NAME
 from jarvis.config import get_default_config
 
+pytestmark = pytest.mark.unit
+
 
 class TestFieldMetadata:
     """Tests for the config field metadata registry."""

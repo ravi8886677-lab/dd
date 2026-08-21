@@ -24,6 +24,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 _SPEC = _ROOT / "jarvis_desktop.spec"
 _DESKTOP = _ROOT / "src" / "desktop_app"
 
+pytestmark = pytest.mark.unit
+
 
 def _declared_hidden_imports() -> set[str]:
     """Read the spec as text: importing it needs PyInstaller installed."""

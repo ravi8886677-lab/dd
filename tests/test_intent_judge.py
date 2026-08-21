@@ -11,6 +11,8 @@ from jarvis.listening.intent_judge import (
 )
 from jarvis.listening.transcript_buffer import TranscriptSegment
 
+pytestmark = pytest.mark.unit
+
 
 class TestIntentJudgeConfig:
     """Tests for IntentJudgeConfig."""

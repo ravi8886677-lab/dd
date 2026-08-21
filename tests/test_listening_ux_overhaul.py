@@ -11,6 +11,8 @@ import threading
 from unittest.mock import patch, MagicMock
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 class TestStateManagerTimerHotWindow:
     """Tests for timer-based hot window management."""

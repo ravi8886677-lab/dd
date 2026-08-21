@@ -16,7 +16,11 @@ Both were motivated by a field regression where the small model deflected on
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from jarvis.memory.conversation import generate_conversation_summary
+
+pytestmark = pytest.mark.unit
 
 
 def _cfg() -> SimpleNamespace:

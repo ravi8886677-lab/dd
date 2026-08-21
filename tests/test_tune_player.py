@@ -35,6 +35,8 @@ from jarvis.output.tune_player import (
 
 # --- Sample / WAV generation -----------------------------------------------
 
+pytestmark = pytest.mark.unit
+
 def test_thinking_pad_samples_have_expected_shape():
     samples, rate = _generate_thinking_pad_samples()
     assert rate == 44100

@@ -6,6 +6,8 @@ import pytest
 
 from jarvis.listening.transcript_buffer import TranscriptBuffer, TranscriptSegment
 
+pytestmark = pytest.mark.unit
+
 
 def _now():
     """Get current timestamp for tests."""

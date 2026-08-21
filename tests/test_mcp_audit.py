@@ -14,6 +14,8 @@ from jarvis.tools.external.mcp_audit import (
     audit_tool,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _tool(name="doThing", description="Does a thing", schema=None):
     return {

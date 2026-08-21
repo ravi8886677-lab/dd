@@ -11,6 +11,8 @@ call, and the evaluator / toolSearchTool path replaces the safety net.
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 def _extract(content: str, tool_name: str = "webSearch"):
     import jarvis.reply.engine as engine_mod

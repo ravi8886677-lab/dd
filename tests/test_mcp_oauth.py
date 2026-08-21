@@ -13,6 +13,8 @@ import pytest
 from jarvis.tools.external import mcp_oauth
 from jarvis.utils import secret_store
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def fake_keychain(monkeypatch):

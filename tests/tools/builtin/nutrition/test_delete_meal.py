@@ -7,6 +7,8 @@ from src.jarvis.tools.builtin.nutrition.delete_meal import DeleteMealTool
 from src.jarvis.tools.base import ToolContext
 from src.jarvis.tools.types import ToolExecutionResult
 
+pytestmark = pytest.mark.unit
+
 
 class TestDeleteMealTool:
     """Test delete meal tool functionality."""

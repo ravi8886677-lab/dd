@@ -8,6 +8,8 @@ from src.jarvis.tools.builtin.screenshot import ScreenshotTool
 from src.jarvis.tools.base import ToolContext
 from src.jarvis.tools.types import ToolExecutionResult
 
+pytestmark = pytest.mark.unit
+
 
 class TestScreenshotTool:
     """Test screenshot tool functionality."""

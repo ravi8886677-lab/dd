@@ -8,6 +8,8 @@ They can be run locally or in development environments with git hooks.
 import pytest
 from unittest.mock import Mock, patch
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.integration
 def test_mcp_tools_integrated_with_reply_engine():

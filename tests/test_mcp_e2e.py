@@ -24,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.jarvis.tools.registry import discover_mcp_tools, generate_tools_description
 from src.jarvis.config import load_settings
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.e2e
 def test_configuration_loading():

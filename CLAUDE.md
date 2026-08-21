@@ -107,6 +107,8 @@ Always use TDD: write failing tests first, then implement the fix. Tests should 
 
 Ensure all your changes are covered by all appropriate form of automated tests - unit, integration, visual regression, evals, etc.
 
+Mark every test. CI runs `-m "unit and not integration"`, so an unmarked test is one CI never runs. Use `pytest.mark.unit` for anything that runs in a container, and add `pytest.mark.integration` alongside it to hold a single test back (a sound card, a real network) without taking its whole file out of CI.
+
 Tests should verify mechanisms, not current values. Assert against config-driven or computed references rather than hardcoding specifics that change between migrations.
 
 Run evals after finalising a change that can affect agent accuracy.

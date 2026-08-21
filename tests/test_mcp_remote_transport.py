@@ -16,6 +16,8 @@ from jarvis.tools.external.mcp_client import (
     is_remote_transport,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _cfg(**kw):
     base = {"transport": "http", "url": "https://mcp.example.com/mcp"}

@@ -15,6 +15,8 @@ import pytest
 
 from jarvis.config import _save_json
 
+pytestmark = pytest.mark.unit
+
 
 def test_save_json_writes_new_contents_via_replace(tmp_path, monkeypatch):
     """The temp file holds the old contents at the moment of the atomic swap."""

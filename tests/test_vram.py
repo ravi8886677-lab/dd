@@ -20,6 +20,8 @@ from jarvis.utils.vram import (
     _LOW_VRAM_OPTION,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestRecommendation:
     """Model recommendation based on VRAM."""

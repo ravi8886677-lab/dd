@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 SCENARIO = r"""
@@ -40,6 +42,8 @@ assert getattr(m, "{attr}") is None, "{attr} should be None when {dep} is broken
 {extra}
 print("OK")
 """
+
+pytestmark = pytest.mark.unit
 
 
 def _run(module: str, dep: str, error: str, attr: str, extra: str = "") -> subprocess.CompletedProcess:

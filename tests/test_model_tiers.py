@@ -20,6 +20,10 @@ import json
 
 from types import SimpleNamespace
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 def _load_settings_from(tmp_path, monkeypatch, cfg: dict, version: int = 2):
     cfg_path = tmp_path / "config.json"

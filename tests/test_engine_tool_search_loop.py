@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 def _assistant_tool_call(name: str, args: dict, call_id: str = "call_1"):
     return {

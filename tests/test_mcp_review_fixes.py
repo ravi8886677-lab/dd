@@ -16,6 +16,8 @@ from jarvis.tools.external.mcp_supply_chain import (
 )
 from jarvis.tools.external.mcp_trust import Risk, classify_risk
 
+pytestmark = pytest.mark.unit
+
 
 def _cfg(command, args, **extra):
     return {"transport": "stdio", "command": command, "args": list(args), **extra}

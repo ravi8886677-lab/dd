@@ -18,6 +18,8 @@ from jarvis.memory.db import Database
 import jarvis.memory.conversation as cmod
 from jarvis.memory.conversation import optimise_diary_topics
 
+pytestmark = pytest.mark.unit
+
 
 def _cfg(*, embedding_model: str = "") -> SimpleNamespace:
     return SimpleNamespace(

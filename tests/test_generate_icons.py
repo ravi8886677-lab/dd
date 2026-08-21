@@ -13,8 +13,12 @@ from pathlib import Path
 
 from PIL import ImageFont
 
+import pytest
+
 ASSETS_DIR = Path(__file__).resolve().parents[1] / "src" / "desktop_app" / "desktop_assets"
 SCRIPT = ASSETS_DIR / "generate_icons.py"
+
+pytestmark = pytest.mark.unit
 
 
 def _load_module():

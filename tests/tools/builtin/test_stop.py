@@ -7,6 +7,8 @@ from src.jarvis.tools.builtin.stop import StopTool, STOP_SIGNAL
 from src.jarvis.tools.base import ToolContext
 from src.jarvis.tools.types import ToolExecutionResult
 
+pytestmark = pytest.mark.unit
+
 
 class TestStopTool:
     """Test stop tool functionality."""

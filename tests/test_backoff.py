@@ -9,6 +9,10 @@ import threading
 import time
 from unittest.mock import patch
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 class TestPatchingTheSeamStaysLocal:
     """Patching the seam must not swap sleep for the whole process."""

@@ -10,6 +10,8 @@ from src.jarvis.output.tts import (
     AUDIO_BUFFER_DELAY_SEC,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestExtractDomainDescription:
     """Tests for domain extraction utility."""

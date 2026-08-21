@@ -1,10 +1,15 @@
 import types
 from unittest.mock import patch
+
+import pytest
+
 from jarvis.reply.engine import run_reply_engine
 from jarvis.utils.location import (
     get_location_context,
     _get_external_ip_automatically,
 )
+
+pytestmark = pytest.mark.unit
 
 
 class DummyDB:

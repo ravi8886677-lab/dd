@@ -32,6 +32,8 @@ from jarvis.utils.location import (
     _is_private_ip,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def stub_openai_server():

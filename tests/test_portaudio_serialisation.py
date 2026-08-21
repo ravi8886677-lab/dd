@@ -23,8 +23,12 @@ record concurrency and calling thread, then drive the real engine code.
 import threading
 import time
 
+import pytest
+
 import jarvis.dictation.dictation_engine as de
 from jarvis.utils.audio_lock import portaudio_lock
+
+pytestmark = pytest.mark.unit
 
 
 class _ConcurrencyProbe:

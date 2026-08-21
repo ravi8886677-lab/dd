@@ -25,6 +25,8 @@ from jarvis.tools.external.mcp_trust import (
     resolve_policy,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _tool(name="doThing", description="Does a thing", schema=None, annotations=None):
     return {

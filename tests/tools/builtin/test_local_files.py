@@ -10,6 +10,8 @@ from src.jarvis.tools.builtin.local_files import LocalFilesTool
 from src.jarvis.tools.base import ToolContext
 from src.jarvis.tools.types import ToolExecutionResult
 
+pytestmark = pytest.mark.unit
+
 
 class TestLocalFilesTool:
     """Test local files tool functionality."""

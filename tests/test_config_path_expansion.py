@@ -12,7 +12,11 @@ All user-supplied path-like settings must be tilde-expanded on load.
 import json
 from pathlib import Path
 
+import pytest
+
 from jarvis.config import load_settings
+
+pytestmark = pytest.mark.unit
 
 
 def _write_config(tmp_path, monkeypatch, values):

@@ -5,12 +5,22 @@ These tests verify the state transitions, timer-based hot window management,
 and query collection behavior.
 """
 
+# These tests assert against the wall clock: a hot window opens, elapses
+# and expires in real time. The durations are deliberately larger than the
+# behaviour needs, because the margin between "still open" and "expired"
+# is what the assertions actually test, and a shared CI runner can stall a
+# thread for tens of milliseconds. Scale them together or not at all: what
+# is being asserted is the ordering between them, not any single value.
+
+
 import time
 import threading
 import pytest
 from unittest.mock import patch, MagicMock
 
 from jarvis.listening.state_manager import StateManager, ListeningState
+
+pytestmark = pytest.mark.unit
 
 
 class TestStateTransitions:
@@ -85,24 +95,24 @@ class TestQueryCollection:
 
     def test_silence_timeout_triggers_collection_complete(self):
         """Collection times out after silence period."""
-        sm = StateManager(voice_collect_seconds=0.05)  # 50ms timeout
+        sm = StateManager(voice_collect_seconds=0.2)  # 50ms timeout
         sm.start_collection("test")
 
         # Initially no timeout
         assert sm.check_collection_timeout() is False
 
         # Wait for timeout
-        time.sleep(0.06)
+        time.sleep(0.24)
         assert sm.check_collection_timeout() is True
 
     def test_max_duration_timeout(self):
         """Collection times out after max duration."""
-        sm = StateManager(max_collect_seconds=0.05)  # 50ms max
+        sm = StateManager(max_collect_seconds=0.2)  # 50ms max
         sm.start_collection("test")
 
         # Keep adding to prevent silence timeout
         for _ in range(3):
-            time.sleep(0.02)
+            time.sleep(0.08)
             sm.add_to_collection("more")
 
         assert sm.check_collection_timeout() is True
@@ -113,7 +123,7 @@ class TestHotWindowActivation:
 
     def test_schedule_hot_window_activation(self):
         """Hot window activates after echo tolerance delay."""
-        sm = StateManager(echo_tolerance=0.05, hot_window_seconds=1.0)
+        sm = StateManager(echo_tolerance=0.2, hot_window_seconds=4.0)
 
         # Patch print to avoid test output
         with patch('builtins.print'):
@@ -123,41 +133,41 @@ class TestHotWindowActivation:
             assert sm.is_hot_window_active() is False
 
             # Wait for activation
-            time.sleep(0.1)
+            time.sleep(0.4)
             assert sm.is_hot_window_active() is True
 
         sm.stop()
 
     def test_cancel_hot_window_activation(self):
         """Can cancel pending hot window activation."""
-        sm = StateManager(echo_tolerance=0.1, hot_window_seconds=1.0)
+        sm = StateManager(echo_tolerance=0.4, hot_window_seconds=4.0)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
 
             # Cancel before activation
-            time.sleep(0.02)
+            time.sleep(0.08)
             sm.cancel_hot_window_activation()
 
             # Wait past activation time
-            time.sleep(0.15)
+            time.sleep(0.6)
             assert sm.is_hot_window_active() is False
 
         sm.stop()
 
     def test_hot_window_not_activated_during_collection(self):
         """Hot window doesn't activate if already collecting."""
-        sm = StateManager(echo_tolerance=0.05, hot_window_seconds=1.0)
+        sm = StateManager(echo_tolerance=0.2, hot_window_seconds=4.0)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
 
             # Start collection before activation
-            time.sleep(0.02)
+            time.sleep(0.08)
             sm.start_collection("new query")
 
             # Wait past activation time
-            time.sleep(0.1)
+            time.sleep(0.4)
 
             # Should still be in COLLECTING, not HOT_WINDOW
             assert sm.get_state() == ListeningState.COLLECTING
@@ -170,17 +180,17 @@ class TestHotWindowExpiry:
 
     def test_hot_window_expires_after_duration(self):
         """Hot window expires after configured duration."""
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=0.05)
+        sm = StateManager(echo_tolerance=0.08, hot_window_seconds=0.2)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
 
             # Wait for activation
-            time.sleep(0.04)
+            time.sleep(0.16)
             assert sm.is_hot_window_active() is True
 
             # Wait for expiry
-            time.sleep(0.1)
+            time.sleep(0.4)
             assert sm.is_hot_window_active() is False
             assert sm.get_state() == ListeningState.WAKE_WORD
 
@@ -188,11 +198,11 @@ class TestHotWindowExpiry:
 
     def test_manual_expire_hot_window(self):
         """Can manually expire hot window."""
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=10.0)
+        sm = StateManager(echo_tolerance=0.08, hot_window_seconds=40.0)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
-            time.sleep(0.04)
+            time.sleep(0.16)
             assert sm.is_hot_window_active() is True
 
             sm.expire_hot_window()
@@ -202,41 +212,41 @@ class TestHotWindowExpiry:
 
     def test_reset_hot_window_expiry_extends_timer(self):
         """reset_hot_window_expiry restarts the timer so echo time doesn't eat the window."""
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=0.10)
+        sm = StateManager(echo_tolerance=0.08, hot_window_seconds=0.4)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
-            time.sleep(0.04)
+            time.sleep(0.16)
             assert sm.is_hot_window_active() is True
 
             # Wait until most of the window has elapsed
-            time.sleep(0.07)
+            time.sleep(0.28)
             assert sm.is_hot_window_active() is True  # still within 0.10s
 
             # Reset the timer (simulating echo rejection)
             sm.reset_hot_window_expiry()
 
             # After the original window would have expired, it should still be active
-            time.sleep(0.05)
+            time.sleep(0.2)
             assert sm.is_hot_window_active() is True
 
             # Wait for the full reset window to expire
-            time.sleep(0.07)
+            time.sleep(0.28)
             assert sm.is_hot_window_active() is False
 
         sm.stop()
 
     def test_reset_hot_window_expiry_reactivates_expired_window(self):
         """reset_hot_window_expiry reactivates a hot window that expired during echo processing."""
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=0.08)
+        sm = StateManager(echo_tolerance=0.08, hot_window_seconds=0.32)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
-            time.sleep(0.04)
+            time.sleep(0.16)
             assert sm.is_hot_window_active() is True
 
             # Let the hot window fully expire
-            time.sleep(0.12)
+            time.sleep(0.48)
             assert sm.get_state() == ListeningState.WAKE_WORD
 
             # Simulate echo rejection arriving after expiry — should reactivate
@@ -244,11 +254,11 @@ class TestHotWindowExpiry:
             assert sm.is_hot_window_active() is True
 
             # New timer should keep it alive for another full window
-            time.sleep(0.04)
+            time.sleep(0.16)
             assert sm.is_hot_window_active() is True
 
             # Then expire normally
-            time.sleep(0.06)
+            time.sleep(0.24)
             assert sm.is_hot_window_active() is False
 
         sm.stop()
@@ -265,7 +275,7 @@ class TestHotWindowExpiry:
 
     def test_check_hot_window_expiry_fallback(self):
         """check_hot_window_expiry provides synchronous expiry check."""
-        sm = StateManager(echo_tolerance=0.0, hot_window_seconds=0.05)
+        sm = StateManager(echo_tolerance=0.0, hot_window_seconds=0.2)
 
         with patch('builtins.print'):
             # Manually set hot window state
@@ -276,7 +286,7 @@ class TestHotWindowExpiry:
             assert sm.check_hot_window_expiry() is False
 
             # Wait for expiry
-            time.sleep(0.06)
+            time.sleep(0.24)
             assert sm.check_hot_window_expiry() is True
             assert sm.get_state() == ListeningState.WAKE_WORD
 
@@ -291,11 +301,11 @@ class TestTimestampBasedHotWindowDetection:
 
     def test_speech_during_active_window_detected(self):
         """Speech starting while hot window is active returns True."""
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=3.0)
+        sm = StateManager(echo_tolerance=0.08, hot_window_seconds=12.0)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
-            time.sleep(0.04)
+            time.sleep(0.16)
             assert sm.is_hot_window_active() is True
 
             # Speech starts now, during active window
@@ -306,7 +316,7 @@ class TestTimestampBasedHotWindowDetection:
 
     def test_speech_before_window_not_detected(self):
         """Speech starting before the hot window span returns False."""
-        sm = StateManager(echo_tolerance=0.5, hot_window_seconds=3.0)
+        sm = StateManager(echo_tolerance=2.0, hot_window_seconds=12.0)
 
         # Speech started before any window was scheduled
         old_time = time.time() - 10.0
@@ -315,7 +325,7 @@ class TestTimestampBasedHotWindowDetection:
 
     def test_speech_during_pending_activation_detected(self):
         """Speech starting during echo_tolerance delay (pending) returns True."""
-        sm = StateManager(echo_tolerance=1.0, hot_window_seconds=3.0)
+        sm = StateManager(echo_tolerance=4.0, hot_window_seconds=12.0)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
@@ -329,15 +339,15 @@ class TestTimestampBasedHotWindowDetection:
 
     def test_speech_after_expiry_not_detected(self):
         """Speech starting after hot window expired returns False."""
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=0.05)
+        sm = StateManager(echo_tolerance=0.08, hot_window_seconds=0.2)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
-            time.sleep(0.04)
+            time.sleep(0.16)
             assert sm.is_hot_window_active() is True
 
             # Wait for expiry
-            time.sleep(0.08)
+            time.sleep(0.32)
             assert sm.is_hot_window_active() is False
 
             # Speech starts AFTER expiry
@@ -353,18 +363,18 @@ class TestTimestampBasedHotWindowDetection:
         transcript arrives after the window expired. But the speech started
         during the window, so it should be treated as hot window input.
         """
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=0.08)
+        sm = StateManager(echo_tolerance=0.08, hot_window_seconds=0.32)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
-            time.sleep(0.04)
+            time.sleep(0.16)
             assert sm.is_hot_window_active() is True
 
             # Speech starts during active window
             speech_start = time.time()
 
             # Window expires while "Whisper is transcribing"
-            time.sleep(0.10)
+            time.sleep(0.4)
             assert sm.is_hot_window_active() is False
 
             # Transcript arrives — but speech_start was during the window
@@ -374,49 +384,49 @@ class TestTimestampBasedHotWindowDetection:
 
     def test_no_timestamp_falls_back_to_current_state(self):
         """When utterance_start_time is 0, falls back to current state."""
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=3.0)
+        sm = StateManager(echo_tolerance=0.08, hot_window_seconds=12.0)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
-            time.sleep(0.04)
+            time.sleep(0.16)
             assert sm.was_speech_during_hot_window(0.0) is True
 
         sm.stop()
 
     def test_no_timestamp_after_expiry_returns_false(self):
         """When utterance_start_time is 0 and window expired, returns False."""
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=0.05)
+        sm = StateManager(echo_tolerance=0.08, hot_window_seconds=0.2)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
-            time.sleep(0.04)
-            time.sleep(0.08)
+            time.sleep(0.16)
+            time.sleep(0.32)
             assert sm.was_speech_during_hot_window(0.0) is False
 
         sm.stop()
 
     def test_new_window_resets_old_span(self):
         """A new hot window span doesn't match speech from before it."""
-        sm = StateManager(echo_tolerance=0.02, hot_window_seconds=0.05)
+        sm = StateManager(echo_tolerance=0.08, hot_window_seconds=0.2)
 
         with patch('builtins.print'):
             # First window
             sm.schedule_hot_window_activation()
-            time.sleep(0.04)
-            time.sleep(0.08)
+            time.sleep(0.16)
+            time.sleep(0.32)
             assert sm.is_hot_window_active() is False
 
             # Speech between windows
             between_speech = time.time()
 
             # Second window
-            time.sleep(0.05)
+            time.sleep(0.2)
             sm.schedule_hot_window_activation()
-            time.sleep(0.04)
+            time.sleep(0.16)
             assert sm.is_hot_window_active() is True
 
             # Wait for second window to expire
-            time.sleep(0.08)
+            time.sleep(0.32)
             assert sm.is_hot_window_active() is False
 
             # Speech from between windows should NOT match the second window's span
@@ -430,7 +440,7 @@ class TestStopBehavior:
 
     def test_stop_cancels_all_timers(self):
         """Stopping state manager cancels all pending timers."""
-        sm = StateManager(echo_tolerance=1.0, hot_window_seconds=1.0)
+        sm = StateManager(echo_tolerance=4.0, hot_window_seconds=4.0)
 
         with patch('builtins.print'):
             sm.schedule_hot_window_activation()
@@ -458,7 +468,7 @@ class TestThreadSafety:
 
     def test_concurrent_state_access(self):
         """State operations are thread-safe."""
-        sm = StateManager(voice_collect_seconds=10.0)
+        sm = StateManager(voice_collect_seconds=40.0)
         errors = []
 
         def reader():

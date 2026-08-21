@@ -32,6 +32,8 @@ from jarvis.reply.planner import (
     tool_steps_of,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _cfg(**overrides):
     base = {

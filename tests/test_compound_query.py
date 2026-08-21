@@ -9,6 +9,8 @@ from jarvis.reply.compound_query import (
     split_compound_query,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestSplitCompoundQuery:
     """Behaviour-level tests for the compound-query splitter."""

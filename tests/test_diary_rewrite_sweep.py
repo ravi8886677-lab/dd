@@ -29,6 +29,8 @@ from jarvis.memory import conversation as cmod
 from jarvis.memory.conversation import rewrite_all_diary_summaries
 from jarvis.memory.db import Database
 
+pytestmark = pytest.mark.unit
+
 
 def _seed(db: Database, rows: list[tuple[str, str, str | None]]) -> None:
     """Seed (date_utc, summary, topics) tuples into the DB."""

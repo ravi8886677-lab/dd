@@ -12,6 +12,8 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
+pytestmark = pytest.mark.unit
+
 
 class TestToolCallArgumentsWireFormat:
     """Verifies that tool_calls arguments are JSON-encoded strings on the wire."""

@@ -18,6 +18,8 @@ from jarvis.config import get_default_config
 # Config defaults
 # ---------------------------------------------------------------------------
 
+pytestmark = pytest.mark.unit
+
 class TestThinkingConfig:
     """Config layer tests for thinking settings."""
 

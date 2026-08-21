@@ -5,7 +5,11 @@ wake word to e.g. "Friday" produces a butler named Friday, not one still
 hardcoded to Jarvis.
 """
 
+import pytest
+
 from jarvis.system_prompt import build_system_prompt
+
+pytestmark = pytest.mark.unit
 
 
 class TestBuildSystemPrompt:

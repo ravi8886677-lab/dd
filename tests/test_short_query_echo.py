@@ -12,6 +12,8 @@ while still catching actual partial echoes from long TTS responses.
 import pytest
 from jarvis.listening.echo_detection import EchoDetector
 
+pytestmark = pytest.mark.unit
+
 
 class TestShortQueryBehavior:
     """Test that short queries are handled appropriately.

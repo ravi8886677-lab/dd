@@ -12,6 +12,8 @@ from jarvis.reply.engine import (
 )
 from jarvis.reply.enrichment import extract_search_params_for_memory
 
+pytestmark = pytest.mark.unit
+
 
 class TestMatchQuestion:
     """Verify question→node matching logic."""

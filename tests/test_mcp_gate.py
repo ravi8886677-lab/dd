@@ -11,6 +11,8 @@ import pytest
 from jarvis import approval
 from jarvis.tools.external.mcp_gate import GateOutcome, check_allowed
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture(autouse=True)
 def _clean():

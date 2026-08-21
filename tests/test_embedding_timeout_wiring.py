@@ -25,6 +25,8 @@ import inspect
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 def test_tool_search_passes_configured_embedding_timeout_to_select_tools(
     mock_config, monkeypatch

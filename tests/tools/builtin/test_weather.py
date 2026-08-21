@@ -12,6 +12,8 @@ from src.jarvis.tools.builtin.weather import (
 from src.jarvis.tools.base import ToolContext
 from src.jarvis.tools.types import ToolExecutionResult
 
+pytestmark = pytest.mark.unit
+
 
 class TestWeatherTool:
     """Test weather tool functionality."""

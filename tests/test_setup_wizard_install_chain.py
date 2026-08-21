@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 SCENARIO = r"""
@@ -59,6 +61,8 @@ start_next()
 app.exec()
 print(f"CHAIN_OK after {{N}} replacements")
 """
+
+pytestmark = pytest.mark.unit
 
 
 def test_chained_worker_replacement_does_not_abort():

@@ -8,6 +8,8 @@ from src.jarvis.tools.builtin.fetch_web_page import FetchWebPageTool
 from src.jarvis.tools.base import ToolContext
 from src.jarvis.tools.types import ToolExecutionResult
 
+pytestmark = pytest.mark.unit
+
 
 def _make_response_mock(**attrs) -> Mock:
     """Build a Mock that doubles as both the requests response and a context

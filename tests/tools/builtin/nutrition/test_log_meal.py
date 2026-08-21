@@ -10,6 +10,8 @@ from src.jarvis.tools.base import ToolContext
 from src.jarvis.tools.types import ToolExecutionResult
 from src.jarvis.reply.planner import _parse_plan_step_concrete
 
+pytestmark = pytest.mark.unit
+
 
 class TestLogMealTool:
     """Test log meal tool functionality."""

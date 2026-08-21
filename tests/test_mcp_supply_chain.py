@@ -15,6 +15,8 @@ from jarvis.tools.external.mcp_supply_chain import (
     validate_server_launch,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _cfg(command, args, **extra):
     return {"transport": "stdio", "command": command, "args": list(args), **extra}

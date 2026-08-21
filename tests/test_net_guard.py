@@ -13,6 +13,8 @@ import pytest
 
 from src.jarvis.utils.net_guard import UnsafeURLError, guarded_get, is_public_url
 
+pytestmark = pytest.mark.unit
+
 
 class TestSchemesAreRestricted:
     """Only http(s) may be fetched."""

@@ -20,6 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 class _StubServer:
     """A threaded OpenAI-compatible stub. Records inbound requests so tests

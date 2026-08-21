@@ -219,10 +219,10 @@ def _run_script(
     return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.unit, pytest.mark.skipif(
     sys.platform != "win32",
     reason="install_cuda.ps1 is Windows-only",
-)
+)]
 
 
 @pytest.fixture

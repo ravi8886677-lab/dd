@@ -9,6 +9,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 import sys
 
+pytestmark = pytest.mark.unit
+
 
 class TestSplashScreenImport:
     """Tests for splash screen module import."""

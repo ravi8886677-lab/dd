@@ -13,6 +13,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+pytestmark = pytest.mark.unit
+
 
 class TestEntryPointImports:
     """Guardrails for the PyInstaller entry point (src/desktop_app/app.py).

@@ -13,6 +13,8 @@ from jarvis.config import (
     get_default_config,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestSupportedChatModels:
     """Tests for SUPPORTED_CHAT_MODELS constant."""

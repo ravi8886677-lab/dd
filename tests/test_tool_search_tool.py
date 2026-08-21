@@ -7,6 +7,8 @@ import pytest
 from jarvis.tools.builtin.tool_search import ToolSearchTool
 from jarvis.tools.base import ToolContext
 
+pytestmark = pytest.mark.unit
+
 
 def _ctx(cfg):
     return ToolContext(

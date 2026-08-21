@@ -17,6 +17,8 @@ from jarvis.tools.external.mcp_supply_chain import (
     validate_server_launch,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestCatalogueIsPinned:
     """Every shipped entry must survive the spawn-time supply-chain guard.

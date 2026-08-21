@@ -7,6 +7,8 @@ from src.jarvis.utils.paths import data_dir
 import threading
 import time
 
+pytestmark = pytest.mark.unit
+
 
 class TestPiperTTSInterface:
     """Tests for PiperTTS interface compliance."""

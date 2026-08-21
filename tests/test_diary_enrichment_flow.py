@@ -14,6 +14,8 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+pytestmark = pytest.mark.unit
+
 
 def _cfg() -> SimpleNamespace:
     return SimpleNamespace(

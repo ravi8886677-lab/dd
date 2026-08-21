@@ -13,6 +13,8 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+pytestmark = pytest.mark.unit
+
 def _make_engine(**overrides):
     """Create a DictationEngine with sensible test defaults."""
     from src.jarvis.dictation.dictation_engine import DictationEngine

@@ -13,6 +13,8 @@ import time
 
 from jarvis.listening.wake_detection import is_wake_word_detected
 
+pytestmark = pytest.mark.unit
+
 
 class TestWakeWordValidation:
     """Tests for wake word presence validation in wake word mode.

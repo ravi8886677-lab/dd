@@ -8,6 +8,10 @@ and other platform-specific guards.
 import sys
 from unittest.mock import patch
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 class TestStdinMonitorFrozenGuard:
     """Tests for stdin_monitor being skipped in bundled (frozen) mode.

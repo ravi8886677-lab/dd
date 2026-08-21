@@ -207,22 +207,34 @@ until that is settled in writing.
 
 ---
 
-## 3a. Known gap, not owned by any slice
+## 3a. What CI runs
 
-**Over half the suite does not run in CI.** `.github/workflows/tests.yml`
-runs `pytest -q -m unit`, and 77 of 145 test files carry no `unit`
-marker, so they are collected and immediately deselected. Among them is
-`tests/test_yolo.py`, which `src/jarvis/approval.py` names as the thing
-asserting that no tool can enable YOLO for itself, along with the tests
-for the SSRF guard, MCP trust, the secret store and the supply-chain
-pinning.
+CI runs the marker, so the marker decides what is verified. Every test
+file carries one; the only file without a `unit` mark is
+`tests/performance/`, which needs a live Ollama and is excluded by
+`addopts` anyway.
 
-This is not a slice and it is not a bulk edit: several of those files
-need an audio device or a display and would turn CI red the moment they
-were marked. It wants a pass that marks what can run in a container,
-leaves what cannot, and says which is which. Worth doing before slice 3,
-because the permission engine replaces exactly the code whose tests are
-currently invisible.
+`.github/workflows/tests.yml` selects **`unit and not integration`** and
+runs under `xvfb-run`. Both halves matter:
+
+- **The display.** `pynput` raises on import without an X server, and
+  that takes the dictation and hotkey tests down with it. A virtual
+  display costs one package and keeps 21 real tests in CI that would
+  otherwise have to be quarantined for an environment reason rather
+  than a behavioural one.
+- **`not integration`.** A test in a unit-marked file can be held back
+  by marking it `integration`, without pulling its whole file out of CI
+  with it. That distinction is worth having: `test_voice_listener.py` is
+  96 passing tests and one that needs a sound card, and losing 96 to
+  quarantine one would be a bad trade.
+
+One test is quarantined this way today:
+`test_health_warning_fires_on_linux`, which has been red since before
+the sweep and fails identically on `85c8362`. It is marked rather than
+deleted, so it still runs where there is a sound card and still shows up
+in a full run.
+
+**When adding a test, mark it.** An unmarked test is not a test CI runs.
 
 ## 4. The decision that has to be made before slice 5
 

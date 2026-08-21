@@ -22,6 +22,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 class _RecordingStub:
     """Minimal OpenAI-compatible chat stub that records the model of every

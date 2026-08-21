@@ -11,6 +11,8 @@ import pytest
 
 from jarvis.utils import secret_store
 
+pytestmark = pytest.mark.unit
+
 
 class _FakeKeyring:
     """Stand-in for the ``keyring`` module, including its error type."""

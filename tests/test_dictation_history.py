@@ -15,6 +15,8 @@ import pytest
 # DictationHistory storage tests
 # ---------------------------------------------------------------------------
 
+pytestmark = pytest.mark.unit
+
 class TestDictationHistory:
     """Tests for the file-backed dictation history store."""
 

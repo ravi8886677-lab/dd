@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 def _make_tool_name_msg(name: str) -> dict:
     """Return a message dict that looks like a tool-result message from a prior query."""

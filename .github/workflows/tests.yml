@@ -17,7 +17,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y portaudio19-dev libegl1 libxkbcommon0
+        run: sudo apt-get update && sudo apt-get install -y portaudio19-dev libegl1 libxkbcommon0 xvfb
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -27,6 +27,10 @@ jobs:
           # Qt has no display on the runner; without this the suite aborts
           # before any assertion is reported.
           QT_QPA_PLATFORM: offscreen
+        # `pynput` raises on import without an X server, which takes the
+        # dictation and hotkey tests with it, so the run gets a virtual
+        # one. `not integration` is what lets a single hardware-bound
+        # test be held back without its whole file leaving CI.
         run: |
-          python -m pytest -q -m unit
+          xvfb-run -a python -m pytest -q -m "unit and not integration"
 

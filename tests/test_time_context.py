@@ -2,13 +2,16 @@
 
 from datetime import datetime, timezone
 
-from jarvis.utils.time_context import format_time_context
+import pytest
 
+from jarvis.utils.time_context import format_time_context
 
 # Mid-month, mid-evening UTC so every IANA zone (UTC-12..UTC+14) still lands
 # on April 2026 — keeps the system-local fallback assertions robust regardless
 # of the CI runner's timezone.
 FIXED_UTC = datetime(2026, 4, 17, 19, 24, tzinfo=timezone.utc)
+
+pytestmark = pytest.mark.unit
 
 
 def test_format_time_context_uses_provided_timezone_for_local_time():
