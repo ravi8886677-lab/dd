@@ -22,6 +22,7 @@ from flask import Flask, jsonify, render_template, request, Response
 
 from jarvis.config import load_settings
 from jarvis.debug import debug_log
+from jarvis.identity import IdentityStore
 from jarvis.memory.db import open_database
 from jarvis.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
 from jarvis.utils.paths import data_dir
@@ -222,6 +223,7 @@ def _guard_request():
 # Global database connection
 _db_conn: Optional[sqlite3.Connection] = None
 _graph_store: Optional[GraphMemoryStore] = None
+_identity_store: Optional[IdentityStore] = None
 
 
 def _get_db_path() -> str:
@@ -1126,6 +1128,69 @@ def delete_meal(meal_id: int) -> Response:
             return jsonify({"success": True, "message": "Meal deleted"})
         else:
             return jsonify({"error": "Meal not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Identity API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_identity_store() -> IdentityStore:
+    """Get or create the identity store (shares the same DB)."""
+    global _identity_store
+    if _identity_store is None:
+        _identity_store = IdentityStore(_get_db_path())
+    return _identity_store
+
+
+@app.route("/api/identity")
+def get_identity() -> Response:
+    """Who this dashboard is showing, and which machine it is running on.
+
+    Establishes the identity if it is not there yet, because the
+    dashboard can be opened before the daemon has ever run.
+    """
+    try:
+        store = get_identity_store()
+        identity = store.ensure_local_identity()
+        debug_log(f"dashboard is showing device {identity.device.id}", "identity")
+        return jsonify({
+            "user": {
+                "id": identity.user.id,
+                "display_name": identity.user.display_name,
+            },
+            "workspace": {
+                "id": identity.workspace.id,
+                "name": identity.workspace.name,
+                "kind": identity.workspace.kind,
+            },
+            "device": {
+                "id": identity.device.id,
+                "name": identity.device.name,
+                "platform": identity.device.platform,
+                "last_seen_at": identity.device.last_seen_at,
+            },
+            "devices": [
+                {
+                    "id": device.id,
+                    "name": device.name,
+                    "platform": device.platform,
+                    "last_seen_at": device.last_seen_at,
+                    "is_this_one": device.id == identity.device.id,
+                }
+                for device in store.get_devices()
+            ],
+            "accounts": [
+                {
+                    "id": account.id,
+                    "provider": account.provider,
+                    "label": account.account_label,
+                    "workspace_id": account.workspace_id,
+                }
+                for account in store.get_accounts()
+            ],
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

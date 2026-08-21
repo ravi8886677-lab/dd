@@ -376,6 +376,24 @@
             }
         }
 
+        // Which machine this window is reading from. With more than one
+        // device on the account it is the only thing distinguishing this
+        // view from another machine's.
+        async function loadIdentity() {
+            const badge = document.getElementById('identity-device');
+            if (!badge) return;
+            try {
+                const identity = await (await fetch('/api/identity')).json();
+                if (!identity || !identity.device) return;
+                document.getElementById('identity-device-name').textContent = identity.device.name;
+                const others = (identity.devices || []).length - 1;
+                const workspace = identity.workspace ? identity.workspace.name : '';
+                badge.title = others > 0
+                    ? workspace + ' workspace · ' + others + ' other device' + (others === 1 ? '' : 's')
+                    : workspace + ' workspace · this is your only device';
+            } catch (e) {}
+        }
+
         async function loadStats() {
             let totalMemories = 0;
             let totalTokens = 0;
@@ -2351,4 +2369,5 @@
         // and sidebar, which are cheap and always visible.
         loadStats();
         loadTopics();
+        loadIdentity();
         chatInput.focus();

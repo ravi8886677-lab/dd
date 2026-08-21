@@ -106,29 +106,31 @@ Verified against a real server on a fresh home: all four endpoints 200,
 then the daemon wrote a summary and a meal to the file the dashboard had
 created, and the dashboard read both back, full-text search included.
 
-### Slice 1 — data model and local identity (§29, §35.1)
+### Slice 1 — data model and local identity (§29, §35.1) ✅
 
-**Why here:** everything above it needs these rows, and the report is
-right that they need to exist even while there is exactly one user.
+**Why it came here:** everything above it needs these rows. §16's
+per-account and per-device permissions cannot be expressed without
+something to point at, and §25's audit cannot say which machine acted.
 
-Add the identity tables to `src/jarvis/memory/db.py` and have the daemon
-create and read them: `User` (one local row), `Workspace` (one
-`personal` row, with the shape to hold more), `Device` (this machine,
-stable id, last seen), `ConnectedAccount` (empty for now, credentials by
-reference into `utils/secret_store.py`, never inline).
+What now holds:
 
-Scope discipline: 25 entities are specified. Build the four that slices
-2 to 5 actually consume. The rest arrive with the features that need
-them, not before, or they rot as empty tables.
+- Four entities in the same SQLite file: `users`, `workspaces`,
+  `devices`, `connected_accounts`. Four rather than the specified 25,
+  because the rest arrive with the features that need them.
+- The daemon establishes identity on the way up and names the machine
+  and workspace it is acting in. It fails open: nothing depends on the
+  rows yet, so a store that will not open is reported, not fatal.
+- A second launch adds nothing and refreshes the device's last-seen.
+- The device identifier lives beside the database, not inside it, so
+  rebuilding or moving the database does not present the machine as a
+  new one and silently drop what was granted to it.
+- `connected_accounts` holds a reference to a credential, never a
+  credential. The keychain in `utils/secret_store.py` keeps the secret.
+- The dashboard shows which machine it is reading from, with the other
+  devices on the account in the tooltip.
 
-**Done when:** a fresh install creates exactly one user, one workspace
-and one device row on first launch; a second launch reuses them rather
-than adding more; the device row's last-seen updates; and the dashboard
-shows which device it is talking to. No feature yet reads a second
-workspace, and that is fine, but the schema must not need changing to
-add one.
-
----
+Nothing reads a second workspace yet, which is expected. The schema does
+not need changing to add one.
 
 ### Slice 2 — verification and the action log (§18, §25)
 
@@ -252,6 +254,8 @@ rows in the present tense: what the code does now, not what changed.
 | Slice | Piece | Where | What it does |
 |---|---|---|---|
 | 0 | Data directory | `src/jarvis/utils/paths.py` | One answer to where Jarvis keeps its files. `data_dir()` resolves and touches nothing; `ensure_data_dir(*parts)` creates, and belongs at the write site rather than the resolver. `JARVIS_DATA_DIR` moves the lot at once, which is what lets the suite guarantee it never writes the real one. Every module that needs the directory (config, location, GeoIP, Piper voices, dictation history, prompt dumps, dashboard) reads it from here, so nothing can drift into a second location. |
+| 1 | Identity store | `src/jarvis/identity/` | `IdentityStore` owns the `users`, `workspaces`, `devices` and `connected_accounts` tables and applies its own schema on construction, like `GraphMemoryStore`. `ensure_local_identity()` is idempotent and is what both the daemon and the dashboard call. `local_device_id()` names the machine from a file beside the database. Accounts carry a `secret_ref` into the keychain, never a secret. |
+| 1 | Identity surface | `daemon.py`, `/api/identity` | Startup prints the machine and workspace it is acting in and fails open. The dashboard header shows the device it is reading from and counts the others on the account. |
 | 0 | Shared schema | `src/jarvis/memory/db.py` | `ensure_schema(conn)` applies the diary and meal tables to any open connection, and `open_database(path)` does the whole opening: parent directory, connection, row factory, schema. `Database` and the dashboard both go through it, so the daemon and the dashboard cannot disagree about what the file contains. |
 
 ---

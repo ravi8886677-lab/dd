@@ -33,6 +33,7 @@ from typing import Optional
 from faster_whisper import WhisperModel
 
 from .config import load_settings
+from .identity import IdentityStore
 from .memory.db import Database
 from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memory
 from .memory.graph_ops import (
@@ -304,6 +305,35 @@ def _check_and_update_diary(
         _notify("complete", False)
 
 
+def _announce_local_identity(db_path: str) -> None:
+    """Record who Jarvis is acting for and where, and say so.
+
+    Fails open. Nothing depends on these rows yet, and when something
+    does it will gate on their absence rather than on Jarvis having
+    refused to start.
+    """
+    try:
+        store = IdentityStore(db_path)
+        try:
+            identity = store.ensure_local_identity()
+        finally:
+            store.close()
+    except Exception as exc:
+        debug_log(f"could not establish the local identity: {exc}", "identity")
+        print("🪪 Running without a recorded device identity", flush=True)
+        return
+
+    debug_log(
+        f"acting for user {identity.user.id} on device {identity.device.id}",
+        "identity",
+    )
+    print(
+        f"🪪 Acting for you on {identity.device.name}"
+        f" ({identity.device.platform}) · {identity.workspace.name} workspace",
+        flush=True,
+    )
+
+
 def main(smoke_test: bool = False) -> None:
     """Main daemon entry point.
 
@@ -325,6 +355,7 @@ def main(smoke_test: bool = False) -> None:
 
     debug_log("daemon started", "jarvis")
     print("✓ Daemon started", flush=True)
+    _announce_local_identity(cfg.db_path)
     print(f"🧠 Using chat model: {cfg.llm_chat_model}", flush=True)
     print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
 
