@@ -116,6 +116,24 @@ class TestTheIdentityEndpoint:
         assert body["device"]["id"] == here.device.id
         assert len(body["devices"]) == 2
 
+    def test_it_does_not_list_another_user_s_devices_or_accounts(self, dashboard):
+        """The endpoint says "your devices", so it has to mean it."""
+        client, db_path = dashboard
+        from jarvis.identity import IdentityStore
+        from tests.test_identity import _add_a_second_user_with_their_own_things
+
+        store = IdentityStore(str(db_path))
+        try:
+            mine = store.ensure_local_identity()
+            _add_a_second_user_with_their_own_things(store)
+        finally:
+            store.close()
+
+        body = client.get("/api/identity").get_json()
+
+        assert [d["id"] for d in body["devices"]] == [mine.device.id]
+        assert body["accounts"] == []
+
     def test_no_account_is_connected_on_a_fresh_install(self, dashboard):
         client, _ = dashboard
 

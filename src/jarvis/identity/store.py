@@ -22,13 +22,19 @@ import socket
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from ..debug import debug_log
 from ..utils.paths import data_dir, ensure_data_dir
+
+#: How long to wait for another process to finish writing before giving
+#: up. The daemon and the dashboard both establish identity at start-up,
+#: and the loser should wait rather than fail.
+BUSY_TIMEOUT_SEC = 15.0
 
 #: Names the machine rather than the database file. See ``local_device_id``.
 DEVICE_ID_FILENAME = "device_id"
@@ -178,7 +184,16 @@ class IdentityStore:
     def __init__(self, db_path: str) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        # ``isolation_level=None`` hands transaction control to this class
+        # so ``_writing`` can open the write transaction it actually needs.
+        # The timeout is how long to wait for the other process rather
+        # than failing at it.
+        self.conn = sqlite3.connect(
+            db_path,
+            check_same_thread=False,
+            isolation_level=None,
+            timeout=BUSY_TIMEOUT_SEC,
+        )
         self.conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._init_schema()
@@ -186,7 +201,30 @@ class IdentityStore:
     def _init_schema(self) -> None:
         with self._lock:
             self.conn.executescript(_SCHEMA_SQL)
-            self.conn.commit()
+
+    @contextmanager
+    def _writing(self) -> Iterator[None]:
+        """Hold the database's write lock across a read-then-write.
+
+        Deciding whether a row exists and then inserting it is only safe
+        if nothing can insert between the two, and the daemon and the
+        dashboard are separate processes: a lock in this one cannot see
+        the other. ``BEGIN IMMEDIATE`` takes SQLite's write lock up
+        front, so the second process blocks before its read and then
+        sees what the first one wrote rather than deciding the row is
+        still missing.
+
+        The in-process lock is kept as well: it serialises this process's
+        own threads without a round trip to the file.
+        """
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
+            self.conn.execute("COMMIT")
 
     def close(self) -> None:
         with self._lock:
@@ -196,9 +234,13 @@ class IdentityStore:
 
     def get_users(self) -> list[User]:
         with self._lock:
-            rows = self.conn.execute(
-                "SELECT * FROM users ORDER BY created_at",
-            ).fetchall()
+            return self._users()
+
+    def _users(self) -> list[User]:
+        """Unlocked read, for callers already inside a transaction."""
+        rows = self.conn.execute(
+            "SELECT * FROM users ORDER BY created_at",
+        ).fetchall()
         return [User(**dict(row)) for row in rows]
 
     def get_workspaces(self) -> list[Workspace]:
@@ -208,18 +250,38 @@ class IdentityStore:
             ).fetchall()
         return [Workspace(**dict(row)) for row in rows]
 
-    def get_devices(self) -> list[Device]:
+    def get_devices(self, user_id: Optional[str] = None) -> list[Device]:
+        """This user's machines, or every machine when unscoped.
+
+        Callers showing someone their own devices must pass ``user_id``.
+        There is one user today and the schema is built for a second, so
+        an unscoped read is a promise that expires.
+        """
         with self._lock:
-            rows = self.conn.execute(
-                "SELECT * FROM devices ORDER BY created_at",
-            ).fetchall()
+            if user_id is None:
+                rows = self.conn.execute(
+                    "SELECT * FROM devices ORDER BY created_at",
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT * FROM devices WHERE user_id = ? ORDER BY created_at",
+                    (user_id,),
+                ).fetchall()
         return [Device(**dict(row)) for row in rows]
 
-    def get_accounts(self) -> list[ConnectedAccount]:
+    def get_accounts(self, user_id: Optional[str] = None) -> list[ConnectedAccount]:
+        """This user's connected accounts, or every one when unscoped."""
         with self._lock:
-            rows = self.conn.execute(
-                "SELECT * FROM connected_accounts ORDER BY created_at",
-            ).fetchall()
+            if user_id is None:
+                rows = self.conn.execute(
+                    "SELECT * FROM connected_accounts ORDER BY created_at",
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT * FROM connected_accounts WHERE user_id = ?"
+                    " ORDER BY created_at",
+                    (user_id,),
+                ).fetchall()
         return [ConnectedAccount(**dict(row)) for row in rows]
 
     def raw_account_row(self, account_id: str) -> dict[str, Any]:
@@ -239,15 +301,14 @@ class IdentityStore:
         Safe to call on every launch: it adds nothing the second time,
         and marks the device as seen again.
         """
-        with self._lock:
+        with self._writing():
             user = self._ensure_user(display_name)
             workspace = self._ensure_personal_workspace(user)
             device = self._ensure_this_device(user)
-            self.conn.commit()
         return LocalIdentity(user=user, workspace=workspace, device=device)
 
     def _ensure_user(self, display_name: str) -> User:
-        existing = self.get_users()
+        existing = self._users()
         if existing:
             return existing[0]
 
@@ -352,8 +413,8 @@ class IdentityStore:
         keychain through ``utils.secret_store``. A password in a SQLite
         row is a password in every backup of that row.
         """
-        with self._lock:
-            users = self.get_users()
+        with self._writing():
+            users = self._users()
             if not users:
                 raise ValueError("no local user yet; call ensure_local_identity first")
             user = users[0]
@@ -392,16 +453,14 @@ class IdentityStore:
                     account.created_at,
                 ),
             )
-            self.conn.commit()
             debug_log(f"linked a {provider} account", "identity")
             return account
 
     def unlink_account(self, account_id: str) -> bool:
         """Forget a connected account. The credential itself is the
         keychain's to remove, through ``utils.secret_store``."""
-        with self._lock:
+        with self._writing():
             cur = self.conn.execute(
                 "DELETE FROM connected_accounts WHERE id = ?", (account_id,),
             )
-            self.conn.commit()
         return cur.rowcount > 0

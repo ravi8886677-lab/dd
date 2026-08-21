@@ -216,3 +216,66 @@ class TestConnectedAccounts:
         )
 
         assert account.workspace_id == identity.workspace.id
+
+
+def _add_a_second_user_with_their_own_things(store) -> str:
+    """Put a second user in the database, as the schema allows.
+
+    Written through SQL rather than a public method because there is no
+    way to add a second user yet, and these tests are about what happens
+    when there is one.
+    """
+    from jarvis.identity.store import _new_id, _now
+
+    other = _new_id()
+    with store._writing():
+        store.conn.execute(
+            "INSERT INTO users(id, display_name, created_at) VALUES (?, ?, ?)",
+            (other, "Someone else", _now()),
+        )
+        store.conn.execute(
+            "INSERT INTO devices(id, user_id, name, platform, created_at, last_seen_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (_new_id(), other, "their laptop", "Darwin", _now(), _now()),
+        )
+        store.conn.execute(
+            "INSERT INTO connected_accounts"
+            "(id, user_id, workspace_id, provider, account_label, secret_ref, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (_new_id(), other, None, "imap", "their mail", "account:imap:x", _now()),
+        )
+    return other
+
+
+@pytest.mark.unit
+class TestOneUserDoesNotSeeAnother:
+    """One user today, and the schema is built to allow a second.
+
+    Every list that is *about* a user has to say so, or the day a second
+    one exists the dashboard shows someone else's machines as though they
+    were yours.
+    """
+
+    def test_devices_can_be_scoped_to_their_owner(self, store):
+        mine = store.ensure_local_identity()
+        _add_a_second_user_with_their_own_things(store)
+
+        assert len(store.get_devices()) == 2
+        assert [d.id for d in store.get_devices(user_id=mine.user.id)] == [
+            mine.device.id,
+        ]
+
+    def test_accounts_can_be_scoped_to_their_owner(self, store):
+        mine = store.ensure_local_identity()
+        _add_a_second_user_with_their_own_things(store)
+        ours = store.link_account(provider="imap", account_label="my mail")
+
+        assert len(store.get_accounts()) == 2
+        assert [a.id for a in store.get_accounts(user_id=mine.user.id)] == [ours.id]
+
+    def test_establishing_identity_is_not_confused_by_the_other_user(self, store):
+        """The local user is the first one, and stays the first one."""
+        mine = store.ensure_local_identity()
+        _add_a_second_user_with_their_own_things(store)
+
+        assert store.ensure_local_identity().user.id == mine.user.id

@@ -22,12 +22,22 @@ from unittest.mock import patch
 import pytest
 
 from jarvis.reply import prompt_dump
+from jarvis.utils import paths
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
 def tmp_home(tmp_path, monkeypatch):
-    """Redirect Path.home() so dumps land in a sandbox."""
-    monkeypatch.setattr(prompt_dump.Path, "home", lambda: tmp_path)
+    """Point the data directory at a sandbox so dumps land there.
+
+    Dumps follow the data directory, which the suite already redirects
+    session-wide, so a test that wants its own has to move the same
+    thing rather than patch a home the module never consults.
+    """
+    monkeypatch.setenv(
+        paths.DATA_DIR_ENV_VAR, str(tmp_path / ".local" / "share" / "jarvis"),
+    )
     return tmp_path
 
 

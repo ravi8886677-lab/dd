@@ -33,6 +33,16 @@ where the daemon has never run.
 the user, the personal workspace and this device, creating only what is
 missing, and marks the device as seen. Calling it twice adds nothing.
 
+Either process may also be *first at the same moment*: the tray spawns
+the dashboard alongside a daemon that is still starting up, and both
+establish identity on a fresh install. Deciding a row is missing and
+then inserting it is only safe if nothing can insert in between, and a
+lock inside one process cannot see the other, so the whole decision runs
+inside a `BEGIN IMMEDIATE` transaction. The second process takes
+SQLite's write lock before its read, waits, and then finds the row the
+first one wrote. The loser waits rather than failing: neither the daemon
+nor the dashboard may die because the other got there first.
+
 ## A device is a machine, not a database
 
 The device identifier lives in a file in the data directory, beside the
@@ -47,6 +57,11 @@ kind of thing this project does not collect. If it cannot be written
 (a read-only home), Jarvis still runs; the machine is simply not
 remembered between launches.
 
+The device *name* is the machine's hostname, which is what makes the
+device list readable to the person who owns the machines. It is stored
+and displayed locally and goes nowhere else, in keeping with everything
+else in the data directory.
+
 ## Credentials are referenced, never stored
 
 `connected_accounts.secret_ref` is a name to look up through
@@ -60,6 +75,14 @@ Establishing identity is not a gate. If the store cannot be opened, the
 daemon says so and carries on, because nothing yet depends on the rows.
 When something does, it gates on the rows being absent, not on Jarvis
 having refused to start.
+
+## Reads that are about a user say so
+
+`get_devices()` and `get_accounts()` take a `user_id`, and anything
+showing someone their own machines or accounts passes it. With one user
+the scoped and unscoped reads return the same rows; the schema is built
+to allow a second, so an unscoped read in a place that means "yours" is
+a promise with an expiry date on it.
 
 ## What the user sees
 

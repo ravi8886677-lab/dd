@@ -1179,7 +1179,7 @@ def get_identity() -> Response:
                     "last_seen_at": device.last_seen_at,
                     "is_this_one": device.id == identity.device.id,
                 }
-                for device in store.get_devices()
+                for device in store.get_devices(user_id=identity.user.id)
             ],
             "accounts": [
                 {
@@ -1188,7 +1188,7 @@ def get_identity() -> Response:
                     "label": account.account_label,
                     "workspace_id": account.workspace_id,
                 }
-                for account in store.get_accounts()
+                for account in store.get_accounts(user_id=identity.user.id)
             ],
         })
     except Exception as e:

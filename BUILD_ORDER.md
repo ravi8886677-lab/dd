@@ -129,8 +129,14 @@ What now holds:
 - The dashboard shows which machine it is reading from, with the other
   devices on the account in the tooltip.
 
+Establishing identity is safe when the daemon and the dashboard do it at
+the same moment on a fresh install, which is an ordinary thing to happen:
+the whole decision runs inside one `BEGIN IMMEDIATE` transaction, so the
+second process waits and then finds what the first one wrote.
+
 Nothing reads a second workspace yet, which is expected. The schema does
-not need changing to add one.
+not need changing to add one, and the reads that mean "yours" are scoped
+by user so that adding one does not quietly show someone else's machines.
 
 ### Slice 2 — verification and the action log (§18, §25)
 
@@ -200,6 +206,23 @@ Blocked on the decision in section 4 below, not on code. Do not start it
 until that is settled in writing.
 
 ---
+
+## 3a. Known gap, not owned by any slice
+
+**Over half the suite does not run in CI.** `.github/workflows/tests.yml`
+runs `pytest -q -m unit`, and 77 of 145 test files carry no `unit`
+marker, so they are collected and immediately deselected. Among them is
+`tests/test_yolo.py`, which `src/jarvis/approval.py` names as the thing
+asserting that no tool can enable YOLO for itself, along with the tests
+for the SSRF guard, MCP trust, the secret store and the supply-chain
+pinning.
+
+This is not a slice and it is not a bulk edit: several of those files
+need an audio device or a display and would turn CI red the moment they
+were marked. It wants a pass that marks what can run in a container,
+leaves what cannot, and says which is which. Worth doing before slice 3,
+because the permission engine replaces exactly the code whose tests are
+currently invisible.
 
 ## 4. The decision that has to be made before slice 5
 
