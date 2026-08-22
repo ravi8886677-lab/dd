@@ -95,7 +95,7 @@ class TestQueryCollection:
 
     def test_silence_timeout_triggers_collection_complete(self):
         """Collection times out after silence period."""
-        sm = StateManager(voice_collect_seconds=0.2)  # 50ms timeout
+        sm = StateManager(voice_collect_seconds=0.2)
         sm.start_collection("test")
 
         # Initially no timeout
@@ -107,7 +107,7 @@ class TestQueryCollection:
 
     def test_max_duration_timeout(self):
         """Collection times out after max duration."""
-        sm = StateManager(max_collect_seconds=0.2)  # 50ms max
+        sm = StateManager(max_collect_seconds=0.2)
         sm.start_collection("test")
 
         # Keep adding to prevent silence timeout

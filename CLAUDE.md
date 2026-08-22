@@ -107,7 +107,7 @@ Always use TDD: write failing tests first, then implement the fix. Tests should 
 
 Ensure all your changes are covered by all appropriate form of automated tests - unit, integration, visual regression, evals, etc.
 
-Mark every test. CI runs `-m "unit and not integration"`, so an unmarked test is one CI never runs. Use `pytest.mark.unit` for anything that runs in a container, and add `pytest.mark.integration` alongside it to hold a single test back (a sound card, a real network) without taking its whole file out of CI.
+Mark every test. CI runs `-m "unit and not needs_hardware"`, so an unmarked test is one CI never runs. Use `pytest.mark.unit` for anything that runs in a container. To hold a single test back because a runner genuinely cannot run it (a sound card, a GPU), add `pytest.mark.needs_hardware` alongside it and list it in `tests/test_ci_selection.py`, which asserts the quarantine is exactly what we meant. Do not quarantine with `integration`: that marker means complex setup, and most such tests run in a container fine.
 
 Tests should verify mechanisms, not current values. Assert against config-driven or computed references rather than hardcoding specifics that change between migrations.
 

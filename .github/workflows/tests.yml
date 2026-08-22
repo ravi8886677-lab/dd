@@ -29,8 +29,8 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         # `pynput` raises on import without an X server, which takes the
         # dictation and hotkey tests with it, so the run gets a virtual
-        # one. `not integration` is what lets a single hardware-bound
-        # test be held back without its whole file leaving CI.
+        # one. `not needs_hardware` is what lets a single test that wants
+        # a sound card be held back without its whole file leaving CI.
         run: |
-          xvfb-run -a python -m pytest -q -m "unit and not integration"
+          xvfb-run -a python -m pytest -q -m "unit and not needs_hardware"
 

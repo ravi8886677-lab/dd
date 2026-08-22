@@ -892,7 +892,7 @@ class TestCrossPlatformDeviceLogging:
 class TestCrossPlatformAudioHealthWarning:
     """Tests for cross-platform audio health monitoring."""
 
-    @pytest.mark.integration
+    @pytest.mark.needs_hardware
     def test_health_warning_fires_on_linux(self, capsys):
         """Audio health warning fires on Linux when no audio received after 5s.
 

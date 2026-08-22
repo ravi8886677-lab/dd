@@ -222,17 +222,28 @@ runs under `xvfb-run`. Both halves matter:
   display costs one package and keeps 21 real tests in CI that would
   otherwise have to be quarantined for an environment reason rather
   than a behavioural one.
-- **`not integration`.** A test in a unit-marked file can be held back
-  by marking it `integration`, without pulling its whole file out of CI
-  with it. That distinction is worth having: `test_voice_listener.py` is
-  96 passing tests and one that needs a sound card, and losing 96 to
-  quarantine one would be a bad trade.
+- **`not needs_hardware`.** A test in a unit-marked file can be held
+  back by marking it `needs_hardware`, without pulling its whole file
+  out of CI with it. That distinction is worth having:
+  `test_voice_listener.py` is 96 passing tests and one that needs a
+  sound card, and losing 96 to quarantine one would be a bad trade.
 
-One test is quarantined this way today:
-`test_health_warning_fires_on_linux`, which has been red since before
-the sweep and fails identically on `85c8362`. It is marked rather than
-deleted, so it still runs where there is a sound card and still shows up
-in a full run.
+  The marker is its own thing rather than a reuse of `integration`,
+  because `integration` already means "complex setup" and plenty of
+  integration tests run in a container perfectly well: eight of them do
+  so in under a second. Selecting on `integration` swept those out of CI
+  along with the one test that could not run.
+
+One test is quarantined today: `test_health_warning_fires_on_linux`,
+which has been red since before the sweep and fails identically on
+`85c8362`. It is marked rather than deleted, so it still runs where
+there is a sound card and still shows up in a full run.
+
+`tests/test_ci_selection.py` asserts all of this structurally: that
+every file is marked, that the quarantine list is exactly what is held
+back, and that `integration` never removes a test from CI. The rule
+"nothing carries both markers" was true when checked and then broken by
+the change that relied on it, so it is asserted rather than remembered.
 
 **When adding a test, mark it.** An unmarked test is not a test CI runs.
 
