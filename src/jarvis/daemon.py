@@ -33,6 +33,7 @@ from typing import Optional
 from faster_whisper import WhisperModel
 
 from .config import load_settings
+from .audit import recorder as audit_recorder
 from .identity import IdentityStore
 from .memory.db import Database
 from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memory
@@ -356,6 +357,7 @@ def main(smoke_test: bool = False) -> None:
     debug_log("daemon started", "jarvis")
     print("✓ Daemon started", flush=True)
     _announce_local_identity(cfg.db_path)
+    audit_recorder.configure(db_path=cfg.db_path)
     print(f"🧠 Using chat model: {cfg.llm_chat_model}", flush=True)
     print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
 

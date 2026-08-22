@@ -82,8 +82,30 @@ _MODES = ("always", "risky", "never")
 
 
 def _mode(context: ToolContext) -> str:
-    raw = str(getattr(context.cfg, "computer_use_confirm", "risky") or "risky").lower()
+    return _mode_from_cfg(context.cfg)
+
+
+def _mode_from_cfg(cfg: Any) -> str:
+    raw = str(getattr(cfg, "computer_use_confirm", "risky") or "risky").lower()
     return raw if raw in _MODES else "risky"
+
+
+#: Names the rule in the action log, so a denial is explainable.
+YOLO_RULE_ID = "computer_use.yolo"
+
+
+def physical_action_is_permitted(cfg: Any, action: str) -> bool:
+    """Whether driving the mouse or keyboard is allowed right now.
+
+    One rule, two callers. The boundary asks before executing anything,
+    so the decision is recorded before the fact; the tool asks again on
+    its own path, so calling it directly cannot walk past the gate. They
+    share this function rather than each carrying a copy, because two
+    copies of a security rule become two rules.
+    """
+    if action not in _ACTIONS:
+        return True
+    return _mode_from_cfg(cfg) == "never" or approval.is_active()
 
 _ACTIONS = ("click", "double_click", "right_click", "type", "key", "scroll", "move")
 
@@ -242,7 +264,7 @@ class ComputerUseTool(Tool):
 
         # Everything past here moves a real mouse or types real keys.
         # `never` means the user has opted out of being asked at all.
-        if _mode(context) == "never" or approval.is_active():
+        if physical_action_is_permitted(context.cfg, action):
             return self._execute(payload, description, context)
 
         _announce(

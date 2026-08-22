@@ -68,6 +68,24 @@ def _coerce_minutes(minutes: Any) -> Optional[float]:
     return min(value, float(MAX_GRANT_MINUTES))
 
 
+
+def _record(name: str, detail: str) -> None:
+    """Put a human decision on the action log, best-effort.
+
+    Imported inside the function rather than at module scope. Granting
+    is a human action and must stay unreachable from the tool layer, so
+    this module deliberately keeps no import edge towards it; the audit
+    package has no path back into ``tools`` either, but the local import
+    keeps that true by construction rather than by review.
+    """
+    try:
+        from .audit import recorder
+
+        recorder.record_human_event(name, detail=detail)
+    except Exception as exc:  # pragma: no cover - defensive
+        debug_log(f"could not record {name}: {exc}", "approval")
+
+
 def grant(minutes: Any) -> bool:
     """Open the window for ``minutes``. Returns whether it is now open.
 
@@ -84,6 +102,7 @@ def grant(minutes: Any) -> bool:
         # always means fifteen minutes from now.
         _set_until(time.time() + duration * 60.0)
     debug_log(f"YOLO enabled for {duration:g} minutes", "approval")
+    _record(f"yolo.granted", f"{duration:g} minutes")
     _notify()
     return True
 
@@ -95,6 +114,7 @@ def revoke() -> None:
         _set_until(0.0)
     if was_active:
         debug_log("YOLO disabled", "approval")
+        _record("yolo.revoked", "")
     _notify()
 
 

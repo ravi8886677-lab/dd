@@ -88,6 +88,46 @@ def _launch(argv: list) -> bool:
         return False
 
 
+
+def _process_is_running(name: str) -> Optional[bool]:
+    """Whether a process matching ``name`` exists now.
+
+    ``None`` means the question could not be answered on this machine,
+    which is different from "no". A launcher returning cleanly is not
+    evidence that anything opened, but neither is an unanswerable check
+    evidence that it did not.
+    """
+    try:
+        import psutil
+    except Exception:
+        return None
+
+    needle = name.strip().lower()
+    if not needle:
+        return None
+    try:
+        for process in psutil.process_iter(["name", "exe"]):
+            info = process.info
+            for value in (info.get("name"), info.get("exe")):
+                if value and needle in str(value).lower():
+                    return True
+        return False
+    except Exception:
+        return None
+
+
+def _verify_launched(name: str) -> Optional[str]:
+    """Look for the process rather than trusting that the launcher returned."""
+    from ...audit import Verification
+
+    running = _process_is_running(name)
+    if running is None:
+        return None
+    return (
+        Verification.CONFIRMED.value if running else Verification.FAILED.value
+    )
+
+
 def _open_app(name: str) -> Optional[str]:
     """Launch a known application. Returns the command used, or None.
 
@@ -239,7 +279,11 @@ class OpenAppTool(Tool):
                         f"{platform.system()} machine."
                     ),
                 )
-            return ToolExecutionResult(success=True, reply_text=f"Opened {app}.")
+            return ToolExecutionResult(
+                success=True,
+                reply_text=f"Opened {app}.",
+                verification=_verify_launched(used),
+            )
 
         return ToolExecutionResult(
             success=False, reply_text=None,

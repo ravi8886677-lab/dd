@@ -78,6 +78,9 @@
             <button class="tab" data-tab="meals">
                 <span>🍽️</span> Meals
             </button>
+            <button class="tab" data-tab="activity">
+                <span>🧾</span> Activity
+            </button>
             <button class="tab" data-tab="connections">
                 <span>🔌</span> Connections
             </button>
@@ -232,6 +235,17 @@
                     <input type="date" class="date-input" id="meals-to-date" placeholder="To" />
                 </div>
                 <div class="memory-list">
+                    <div class="loading"><div class="spinner"></div></div>
+                </div>
+            </div>
+
+            <div id="activity-content" class="tab-pane" style="display: none;">
+                <div class="conn-intro">
+                    <p>Everything Jarvis did, newest first: what was asked, what was
+                    decided, and whether the result was checked. An action with no
+                    outcome is one that never came back.</p>
+                </div>
+                <div class="memory-list" id="activity-list">
                     <div class="loading"><div class="spinner"></div></div>
                 </div>
             </div>

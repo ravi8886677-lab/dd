@@ -22,6 +22,7 @@ from flask import Flask, jsonify, render_template, request, Response
 
 from jarvis.config import load_settings
 from jarvis.debug import debug_log
+from jarvis.audit import ActionLog
 from jarvis.identity import IdentityStore
 from jarvis.memory.db import open_database
 from jarvis.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
@@ -224,6 +225,7 @@ def _guard_request():
 _db_conn: Optional[sqlite3.Connection] = None
 _graph_store: Optional[GraphMemoryStore] = None
 _identity_store: Optional[IdentityStore] = None
+_action_log: Optional[ActionLog] = None
 
 
 def _get_db_path() -> str:
@@ -1130,6 +1132,61 @@ def delete_meal(meal_id: int) -> Response:
             return jsonify({"error": "Meal not found"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Action log API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_action_log() -> ActionLog:
+    """Get or create the action log (shares the same DB)."""
+    global _action_log
+    if _action_log is None:
+        _action_log = ActionLog(_get_db_path())
+    return _action_log
+
+
+@app.route("/api/actions")
+def get_actions() -> Response:
+    """What Jarvis did, newest first.
+
+    An action with no outcome is one that never came back, which is a
+    thing worth being able to see rather than a row to hide.
+    """
+    try:
+        limit = min(int(request.args.get("limit", 100)), 500)
+    except (TypeError, ValueError):
+        limit = 100
+
+    try:
+        actions = get_action_log().get_actions(limit=limit)
+        debug_log(f"dashboard read {len(actions)} actions", "audit")
+        return jsonify({
+            "actions": [
+                {
+                    "action_id": action.action_id,
+                    "ts_utc": action.ts_utc,
+                    "completed_at": action.completed_at,
+                    "tool_name": action.tool_name,
+                    "tool_source": action.tool_source,
+                    "mcp_server": action.mcp_server,
+                    "arguments": action.arguments_redacted,
+                    "decision": action.decision.value if action.decision else None,
+                    "decision_reason": action.decision_reason,
+                    "policy_rule_id": action.policy_rule_id,
+                    "outcome": action.outcome.value if action.outcome else None,
+                    "outcome_detail": action.outcome_detail,
+                    "verification": (
+                        action.verification.value if action.verification else None
+                    ),
+                    "device_id": action.device_id,
+                }
+                for action in actions
+            ],
+            "count": len(actions),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "actions": [], "count": 0}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
