@@ -18,6 +18,7 @@ new one, so it is asserted here instead of remembered.
 from __future__ import annotations
 
 import re
+import functools
 import subprocess
 import sys
 from pathlib import Path
@@ -37,17 +38,29 @@ QUARANTINE = {
 }
 
 
-def _collect(marker_expression: str) -> set[str]:
-    """Test ids pytest would select for an expression."""
+@functools.lru_cache(maxsize=None)
+def _collect(marker_expression: str) -> frozenset[str]:
+    """Test ids pytest would select for an expression.
+
+    Each call is a full collection in a subprocess, which is the most
+    expensive thing this file does - a few seconds each, against a suite
+    where most tests are measured in milliseconds. The assertions here
+    ask three distinct questions but four times, so the answers are
+    cached by expression and the repeat is free.
+
+    A ``frozenset`` rather than a ``set`` because the result is now
+    shared between tests: one of them mutating it would silently change
+    what another asserts against.
+    """
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "--collect-only",
          "-m", marker_expression, "-p", "no:randomly"],
         cwd=ROOT, capture_output=True, text=True, timeout=300,
     )
-    return {
+    return frozenset(
         line.strip() for line in result.stdout.splitlines()
         if "::" in line and not line.startswith(("ERROR", "FAILED"))
-    }
+    )
 
 
 class TestTheQuarantineIsExactlyWhatWeMeant:
