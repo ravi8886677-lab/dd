@@ -35,6 +35,7 @@ Any code change must either adhere to our spec files perfectly or you should ask
 | `src/jarvis/tools/builtin/nutrition/log_meal.spec.md` | logMeal tool: single-property schema for planner fast-path, internal nutrition extraction, untrusted-data fence, follow-ups | Public schema is a single optional `meal` string; nutrition fields are internal; user text is fenced as data |
 | `src/jarvis/utils/net_guard.spec.md` | Shared SSRF guard for every outbound fetch of an untrusted URL | One gate for all fetch tools; refusal reasons are distinct types so a DNS outage never reads as a policy block |
 | `src/jarvis/utils/location.spec.md` | GeoIP location detection | Privacy-first; local GeoLite2 DB only |
+| `src/jarvis/audit/audit.spec.md` | The action boundary, the two-entry action log, verification, and where authorisation rules live | One boundary every call crosses; the decision is recorded before execution; enrichment fails open, authorisation fails closed; `not_checked` is never success |
 | `src/jarvis/identity/identity.spec.md` | User, workspace, device and connected-account rows; the local device identifier; startup establishment | Identity exists before anything that has to point at it; a device is a machine, not a database; credentials are referenced, never stored |
 | `src/jarvis/memory/graph.spec.md` | Node graph memory (v2), self-organising tree, UI explorer | Dynamic structure; access-aware; auto-split/merge (future) |
 | `src/jarvis/memory/summariser.spec.md` | Diary summariser prompt contract, hygiene rules (deflection, attribution, topic separation), post-process scrub, and bulk-sweep clean button | Two-layer defence: prompt + deterministic scrub; corrupted summaries poison every downstream consumer |
@@ -51,7 +52,7 @@ Tools define when/how to be used and return raw data without LLM processing. The
 
 ## Git Workflow
 
-The default branch is `develop`. All PRs and feature branches must target `develop`, not `main`.
+The default branch is `main`, and PRs and feature branches target it. There is no `develop` branch on this repository: the instruction to target one is inherited from the upstream fork and describing it here sent a session to the wrong base once already. If `develop` is ever created, change this line rather than leaving both readings available.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) for all commit messages and PR titles (e.g. `fix:`, `feat:`, `refactor:`, `docs:`, `test:`, `chore:`).
 
@@ -59,7 +60,7 @@ When pushing commits to a PR, always update the PR title and body to cover the e
 
 After creating a PR, run the `/review-pr` skill on it before considering the task complete.
 
-Squash-merged commits on `develop` should only carry the PR number in the title (e.g. `(#171)`), never the originating issue number. Issue references belong in the commit body as `Closes #NNN` so that they auto-close when the commit reaches `main` on release.
+Squash-merged commits should only carry the PR number in the title (e.g. `(#171)`), never the originating issue number. Issue references belong in the commit body as `Closes #NNN` so that they auto-close when the commit reaches `main`.
 
 ## Issue Triage
 
@@ -67,7 +68,9 @@ Use the `/triage` skill for triaging open issues and discussions. It owns the fu
 
 ## Releases
 
-"Release" means fast-forwarding `main` to the current tip of `develop` and pushing it. First sync local `develop` with `origin/develop` so you ship the real head. No merge commit, no force push — just `git checkout main && git merge --ff-only develop && git push origin main`. This is what triggers the release workflow and the auto-close of issues referenced by `Closes #NNN` in the develop commits.
+A release is whatever advances `main`: it is the default branch, it is what the release workflow watches, and it is what auto-closes issues referenced by `Closes #NNN`. Work reaches it by merging its pull request.
+
+**Do not run `git merge --ff-only develop`.** There is no `develop` branch here, for the reason given under Git Workflow above. That recipe is upstream's; run in this repository it either fails outright or fast-forwards `main` to whatever a stale local branch of that name points at. This paragraph is read at exactly the moment someone is about to move `main` by hand, so before doing that, check what you are moving it to: `git log --oneline main..<branch>`.
 
 ## Development Environment
 

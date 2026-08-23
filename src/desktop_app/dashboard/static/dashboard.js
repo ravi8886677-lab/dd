@@ -452,6 +452,80 @@
             loadMeals();
         });
 
+        // ── Activity ──────────────────────────────────────────────────
+        //
+        // The action log, rendered. Three things each row has to make
+        // obvious: whether it was allowed, whether it finished, and
+        // whether anyone checked the result. "Not checked" is shown as
+        // its own state rather than folded into success, because the
+        // whole point of the log is that a call returning is not
+        // evidence that anything happened.
+        const ACTIVITY_ICONS = {
+            builtin: '\u{1F527}', mcp: '\u{1F50C}', human: '\u{1F464}',
+            unknown: '\u2753',
+        };
+
+        function activityStatus(action) {
+            if (action.decision === 'denied') {
+                return { label: 'refused', className: 'status-denied' };
+            }
+            // A human decision has nothing to come back from, so it is
+            // not waiting on an outcome and must not read as a fault.
+            if (action.tool_source === 'human') {
+                return { label: 'recorded', className: 'status-unchecked' };
+            }
+            if (!action.outcome) {
+                return { label: 'never finished', className: 'status-unfinished' };
+            }
+            if (action.outcome === 'error') {
+                return { label: 'failed', className: 'status-error' };
+            }
+            if (action.verification === 'confirmed') {
+                return { label: 'confirmed', className: 'status-confirmed' };
+            }
+            if (action.verification === 'failed') {
+                return { label: 'not verified', className: 'status-error' };
+            }
+            return { label: 'not checked', className: 'status-unchecked' };
+        }
+
+        async function loadActivity() {
+            const list = document.getElementById('activity-list');
+            if (!list) return;
+            try {
+                const data = await (await fetch('/api/actions')).json();
+                const actions = data.actions || [];
+                if (!actions.length) {
+                    list.innerHTML = '<div class="empty-state">Nothing yet. '
+                        + 'Actions Jarvis takes will appear here.</div>';
+                    return;
+                }
+                list.innerHTML = actions.map(action => {
+                    const status = activityStatus(action);
+                    const icon = ACTIVITY_ICONS[action.tool_source] || ACTIVITY_ICONS.unknown;
+                    const when = new Date(action.ts_utc).toLocaleString();
+                    const detail = action.decision_reason || action.outcome_detail || '';
+                    const args = action.arguments || '';
+                    return '<div class="memory-card">'
+                        + '<div class="memory-card-header">'
+                        + '<span class="memory-date">' + icon + ' '
+                        + escapeHtml(action.tool_name) + '</span>'
+                        + '<span class="conn-pill ' + status.className + '">'
+                        + status.label + '</span>'
+                        + '</div>'
+                        + '<div class="memory-summary">' + escapeHtml(when) + '</div>'
+                        + (detail ? '<div class="memory-summary">'
+                            + escapeHtml(detail) + '</div>' : '')
+                        + (args ? '<div class="memory-topics"><code>'
+                            + escapeHtml(args) + '</code></div>' : '')
+                        + '</div>';
+                }).join('');
+            } catch (e) {
+                list.innerHTML = '<div class="empty-state">Could not read the '
+                    + 'action log.</div>';
+            }
+        }
+
         function switchTab(tabName) {
             tabs.forEach(t => t.classList.remove('active'));
             document.querySelector(`.tab[data-tab="${tabName}"]`).classList.add('active');
@@ -464,6 +538,8 @@
             mealsPane.style.display = 'none';
             connPane.style.display = 'none';
             settingsPane.style.display = 'none';
+            const activityPane = document.getElementById('activity-content');
+            if (activityPane) activityPane.style.display = 'none';
 
             if (currentTab === 'chat') {
                 chatPane.style.display = '';
@@ -479,6 +555,9 @@
                 loadCatalogue();
                 loadRegistry();
                 loadConnections();
+            } else if (currentTab === 'activity') {
+                if (activityPane) activityPane.style.display = '';
+                loadActivity();
             } else if (currentTab === 'settings') {
                 settingsPane.style.display = '';
                 loadSettings();
@@ -624,6 +703,10 @@
             }
         }
 
+        // What the client can actually speak. `sse` is deliberately
+        // absent, and the server refuses it too.
+        const REMOTE_TRANSPORTS = new Set(['streamable-http', 'streamable_http', 'http', 'https']);
+
         let registryEntries = [];
 
         function renderRegistry() {
@@ -643,15 +726,32 @@
                 // worded as who was checked rather than as a tick.
                 const proof = e.namespace_proof === 'github'
                     ? 'GitHub account checked' : 'Domain checked';
+                // Who the data goes to is the question a hosted server
+                // raises, and the registry is thick with aggregators
+                // re-publishing other people's tools. Naming the host is
+                // not a safety verdict, it is the fact the user needs to
+                // reach one.
+                let host = '';
+                if (e.remote_url) {
+                    try { host = new URL(e.remote_url).hostname; } catch (err) { host = ''; }
+                }
                 let action;
                 if (e.configured) {
                     action = '<button class="conn-added" disabled>Added</button>';
                 } else if (e.install) {
                     action = `<button class="conn-registry-add btn-primary"
                                       data-name="${escapeHtml(e.name)}">Add</button>`;
+                } else if (e.remote_url && REMOTE_TRANSPORTS.has(
+                        (e.remote_transport || 'streamable-http').toLowerCase())) {
+                    // Hosted, and speakable. Nothing is installed: the
+                    // browser opens, you approve, the token goes to the
+                    // keychain. "Connect" rather than "Add" because that
+                    // is what the click actually does.
+                    action = `<button class="conn-registry-add btn-primary"
+                                      data-name="${escapeHtml(e.name)}">Connect</button>`;
                 } else {
                     action = `<span class="conn-tag" title="${e.remote_url
-                        ? 'A hosted server: add it under Advanced with its URL.'
+                        ? 'A hosted server speaking a transport Jarvis cannot use yet.'
                         : 'No pinned package, so it cannot be launched safely.'}">not installable</span>`;
                 }
                 return `<div class="conn-tile${e.configured ? ' is-added' : ''}">
@@ -661,7 +761,8 @@
                         <span class="conn-tag" title="${escapeHtml(proof)}">${escapeHtml(e.namespace)}</span>
                         ${action}
                     </div>
-                    <div class="conn-tile-hint">${escapeHtml(proof)} · v${escapeHtml(e.version)}</div>
+                    <div class="conn-tile-hint">${escapeHtml(proof)} · v${escapeHtml(e.version)}${
+                        host ? ' · sends your data to ' + escapeHtml(host) : ''}</div>
                 </div>`;
             }).join('');
 

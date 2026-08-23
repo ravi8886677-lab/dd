@@ -9,6 +9,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import os
 
+from ..audit import recorder
+from ..audit.log import Decision, Outcome, Verification
 from .builtin.screenshot import ScreenshotTool
 from .builtin.web_search import WebSearchTool
 from .builtin.local_files import LocalFilesTool
@@ -434,7 +436,151 @@ def _gate_mcp_call(
     return ToolExecutionResult(success=False, reply_text=None, error_message=message)
 
 
+@dataclass(frozen=True)
+class _Denial:
+    """A refusal, with the rule that made it, for the record."""
+
+    rule: str
+    reason: str
+    message: str
+
+
+def _classify_tool(name: str, cfg: Settings) -> Tuple[str, Optional[str]]:
+    """Where a tool came from, for the log: builtin, mcp, or unknown."""
+    if "__" in name:
+        server_name = name.split("__", 1)[0]
+        if (getattr(cfg, "mcps", {}) or {}).get(server_name) is not None:
+            return "mcp", server_name
+    if name in BUILTIN_TOOLS:
+        return "builtin", None
+    return "unknown", None
+
+
+def _authorise(
+    cfg: Settings, name: str, tool_args: Optional[Dict[str, Any]],
+) -> Optional[_Denial]:
+    """Decide before anything runs, so the decision can be recorded first.
+
+    Only rules the boundary can evaluate from the call itself live here.
+    A tool that also enforces its own rule keeps doing so: being asked
+    here does not excuse a tool from checking, because a tool can be
+    called directly.
+    """
+    if name == "computerUse":
+        from .builtin.computer_use import YOLO_RULE_ID, physical_action_is_permitted
+
+        action = str((tool_args or {}).get("action", "")).strip().lower()
+        if not physical_action_is_permitted(cfg, action):
+            return _Denial(
+                rule=YOLO_RULE_ID,
+                reason="YOLO mode is off, so driving the screen is not permitted",
+                message=(
+                    f"NOT DONE: {action}. Controlling the screen needs YOLO mode, "
+                    "which is currently off. Tell the user what you were about to "
+                    "do and ask them to turn YOLO on from the Jarvis tray menu or "
+                    "the dashboard. You cannot turn it on yourself."
+                ),
+            )
+    return None
+
+
 def run_tool_with_retries(
+    db,
+    cfg: Settings,
+    tool_name: str,
+    tool_args: Optional[Dict[str, Any]],
+    system_prompt: str,
+    original_prompt: str,
+    redacted_text: str,
+    max_retries: int = 1,
+    language: Optional[str] = None,
+) -> ToolExecutionResult:
+    """The action boundary: decide, record, execute, record what happened.
+
+    Every builtin and every MCP call crosses this function, which makes
+    it the one place that can answer "what did Jarvis do?". The decision
+    is written before anything executes, so an action that took the
+    process down with it still left evidence that it was attempted, and
+    the outcome is written after, because a function returning is not
+    the same as the world having changed.
+
+    Recording is best-effort and never raises: witnessing an action must
+    not be able to prevent it. Authorisation is the opposite, and fails
+    closed.
+    """
+    name_for_log = (tool_name or "").strip()
+    source, mcp_server = _classify_tool(name_for_log, cfg)
+    denial = _authorise(cfg, name_for_log, tool_args)
+
+    action_id = None
+    try:
+        action_id = recorder.record_attempt(
+            tool_name=name_for_log,
+            tool_source=source,
+            arguments=tool_args,
+            mcp_server=mcp_server,
+            decision=Decision.DENIED if denial else Decision.ALLOWED,
+            decision_reason=denial.reason if denial else "",
+            policy_rule_id=denial.rule if denial else "",
+        )
+    except Exception as exc:
+        debug_log(f"could not record a tool attempt: {exc}", "audit")
+
+    if denial is not None:
+        debug_log(f"refused {name_for_log}: {denial.reason}", "audit")
+        return ToolExecutionResult(
+            success=False, reply_text=None, error_message=denial.message,
+        )
+
+    try:
+        result = _execute_tool_call(
+            db=db,
+            cfg=cfg,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            system_prompt=system_prompt,
+            original_prompt=original_prompt,
+            redacted_text=redacted_text,
+            max_retries=max_retries,
+            language=language,
+        )
+    except Exception as exc:
+        # Recorded, then re-raised: the boundary witnesses, it does not
+        # change who handles what.
+        _record_outcome(action_id, None, error=f"{type(exc).__name__}: {exc}")
+        raise
+
+    _record_outcome(action_id, result)
+    return result
+
+
+def _record_outcome(
+    action_id: Optional[str],
+    result: Optional[ToolExecutionResult],
+    error: str = "",
+) -> None:
+    """Write what happened. Never raises."""
+    try:
+        if result is None:
+            recorder.record_result(action_id, outcome=Outcome.ERROR, detail=error)
+            return
+        verification = Verification.NOT_CHECKED
+        if result.verification:
+            try:
+                verification = Verification(result.verification)
+            except ValueError:
+                verification = Verification.NOT_CHECKED
+        recorder.record_result(
+            action_id,
+            outcome=Outcome.OK if result.success else Outcome.ERROR,
+            detail=result.error_message or "",
+            verification=verification,
+        )
+    except Exception as exc:
+        debug_log(f"could not record a tool outcome: {exc}", "audit")
+
+
+def _execute_tool_call(
     db,
     cfg: Settings,
     tool_name: str,

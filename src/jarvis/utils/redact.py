@@ -4,8 +4,19 @@ import re
 # Deterministic structural scrub patterns. Order matters: specific
 # vendor-shaped tokens are matched before generic catches so the more
 # informative label wins (e.g. "[REDACTED_AWS_KEY]" beats "[REDACTED_HEX]").
+#: How much beyond ``max_len`` the rules still see, so a credential
+#: sitting across the cut is matched whole rather than left a fragment.
+_SCRUB_MARGIN = 1024
+
 _REDACTION_RULES: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", re.IGNORECASE), "[REDACTED_EMAIL]"),
+    # The lookbehind is load-bearing, not decoration. Without it the
+    # leading `+` starts a fresh greedy scan at every offset in a run of
+    # local-part characters and backtracks the whole way on failure, so
+    # the rule costs O(n^2): 19 seconds on 50KB of ordinary text, which
+    # is a page extract. Refusing to start mid-run makes it linear and
+    # matches exactly the same addresses — the engine was only ever
+    # re-finding the same match from a later start.
+    (re.compile(r"(?<![A-Za-z0-9._%+\-])[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", re.IGNORECASE), "[REDACTED_EMAIL]"),
     (re.compile(r"\b(?:\d[ -]*?){13,19}\b"), "[REDACTED_CARD]"),
     # Vendor-specific access keys (bare, no surrounding keyword required).
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "[REDACTED_AWS_KEY]"),
@@ -29,14 +40,52 @@ _REDACTION_RULES: list[tuple[re.Pattern[str], str]] = [
         re.IGNORECASE,
     ), r"\1=[REDACTED]"),
     (re.compile(r"\b[0-9A-Fa-f]{32,}\b"), "[REDACTED_HEX]"),
-    (re.compile(r"\b\d{6}\b(?=.*(otp|2fa|code))", re.IGNORECASE), "[REDACTED_OTP]"),
 ]
 
 
-def redact(text: str, max_len: int = 8000) -> str:
+
+# One-time codes are asked as a whole-text question, not a per-match one.
+#
+# As a lookahead this only looked *forward*, so it fired for "482913 is
+# your code" and not for "your code is 482913" — the way people actually
+# write it. Nothing else here catches six digits: hex needs 32, card
+# needs 13. It also rescanned to the end of the string at every match,
+# which is quadratic, and worst on the text least likely to contain a
+# code at all: a page of figures with no keyword in it.
+#
+# Asking once, up front, is both correct and cheap. It redacts strictly
+# more than the lookahead did, never less, which is the safe direction
+# for a scrubber.
+_OTP_KEYWORD = re.compile(r"otp|2fa|code", re.IGNORECASE)
+_SIX_DIGITS = re.compile(r"\b\d{6}\b")
+
+
+def _apply_rules(text: str) -> str:
+    """Run every structural rule over ``text``.
+
+    The pair list runs first so a more informative label wins: a card
+    number or a hex secret is already replaced by the time six bare
+    digits are looked for, and cannot be mistaken for a code.
+    """
     scrubbed = text
     for pattern, repl in _REDACTION_RULES:
         scrubbed = pattern.sub(repl, scrubbed)
+    if _OTP_KEYWORD.search(scrubbed):
+        scrubbed = _SIX_DIGITS.sub("[REDACTED_OTP]", scrubbed)
+    return scrubbed
+
+
+def redact(text: str, max_len: int = 8000) -> str:
+    """Scrub structurally, collapse whitespace, and cap the result.
+
+    The cap bounds the work as well as the output. Scrubbing the whole
+    string and truncating afterwards made ``max_len`` read like
+    protection while providing none: every caller passing a long string
+    paid for rules over text that was about to be thrown away. The
+    margin keeps a credential that straddles the cut whole when the
+    rules see it.
+    """
+    scrubbed = _apply_rules(text[:max_len + _SCRUB_MARGIN])
     scrubbed = " ".join(scrubbed.split())
     if len(scrubbed) > max_len:
         scrubbed = scrubbed[:max_len]
@@ -49,7 +98,4 @@ def scrub_secrets(text: str) -> str:
     Use for structured content (tool output, multi-line payloads) where
     preserving newlines matters but tokens/emails/etc. must still be masked.
     """
-    scrubbed = text
-    for pattern, repl in _REDACTION_RULES:
-        scrubbed = pattern.sub(repl, scrubbed)
-    return scrubbed
+    return _apply_rules(text)

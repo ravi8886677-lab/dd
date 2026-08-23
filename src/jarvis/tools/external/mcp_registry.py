@@ -143,11 +143,18 @@ def _normalise(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     namespace = name.split("/", 1)[0]
+    # A hosted server declares both a URL and how to speak to it. The
+    # type was being dropped, which left the caller guessing - and the
+    # registry is full of `sse`, which is not the same thing as
+    # streamable HTTP and is not something Jarvis can connect to.
     remotes = server.get("remotes")
     remote_url = None
+    remote_transport = None
     if isinstance(remotes, list) and remotes and isinstance(remotes[0], dict):
         url = remotes[0].get("url")
         remote_url = str(url) if url else None
+        declared = remotes[0].get("type")
+        remote_transport = str(declared) if declared else None
 
     return {
         "name": name,
@@ -158,6 +165,7 @@ def _normalise(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "version": str(server.get("version") or ""),
         "install": _install_from_packages(server.get("packages") or []),
         "remote_url": remote_url,
+        "remote_transport": remote_transport,
     }
 
 

@@ -8,6 +8,14 @@ a short follow-on grace before dispatching. These tests pin that split, and
 the guard that keeps a resumed sentence from being cut in half.
 """
 
+# Wall-clock margins, deliberately larger than the behaviour needs: what
+# these assert is the ordering between a collection window and the sleep
+# that outlasts it, and a shared CI runner can stall a thread for tens of
+# milliseconds. Scale a test's values together or not at all - and note
+# that `follow_on_seconds` here is a configured value asserted for
+# equality, not a margin, so it is not one of them.
+
+
 import time
 
 import pytest
@@ -40,7 +48,7 @@ class TestFollowOnGrace:
 
         assert sm.check_collection_timeout() is False
 
-        time.sleep(0.06)
+        time.sleep(0.24)
         assert sm.check_collection_timeout() is True
 
     def test_empty_collection_keeps_the_full_window(self):
@@ -48,7 +56,7 @@ class TestFollowOnGrace:
         sm = StateManager(voice_collect_seconds=5.0, follow_on_seconds=0.05)
         sm.start_collection("")
 
-        time.sleep(0.06)
+        time.sleep(0.24)
         assert sm.check_collection_timeout() is False
 
     def test_grace_starts_once_the_query_arrives(self):
@@ -58,15 +66,15 @@ class TestFollowOnGrace:
         sm.add_to_collection("what is the weather")
 
         assert sm.check_collection_timeout() is False
-        time.sleep(0.06)
+        time.sleep(0.24)
         assert sm.check_collection_timeout() is True
 
     def test_grace_never_outlasts_the_window(self):
         """A window shorter than the grace still decides the whole wait."""
-        sm = StateManager(voice_collect_seconds=0.05, follow_on_seconds=5.0)
+        sm = StateManager(voice_collect_seconds=0.2, follow_on_seconds=5.0)
         sm.start_collection("test")
 
-        time.sleep(0.06)
+        time.sleep(0.24)
         assert sm.check_collection_timeout() is True
 
 
@@ -78,7 +86,7 @@ class TestSpeechInProgressGuard:
         sm = StateManager(voice_collect_seconds=5.0, follow_on_seconds=0.05)
         sm.start_collection("remind me to")
 
-        time.sleep(0.06)
+        time.sleep(0.24)
         assert sm.check_collection_timeout(speech_active=True) is False
 
     def test_collection_finalises_once_speech_stops(self):
@@ -86,7 +94,7 @@ class TestSpeechInProgressGuard:
         sm = StateManager(voice_collect_seconds=5.0, follow_on_seconds=0.05)
         sm.start_collection("remind me to")
 
-        time.sleep(0.06)
+        time.sleep(0.24)
         assert sm.check_collection_timeout(speech_active=True) is False
         assert sm.check_collection_timeout(speech_active=False) is True
 
@@ -95,11 +103,11 @@ class TestSpeechInProgressGuard:
         sm = StateManager(
             voice_collect_seconds=5.0,
             follow_on_seconds=5.0,
-            max_collect_seconds=0.05,
+            max_collect_seconds=0.2,
         )
         sm.start_collection("test")
 
-        time.sleep(0.06)
+        time.sleep(0.24)
         assert sm.check_collection_timeout(speech_active=True) is True
 
 
@@ -128,7 +136,7 @@ class TestListenerWiring:
         """
         listener = _wired_listener(is_speech_active=True)
         listener.state_manager.start_collection("remind me to")
-        time.sleep(0.06)
+        time.sleep(0.24)
 
         listener._check_query_timeout()
 
@@ -139,7 +147,7 @@ class TestListenerWiring:
         """The same listener finalises as soon as the endpointer is out of speech."""
         listener = _wired_listener(is_speech_active=False)
         listener.state_manager.start_collection("remind me to")
-        time.sleep(0.06)
+        time.sleep(0.24)
 
         listener._check_query_timeout()
 

@@ -178,6 +178,30 @@ def _device_name() -> str:
         return "this machine"
 
 
+
+def _set_journal_mode(conn: sqlite3.Connection) -> None:
+    """Ask for WAL, and carry on if another process is mid-open.
+
+    Converting a database to WAL takes a brief exclusive lock, and
+    SQLite does **not** run the busy handler for that operation: the
+    timeout on the connection does not cover it. Two processes opening a
+    fresh install at the same moment is the ordinary case here - the
+    daemon establishes identity while the tray spawns the dashboard - so
+    one of them can see `database is locked` before anything has gone
+    wrong.
+
+    Failing to set it is not a reason to fail the open. Journal mode is a
+    property of the database rather than the connection, so whoever wins
+    sets it for everyone; and a database in the default mode is slower,
+    not broken.
+    """
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.OperationalError as exc:
+        debug_log(f"left the journal mode as it was: {exc}", "storage")
+
+
 class IdentityStore:
     """The identity rows, in the same SQLite file as everything else."""
 
@@ -200,6 +224,7 @@ class IdentityStore:
 
     def _init_schema(self) -> None:
         with self._lock:
+            _set_journal_mode(self.conn)
             self.conn.executescript(_SCHEMA_SQL)
 
     @contextmanager

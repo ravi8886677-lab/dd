@@ -609,6 +609,14 @@
         }
         .conn-pill.ok { background: rgba(34,197,94,0.14); color: var(--success-light); }
         .conn-pill.bad { background: rgba(239,68,68,0.14); color: var(--error-light); }
+        /* Action log states. "Confirmed" is the only green one: an action
+           that returned without anyone checking is not a success, and
+           colouring it as one would undo the point of recording it. */
+        .conn-pill.status-confirmed { background: rgba(34,197,94,0.14); color: var(--success-light); }
+        .conn-pill.status-error { background: rgba(239,68,68,0.14); color: var(--error-light); }
+        .conn-pill.status-denied { background: rgba(239,68,68,0.10); color: var(--error-light); }
+        .conn-pill.status-unfinished { background: rgba(234,179,8,0.14); color: var(--warning-light, var(--text-secondary)); }
+        .conn-pill.status-unchecked { background: var(--surface-2, rgba(148,163,184,0.14)); color: var(--text-secondary); }
         .conn-remove {
             background: transparent;
             border: 1px solid var(--border);

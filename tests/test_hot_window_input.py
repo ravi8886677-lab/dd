@@ -9,6 +9,16 @@ Tests exercise VoiceListener._process_transcript with mocked TTS and intent judg
 but use real StateManager and EchoDetector instances to avoid coupling to internals.
 """
 
+# These tests assert against the wall clock: a hot window opens, elapses
+# and expires in real time, and the margin between "still open" and
+# "expired" is what the assertions actually test. The sub-second values
+# are those margins and are deliberately larger than the behaviour needs,
+# because a shared CI runner can stall a thread for tens of milliseconds.
+# The multi-second ones are sentinels chosen never to expire during a
+# test. Scale a test's values together or not at all: what is asserted is
+# the ordering between them, not any single number.
+
+
 import time
 from unittest.mock import patch, MagicMock
 
@@ -101,7 +111,7 @@ def _wait_for_hot_window_active(listener, timeout=0.5):
     while time.time() < deadline:
         if listener.state_manager.is_hot_window_active():
             return True
-        time.sleep(0.01)
+        time.sleep(0.04)
     return False
 
 
@@ -123,7 +133,7 @@ class TestUserSpeaksDuringHotWindow:
     @patch("builtins.print")
     def test_directed_follow_up_is_accepted(self, _print):
         """User's follow-up question during hot window is accepted."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("The weather is sunny today.")
         _simulate_tts_finish(listener)
@@ -145,7 +155,7 @@ class TestUserSpeaksDuringHotWindow:
         follow-ups like 'don't you already know that?'). Small LLMs sometimes
         reject valid follow-ups, so we override in hot window mode.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("Here is your answer.")
         _simulate_tts_finish(listener)
@@ -170,7 +180,7 @@ class TestUserSpeaksDuringHotWindow:
         leakage where echo fragments ride through on the raw text. If the
         judge returns an empty query, the listener falls back to raw text.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("Do you want to know more?")
         _simulate_tts_finish(listener)
@@ -188,7 +198,7 @@ class TestUserSpeaksDuringHotWindow:
     @patch("builtins.print")
     def test_empty_judge_query_falls_back_to_raw_text(self, _print):
         """If the judge is directed but returns no query, fall back to raw text."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("Do you want to know more?")
         _simulate_tts_finish(listener)
@@ -222,7 +232,7 @@ class TestTranscriptArrivesAfterHotWindowExpiry:
         "Returning to wake word mode". The timestamp check still detects the
         speech started during the window.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=0.08)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=0.32)
 
         listener.echo_detector.track_tts_start("Short answer.")
         _simulate_tts_finish(listener)
@@ -232,7 +242,7 @@ class TestTranscriptArrivesAfterHotWindowExpiry:
         speech_start = time.time()
 
         # Wait for hot window to expire (simulates Whisper delay)
-        time.sleep(0.12)
+        time.sleep(0.48)
         assert not listener.state_manager.is_hot_window_active()
 
         # Transcript arrives after expiry — but speech_start was during window
@@ -247,14 +257,14 @@ class TestTranscriptArrivesAfterHotWindowExpiry:
     @patch("builtins.print")
     def test_speech_started_after_expiry_rejected(self, _print):
         """Speech starting AFTER window expired is rejected (requires wake word)."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=0.05)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=0.2)
 
         listener.echo_detector.track_tts_start("Short answer.")
         _simulate_tts_finish(listener)
         _wait_for_hot_window_active(listener)
 
         # Wait for hot window to expire
-        time.sleep(0.1)
+        time.sleep(0.4)
         assert not listener.state_manager.is_hot_window_active()
 
         # Speech starts AFTER expiry
@@ -271,7 +281,7 @@ class TestTranscriptArrivesAfterHotWindowExpiry:
     @patch("builtins.print")
     def test_voice_during_active_window_accepted_before_expiry(self, _print):
         """Voice processed while hot window is still active succeeds."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("Short answer.")
         _simulate_tts_finish(listener)
@@ -290,7 +300,7 @@ class TestTranscriptArrivesAfterHotWindowExpiry:
     @patch("builtins.print")
     def test_voice_during_pending_activation_accepted(self, _print):
         """Voice start during echo_tolerance delay (pending activation) still counts."""
-        listener, _ = _create_listener(echo_tolerance=0.5, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=2.0, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("Answer text.")
         _simulate_tts_finish(listener)
@@ -316,14 +326,14 @@ class TestTranscriptArrivesAfterHotWindowExpiry:
         Regression test: a stale boolean flag previously caused speech long
         after the window to be treated as hot window input.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=0.05)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=0.2)
 
         listener.echo_detector.track_tts_start("Quick answer.")
         _simulate_tts_finish(listener)
         _wait_for_hot_window_active(listener)
 
         # Wait for window to expire
-        time.sleep(0.1)
+        time.sleep(0.4)
         assert not listener.state_manager.is_hot_window_active()
 
         # Simulate speech "a minute later" (use a start time well after expiry)
@@ -350,7 +360,7 @@ class TestEchoAndUserSpeechInSameChunk:
     @patch("builtins.print")
     def test_mixed_echo_and_speech_after_tts_accepted_in_hot_window(self, _print):
         """When echo + user speech arrive as one chunk in hot window, input is accepted."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         tts_text = "here is the answer"
         listener.echo_detector.track_tts_start(tts_text)
@@ -389,7 +399,7 @@ class TestEchoAndUserSpeechInSameChunk:
         ended DURING the span (user spoke during window). The system should
         recognise this overlap and treat it as hot window input.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         tts_text = "Got it. I will keep my responses short and to the point from now on."
         listener.echo_detector.track_tts_start(tts_text)
@@ -438,7 +448,7 @@ class TestEchoAndUserSpeechInSameChunk:
         check should recognise it's not pure echo and fall through to use the
         judge's extracted query.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         tts_text = "The current temperature is around nine degrees celsius."
         listener.echo_detector.track_tts_start(tts_text)
@@ -481,7 +491,7 @@ class TestEchoAndUserSpeechInSameChunk:
         shows it's mixed content and could_be_hot_window is True, so the override
         should kick in.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         tts_text = "You are currently in Tbilisi, Georgia."
         listener.echo_detector.track_tts_start(tts_text)
@@ -530,7 +540,7 @@ class TestEchoAndUserSpeechInSameChunk:
         started (early check passed) but the query is silently dropped because
         the judge-None path falls through to wake word detection.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         tts_text = "You are currently in Tbilisi, Georgia."
         listener.echo_detector.track_tts_start(tts_text)
@@ -567,7 +577,7 @@ class TestEchoAndUserSpeechInSameChunk:
     @patch("builtins.print")
     def test_utterance_starting_during_tts_ending_after_treated_as_hot_window(self, _print):
         """Utterance that starts before TTS finishes is still treated as hot window context."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("some response text")
         tts_finish = time.time()
@@ -599,7 +609,7 @@ class TestEchoAndUserSpeechInSameChunk:
         one transcript. The early fuzzy echo check used to reject the whole chunk,
         so the user's real speech was dropped before the intent judge could see it.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         tts_text = (
             "I do have a tool to check the weather, but I need to use it with a "
             "location. I can check the forecast for London for you right now."
@@ -626,7 +636,7 @@ class TestEchoAndUserSpeechInSameChunk:
     @patch("builtins.print")
     def test_early_echo_salvage_accepts_at_minimum_word_count(self, _print):
         """Salvaged remainder at exactly min_salvage_words should be accepted."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         min_words = listener.echo_detector.min_salvage_words
 
         tts_text = "The weather is going to be sunny today in London."
@@ -651,7 +661,7 @@ class TestEchoAndUserSpeechInSameChunk:
     @patch("builtins.print")
     def test_early_echo_salvage_rejects_below_minimum_word_count(self, _print):
         """Salvaged remainder below min_salvage_words should be rejected as echo."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         min_words = listener.echo_detector.min_salvage_words
 
         tts_text = "The weather is going to be sunny today in London."
@@ -677,7 +687,7 @@ class TestEchoAndUserSpeechInSameChunk:
     @patch("builtins.print")
     def test_early_echo_salvage_rejects_when_no_prefix_match(self, _print):
         """If cleanup_leading_echo can't strip any prefix, fall back to rejection."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         tts_text = "alpha beta gamma delta epsilon zeta"
         listener.echo_detector.track_tts_start(tts_text)
@@ -717,7 +727,7 @@ class TestHotWindowOnlyFromStateManager:
         """TTS finishing without hot window activation does not create a hot window."""
         listener, _ = _create_listener(
             hot_window_seconds=3.0,
-            echo_tolerance=0.3,
+            echo_tolerance=1.2,
         )
 
         # Track TTS finish but do NOT schedule hot window activation
@@ -738,7 +748,7 @@ class TestHotWindowOnlyFromStateManager:
         """Only formally activated hot window allows wake-word-free input."""
         listener, _ = _create_listener(
             hot_window_seconds=3.0,
-            echo_tolerance=0.02,
+            echo_tolerance=0.08,
         )
 
         listener.echo_detector.track_tts_start("old answer")
@@ -761,7 +771,7 @@ class TestHotWindowOnlyFromStateManager:
     @patch("builtins.print")
     def test_no_timestamps_with_active_hot_window_accepted(self, _print):
         """When Whisper provides no timestamps but hot window is active, accepted."""
-        listener, _ = _create_listener(hot_window_seconds=3.0, echo_tolerance=0.02)
+        listener, _ = _create_listener(hot_window_seconds=3.0, echo_tolerance=0.08)
 
         listener.echo_detector.track_tts_start("recent response")
         _simulate_tts_finish(listener)
@@ -782,7 +792,7 @@ class TestHotWindowOnlyFromStateManager:
     @patch("builtins.print")
     def test_no_timestamps_without_hot_window_rejected(self, _print):
         """When Whisper provides no timestamps and no hot window, requires wake word."""
-        listener, _ = _create_listener(hot_window_seconds=3.0, echo_tolerance=0.3)
+        listener, _ = _create_listener(hot_window_seconds=3.0, echo_tolerance=1.2)
 
         listener.echo_detector.track_tts_start("stale response")
         # TTS finished but no hot window scheduled
@@ -813,7 +823,7 @@ class TestEchoRejectionDoesNotExtendFollowUpWindow:
     @patch("builtins.print")
     def test_echo_does_not_reset_window_timer(self, _print):
         """Echo rejection leaves the original window timer untouched."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("The answer is 42.")
         _simulate_tts_finish(listener)
@@ -839,14 +849,14 @@ class TestEchoRejectionDoesNotExtendFollowUpWindow:
     @patch("builtins.print")
     def test_echo_after_window_expiry_does_not_reactivate(self, _print):
         """Late echo arrival after window expired does NOT reactivate the window."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=0.05)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=0.2)
 
         listener.echo_detector.track_tts_start("Short reply.")
         _simulate_tts_finish(listener)
         _wait_for_hot_window_active(listener)
 
         # Let hot window expire
-        time.sleep(0.1)
+        time.sleep(0.4)
         assert not listener.state_manager.is_hot_window_active()
 
         # Late echo arrives — window should stay expired
@@ -880,7 +890,7 @@ class TestLongTtsTailEcho:
         )
         assert len(long_tts) > 300  # Guard: the bug only manifests past old cap
 
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         listener.echo_detector.track_tts_start(long_tts)
         _simulate_tts_finish(listener)
         _wait_for_hot_window_active(listener)
@@ -914,7 +924,7 @@ class TestEarlyBeepFeedback:
     @patch("builtins.print")
     def test_beep_starts_on_wake_word_before_intent_judge(self, _print):
         """Beep starts right after 'Heard' when wake word is present."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         listener.cfg.tune_enabled = True
 
         # No intent judge installed — beep should still start from the
@@ -927,7 +937,7 @@ class TestEarlyBeepFeedback:
     @patch("builtins.print")
     def test_beep_starts_in_hot_window_before_intent_judge(self, _print):
         """Beep starts right after 'Heard' when in hot window."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         listener.cfg.tune_enabled = True
 
         listener.echo_detector.track_tts_start("Here is the answer.")
@@ -943,7 +953,7 @@ class TestEarlyBeepFeedback:
     @patch("builtins.print")
     def test_no_beep_without_wake_word_or_hot_window(self, _print):
         """No beep when there's no wake word and not in hot window."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         listener.cfg.tune_enabled = True
 
         # Random speech, no wake word, no hot window
@@ -962,7 +972,7 @@ class TestEarlyBeepFeedback:
         flags as not directed — the wake word is present so the query is
         accepted and the beep continues.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         listener.cfg.tune_enabled = True
 
         # Install judge that rejects — speech has wake word so early beep fires,
@@ -984,7 +994,7 @@ class TestEarlyBeepFeedback:
     def test_no_beep_during_tts_playback(self, _print):
         """Beep does not start while TTS is actively speaking."""
         listener, mock_tts = _create_listener(
-            echo_tolerance=0.02, hot_window_seconds=3.0, tts_speaking=True)
+            echo_tolerance=0.08, hot_window_seconds=3.0, tts_speaking=True)
         listener.cfg.tune_enabled = True
 
         listener._process_transcript("jarvis what time is it", utterance_energy=0.01)
@@ -1006,7 +1016,7 @@ class TestEchoRejectionInHotWindow:
     @patch("builtins.print")
     def test_confirmed_echo_rejected_without_intent_judge(self, _print):
         """Echo matching TTS is caught early — intent judge never runs."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         tts_text = "The weather will be sunny tomorrow."
 
         listener.echo_detector.track_tts_start(tts_text)
@@ -1035,7 +1045,7 @@ class TestEchoRejectionInHotWindow:
         The mic picks up Jarvis's TTS output and Whisper transcribes it.
         The early fuzzy check catches it before the intent judge runs.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         tts_text = "Georgian cuisine is incredibly rich and you should try Khachapuri and Georgian bread."
 
         listener.echo_detector.track_tts_start(tts_text)
@@ -1063,7 +1073,7 @@ class TestEchoRejectionInHotWindow:
         In hot window, non-echo speech is always accepted (override), since
         small LLMs sometimes reject valid follow-ups.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         tts_text = "The weather will be sunny tomorrow."
 
         listener.echo_detector.track_tts_start(tts_text)
@@ -1096,7 +1106,7 @@ class TestHotWindowBoundary:
     @patch("builtins.print")
     def test_speech_within_window_accepted(self, _print):
         """Speech processed while hot window is active is accepted."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("Short answer.")
         _simulate_tts_finish(listener)
@@ -1111,14 +1121,14 @@ class TestHotWindowBoundary:
     @patch("builtins.print")
     def test_speech_after_window_requires_wake_word(self, _print):
         """Speech arriving after hot window expired requires wake word."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=0.05)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=0.2)
 
         listener.echo_detector.track_tts_start("Short answer.")
         _simulate_tts_finish(listener)
         _wait_for_hot_window_active(listener)
 
         # Let hot window expire
-        time.sleep(0.1)
+        time.sleep(0.4)
         assert not listener.state_manager.is_hot_window_active()
 
         # Speech without wake word — should be rejected
@@ -1131,14 +1141,14 @@ class TestHotWindowBoundary:
     @patch("builtins.print")
     def test_speech_after_window_with_wake_word_accepted(self, _print):
         """Speech after hot window expired but containing wake word is accepted."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=0.05)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=0.2)
 
         listener.echo_detector.track_tts_start("Short answer.")
         _simulate_tts_finish(listener)
         _wait_for_hot_window_active(listener)
 
         # Let hot window expire
-        time.sleep(0.1)
+        time.sleep(0.4)
         assert not listener.state_manager.is_hot_window_active()
 
         # Speech with wake word — accepted via wake word detection fallback
@@ -1166,7 +1176,7 @@ class TestEchoCaughtBeforeBeepAndIntentJudge:
     @patch("builtins.print")
     def test_echo_in_hot_window_does_not_trigger_beep(self, _print):
         """Echo matching TTS output should not start the thinking beep."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         listener.cfg.tune_enabled = True
         tts_text = "Tbilisi is a must-see especially the colourful old town."
 
@@ -1191,7 +1201,7 @@ class TestEchoCaughtBeforeBeepAndIntentJudge:
     @patch("builtins.print")
     def test_echo_in_hot_window_skips_intent_judge(self, _print):
         """Echo caught early should not invoke the intent judge at all."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         tts_text = "For breathtaking scenery you should explore the mountainous regions."
 
         listener.echo_detector.track_tts_start(tts_text)
@@ -1219,7 +1229,7 @@ class TestEchoCaughtBeforeBeepAndIntentJudge:
         created a window lasting 6+ seconds instead of 3, causing speech long
         after TTS to be treated as hot window input.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=0.10)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=0.4)
         tts_text = "The answer is sunny and warm."
 
         listener.echo_detector.track_tts_start(tts_text)
@@ -1238,14 +1248,14 @@ class TestEchoCaughtBeforeBeepAndIntentJudge:
         assert listener.state_manager._hot_window_start_time == original_start
 
         # Wait for original window to expire
-        time.sleep(0.15)
+        time.sleep(0.6)
         assert not listener.state_manager.is_hot_window_active()
         listener.state_manager.stop()
 
     @patch("builtins.print")
     def test_non_echo_in_hot_window_still_triggers_beep(self, _print):
         """Non-echo speech in hot window should still get the early beep."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         listener.cfg.tune_enabled = True
         tts_text = "The weather is sunny today."
 
@@ -1269,7 +1279,7 @@ class TestEchoCaughtBeforeBeepAndIntentJudge:
         previously reset the timer, creating a window of N*hot_window_seconds.
         Now echo is caught early without any timer reset.
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=0.10)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=0.4)
         tts_text = "Tbilisi is a must-see. For breathtaking scenery explore Svaneti."
 
         listener.echo_detector.track_tts_start(tts_text)
@@ -1290,7 +1300,7 @@ class TestEchoCaughtBeforeBeepAndIntentJudge:
         assert _accepted_query(listener) == ""
 
         # Window should still expire on original schedule
-        time.sleep(0.15)
+        time.sleep(0.6)
         assert not listener.state_manager.is_hot_window_active()
 
         # Speech after expiry requires wake word
@@ -1314,7 +1324,7 @@ class TestSpeechIgnoredOutsideHotWindow:
     @patch("builtins.print")
     def test_complete_sentence_without_wake_word_ignored(self, _print):
         """A full sentence without wake word and no hot window is ignored."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         # Judge would accept if asked — but it shouldn't matter
         _install_intent_judge(listener, _make_judgment(
@@ -1332,7 +1342,7 @@ class TestSpeechIgnoredOutsideHotWindow:
     def test_no_beep_no_intent_for_background_chatter(self, _print):
         """Background conversation without wake word triggers no beep and
         no intent judge invocation."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
         listener.cfg.tune_enabled = True
 
         judge = _install_intent_judge(listener, _make_judgment(
@@ -1352,7 +1362,7 @@ class TestSpeechIgnoredOutsideHotWindow:
     def test_multiple_utterances_after_hot_window_all_ignored(self, _print):
         """Multiple consecutive utterances after hot window expires are all
         ignored if they lack a wake word. The system stays in wake word mode."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("The answer is 42.")
         _simulate_tts_finish(listener)
@@ -1387,7 +1397,7 @@ class TestSpeechIgnoredOutsideHotWindow:
     def test_speech_long_after_any_tts_ignored(self, _print):
         """Speech arriving long after any TTS activity is ignored without
         wake word, even if the intent judge says directed."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         # TTS happened ages ago, hot window long expired
         listener.echo_detector.track_tts_start("Old response.")
@@ -1433,7 +1443,7 @@ class TestStaleWakeTimestampAcrossUtterances:
     def test_rejected_wake_utterance_does_not_vouch_for_next_utterance(self, _print):
         """A prior rejected wake-worded utterance must not authorise a later
         utterance that lacks a wake word."""
-        listener, _ = _create_listener(echo_tolerance=0.3, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=1.2, hot_window_seconds=3.0)
 
         # First utterance: has "jarvis", judge rejects as not directed.
         # The safety net catches this and accepts the query via wake word detection.
@@ -1526,7 +1536,7 @@ class TestIntentJudgeGating:
     @patch("builtins.print")
     def test_judge_called_in_hot_window(self, _print):
         """Utterances during the hot window do reach the judge."""
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener, _ = _create_listener(echo_tolerance=0.08, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("Here you go.")
         _simulate_tts_finish(listener)

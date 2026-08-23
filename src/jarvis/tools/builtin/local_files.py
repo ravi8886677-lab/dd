@@ -7,6 +7,41 @@ from ..base import Tool, ToolContext
 from ..types import ToolExecutionResult
 
 
+
+def _verify_written(target: Path, content: str) -> str:
+    """Look at the file rather than trusting that the write returned.
+
+    A write that raised nothing and left nothing is the exact shape of a
+    fabricated completion claim, so the check is reading it back. On a
+    filesystem that will not answer, the honest result is "not checked"
+    rather than either optimism or a false alarm.
+    """
+    from ...audit import Verification
+
+    try:
+        landed = target.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return Verification.NOT_CHECKED.value
+    return (
+        Verification.CONFIRMED.value if landed == content
+        else Verification.FAILED.value
+    )
+
+
+def _verify_grew(target: Path, before: int) -> str:
+    """An append is confirmed by the file being bigger than it was."""
+    from ...audit import Verification
+
+    try:
+        after = target.stat().st_size
+    except Exception:
+        return Verification.NOT_CHECKED.value
+    return (
+        Verification.CONFIRMED.value if after > before
+        else Verification.FAILED.value
+    )
+
+
 class LocalFilesTool(Tool):
     """Tool for safe local file operations within user's home directory."""
 
@@ -121,7 +156,11 @@ class LocalFilesTool(Tool):
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(content, encoding="utf-8")
-                    return ToolExecutionResult(success=True, reply_text=f"Wrote {len(content)} characters to {target}")
+                    return ToolExecutionResult(
+                        success=True,
+                        reply_text=f"Wrote {len(content)} characters to {target}",
+                        verification=_verify_written(target, content),
+                    )
                 except Exception as e:
                     return ToolExecutionResult(success=False, reply_text=f"Write failed: {e}")
 
@@ -132,9 +171,14 @@ class LocalFilesTool(Tool):
                     return ToolExecutionResult(success=False, reply_text="Append requires string 'content'.")
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
+                    before = target.stat().st_size if target.exists() else 0
                     with target.open("a", encoding="utf-8", errors="replace") as f:
                         f.write(content)
-                    return ToolExecutionResult(success=True, reply_text=f"Appended {len(content)} characters to {target}")
+                    return ToolExecutionResult(
+                        success=True,
+                        reply_text=f"Appended {len(content)} characters to {target}",
+                        verification=_verify_grew(target, before),
+                    )
                 except Exception as e:
                     return ToolExecutionResult(success=False, reply_text=f"Append failed: {e}")
 

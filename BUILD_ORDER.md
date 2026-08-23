@@ -138,32 +138,45 @@ Nothing reads a second workspace yet, which is expected. The schema does
 not need changing to add one, and the reads that mean "yours" are scoped
 by user so that adding one does not quietly show someone else's machines.
 
-### Slice 2 — verification and the action log (§18, §25)
+### Slice 2 — verification and the action log (§18, §25) ✅
 
-**Why here:** these are the two non-negotiables the tree currently
-violates, they are the cheapest large win, and slice 1 gives them
-something to attribute an action to.
+**Why it came here:** these were the two non-negotiables the tree
+violated, and slice 1 gave an audit entry something to attribute to.
 
-Two halves, both required for the slice to be done:
+What now holds:
 
-- An `actions` table plus a write on every external side effect, holding
-  who, which device, which tool, what arguments (redacted through
-  `utils/redact.py`), the result, and the outcome. Surface it as an audit
-  timeline in the dashboard, because an audit log nobody can read is not
-  an audit log.
-- A post-action check per tool that can have one. Today `computerUse`
-  reports `Done: <description>` from the bare fact that pyautogui
-  returned, and the system prompt contains no instruction against
-  claiming a completion that did not happen. Both need fixing: the tool
-  re-checks observable state, and the prompt change is verified against
-  an eval case that is worse before it and better after, per `CLAUDE.md`.
+- **One boundary.** Every builtin and every MCP call crosses
+  `run_tool_with_retries`, which decides, records the decision *before*
+  anything executes, runs the call, and records what came back. Two
+  tools used to gate themselves and everything else ran ungated and
+  unrecorded.
+- **The decision lands first.** An action that took the process down
+  with it still left evidence that it was attempted. An action with a
+  decision and no outcome is a call that never came back.
+- **Entries are appended, never rewritten.** A record that can be edited
+  after the fact is not evidence, so the outcome is a second entry
+  correlated by `action_id`.
+- **Verification is a separate field from outcome.** `localFiles` reads
+  back what it wrote; `openApp` looks for the process. A tool with
+  nothing to check records `not_checked`, which is never treated as
+  success. MCP stays `not_checked` on success: the server's own report
+  is recorded as the outcome, and treating it as verification would mean
+  trusting the audited party to audit itself.
+- **Arguments are redacted by the log**, not by asking callers to
+  remember, and a secret is recorded by name and character count only.
+- **The YOLO grant is on the same log.** It used to exist only in
+  memory, so a restart erased the evidence that the window had ever been
+  open.
+- **The prompt forbids a completion claim the record does not support**,
+  with a live eval case and a mocked equivalent.
+- **The dashboard has an Activity tab.** `not checked` is shown as its
+  own state rather than folded into success.
 
-**Done when:** every tool call with an external effect appears in the
-audit timeline with its outcome; a `computerUse` action whose effect did
-not land reports that it did not, and a test proves it; and the eval for
-fabricated completion claims improves.
-
----
+Enforcement is not yet consolidated: the boundary enforces what it can
+express from the call, and a tool that gates itself keeps doing so,
+because a tool can be called directly. `computerUse`'s rule is one
+function with two callers rather than two copies. Consolidating belongs
+to slice 3, which is what a stored, evaluable policy is for.
 
 ### Slice 3 — the permission engine (§16)
 
@@ -247,6 +260,47 @@ the change that relied on it, so it is asserted rather than remembered.
 
 **When adding a test, mark it.** An unmarked test is not a test CI runs.
 
+## 3b. Hosted servers, and what the catalogue still cannot show
+
+The remote transport and the OAuth flow were finished and tested, and
+nothing in the dashboard could reach them. The registry's Add refused
+anything without a pinned package, and most hosted servers have no
+package at all: measured against the live registry, **5,133 of 6,000
+servers are hosted, and 5,040 of those speak streamable HTTP.** All of
+them were unreachable from the page listing them. They are now a click.
+
+Two things remain, and the second is a decision rather than work:
+
+- **`sse` is not supported.** 93 registry servers declare it, and so do
+  two of the few first-party entries a client would recognise (Linear,
+  Atlassian). They are refused by name at the click rather than written
+  and left to fail on first use. Supporting SSE means a second client
+  path in `mcp_client.py`; worth doing when a customer asks for one of
+  those names.
+
+- **The curated catalogue is still nine local `npx`/`uvx` servers.**
+  Adding first-party remote tiles (Notion, and whichever others prove
+  out) is the cheapest change to how the product feels in a demo, and it
+  needs `MCPEntry` to carry `url`/`transport`/`auth` — the registry path
+  proves the mechanism works.
+
+  It is not done here because the endpoints could not be verified from
+  this container: outbound HTTPS is proxied and every candidate host was
+  unreachable, so every URL would have been copied from documentation
+  and never tried. Notion publishes `https://mcp.notion.com/mcp`
+  (streamable HTTP, OAuth) in its own developer docs, which is good
+  evidence and not the same as a connection. **Whoever has a browser
+  should add one entry by hand, connect it, and then the catalogue rows
+  can be written from something that worked.** That closes R0.4 in
+  `REQUIREMENTS.md`, which is the outstanding "OAuth against a real
+  provider" item, in the same sitting.
+
+  A caution for whoever writes those rows: the registry's `notion`,
+  `slack` and `clickup` entries are **third-party proxies**
+  (`server.smithery.ai`), not the vendors. Shipping one as a curated
+  tile would route a user's data through a middleman, which is what
+  `CLAUDE.md` line 1 forbids. First-party or nothing.
+
 ## 4. The decision that has to be made before slice 5
 
 `CLAUDE.md` line 1 is "Data privacy comes first, always", and the project
@@ -300,6 +354,9 @@ rows in the present tense: what the code does now, not what changed.
 | Slice | Piece | Where | What it does |
 |---|---|---|---|
 | 0 | Data directory | `src/jarvis/utils/paths.py` | One answer to where Jarvis keeps its files. `data_dir()` resolves and touches nothing; `ensure_data_dir(*parts)` creates, and belongs at the write site rather than the resolver. `JARVIS_DATA_DIR` moves the lot at once, which is what lets the suite guarantee it never writes the real one. Every module that needs the directory (config, location, GeoIP, Piper voices, dictation history, prompt dumps, dashboard) reads it from here, so nothing can drift into a second location. |
+| 2 | Action log | `src/jarvis/audit/` | `ActionLog` owns the `actions` table and appends two entries per action: the decision before execution, the outcome after. Never rewrites an entry. Redacts arguments on the way in and records a secret by length only. `recorder` holds the process's one log and resolves the acting identity once. |
+| 2 | Action boundary | `tools/registry.py` | `run_tool_with_retries` decides, records, executes, records. `_authorise` holds the rules the boundary can evaluate from the call itself; recording is best-effort and never raises, authorisation fails closed. |
+| 2 | Verification | `local_files.py`, `open_app.py`, `types.py` | A tool that can check what it did sets `verification` on its result; the boundary records it. `not_checked` is the default and is never success. |
 | 1 | Identity store | `src/jarvis/identity/` | `IdentityStore` owns the `users`, `workspaces`, `devices` and `connected_accounts` tables and applies its own schema on construction, like `GraphMemoryStore`. `ensure_local_identity()` is idempotent and is what both the daemon and the dashboard call. `local_device_id()` names the machine from a file beside the database. Accounts carry a `secret_ref` into the keychain, never a secret. |
 | 1 | Identity surface | `daemon.py`, `/api/identity` | Startup prints the machine and workspace it is acting in and fails open. The dashboard header shows the device it is reading from and counts the others on the account. |
 | 0 | Shared schema | `src/jarvis/memory/db.py` | `ensure_schema(conn)` applies the diary and meal tables to any open connection, and `open_database(path)` does the whole opening: parent directory, connection, row factory, schema. `Database` and the dashboard both go through it, so the daemon and the dashboard cannot disagree about what the file contains. |

@@ -14,6 +14,7 @@ import sys
 from typing import Optional, TextIO
 
 from .. import approval
+from ..audit import recorder as audit_recorder
 from ..config import load_settings
 from ..debug import debug_log
 from ..llm import Tier, resolve_model
@@ -320,6 +321,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     one_shot = " ".join(args).strip() or None
 
     cfg = load_settings()
+    # The text front end acts through the same tools as the daemon, so it
+    # writes to the same action log.
+    audit_recorder.configure(db_path=cfg.db_path)
 
     try:
         return run_chat_session(cfg, one_shot=one_shot)
