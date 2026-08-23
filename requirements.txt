@@ -4,14 +4,20 @@ requests==2.32.3
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 html2text>=2020.1.16
-playwright>=1.40.0
-numpy<2.0.0
+# No upper bound. Every audio buffer in this codebase states its dtype
+# explicitly, so NEP 50 scalar promotion does not reach them; that is
+# asserted in tests/test_numpy_two_audio_dtypes.py rather than assumed.
+numpy>=1.24
 faster-whisper==1.0.3
 setuptools<81
 sounddevice==0.4.7
 pytesseract==0.3.13
 Pillow==10.4.0
-webrtcvad==2.0.10
+# Same source as `webrtcvad`, published as prebuilt wheels. The original
+# distribution is sdist-only, so installing it needs a C compiler and
+# Python headers, which is the most common clean-machine install
+# failure. The import name is unchanged: `import webrtcvad`.
+webrtcvad-wheels==2.0.14
 rapidfuzz==3.6.1
 pynput>=1.7.6
 # Mouse/keyboard control for the computerUse tool. Needs a desktop
@@ -20,8 +26,6 @@ pyautogui>=0.9.54
 geoip2==4.8.0
 tzdata==2026.1; sys_platform == "win32"
 miniupnpc==2.2.8
-pytest==8.3.2
-pytest-repeat==0.9.3
 # mcp 2.x removes the initialize handshake and reworks the client
 # surface; the exact pin keeps installs on the 1.x contract this
 # codebase targets.
@@ -48,8 +52,8 @@ mlx-whisper>=0.4.0; sys_platform == "darwin" and platform_machine == "arm64"
 PyQt6>=6.6.0
 PyQt6-WebEngine>=6.6.0
 psutil>=5.9.0
-# Note: 6.13.0+ has VC runtime pre-loading fix for Windows
-pyinstaller>=6.13.0
+# Building the desktop bundle needs PyInstaller; it is in
+# requirements-build.txt, because running Jarvis does not.
 
 # Acoustic echo cancellation, so the microphone can be kept open while
 # Jarvis speaks. Genuinely optional — `create_echo_canceller` catches the

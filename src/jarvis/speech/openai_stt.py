@@ -39,6 +39,21 @@ RESPONSE_FORMAT = "verbose_json"
 MIN_AUDIO_SECONDS = 0.15
 
 
+def _describe_status(status: int) -> str:
+    """An HTTP status as something worth reading at a microphone.
+
+    A wrong key and a rate limit both surface as "hosted recognition
+    stopped working", and they need opposite responses from the user, so
+    the two that are actionable are named. The number is always included:
+    it is what makes the message searchable when the wording is not.
+    """
+    if status == 401 or status == 403:
+        return f"HTTP {status}, the API key was rejected"
+    if status == 429:
+        return f"HTTP {status}, rate limited"
+    return f"HTTP {status}"
+
+
 class OpenAICompatibleSpeechToText(SpeechToText):
     """Transcribe through any OpenAI-compatible transcriptions endpoint."""
 
@@ -51,6 +66,13 @@ class OpenAICompatibleSpeechToText(SpeechToText):
         self._api_key = api_key
         self._model = model or DEFAULT_MODEL
         self._base_url = base_url.rstrip("/")
+        # Why the last call returned ``None``, in a few words fit to show a
+        # user. ``None`` is still the whole contract for *what* happened, so
+        # nothing has to read this; the listener does, because "hosted
+        # recognition is not working" is otherwise indistinguishable from a
+        # slow assistant. Set on every exit path so it can never describe an
+        # older failure than the one just returned.
+        self.last_error: Optional[str] = None
 
     def transcribe(
         self,
@@ -69,7 +91,10 @@ class OpenAICompatibleSpeechToText(SpeechToText):
         sample_rate: int = 16000,
         timeout_sec: float = 15.0,
     ) -> Optional[Transcription]:
+        self.last_error = None
+
         if not self._api_key:
+            self.last_error = "no API key configured"
             return None
 
         try:
@@ -77,6 +102,7 @@ class OpenAICompatibleSpeechToText(SpeechToText):
 
             samples = np.asarray(audio, dtype=np.float32).flatten()
         except Exception as exc:
+            self.last_error = "unusable audio"
             debug_log(f"⚠️ hosted stt: unusable audio: {exc}", "whisper")
             return None
 
@@ -95,6 +121,13 @@ class OpenAICompatibleSpeechToText(SpeechToText):
                 timeout=timeout_sec,
             )
         except Exception as exc:
+            # A timeout is the one worth naming precisely: it is the only
+            # failure the user experiences as a pause rather than as an
+            # error, and the setting that governs it is theirs to change.
+            if type(exc).__name__ in ("Timeout", "ConnectTimeout", "ReadTimeout"):
+                self.last_error = f"no response within {timeout_sec:g}s"
+            else:
+                self.last_error = f"could not reach {self._base_url or 'the endpoint'}"
             debug_log(f"⚠️ hosted stt: request failed, using local: {exc}", "whisper")
             return None
 
@@ -102,6 +135,7 @@ class OpenAICompatibleSpeechToText(SpeechToText):
             # 429 and 401 are the ones worth reading in a log: a rate limit
             # and a bad key look identical from the user's side otherwise,
             # since both silently become local transcription.
+            self.last_error = _describe_status(response.status_code)
             debug_log(
                 f"⚠️ hosted stt: HTTP {response.status_code}, using local", "whisper"
             )
@@ -111,6 +145,7 @@ class OpenAICompatibleSpeechToText(SpeechToText):
             payload = response.json()
             text = str(payload.get("text") or "").strip()
         except Exception as exc:
+            self.last_error = "unreadable response"
             debug_log(f"⚠️ hosted stt: unreadable response: {exc}", "whisper")
             return None
 

@@ -119,6 +119,7 @@ class TestOptionalFilesExist:
         "requirements-dev.txt",
         "requirements-chatterbox.txt",
         "requirements-aec.txt",
+        "requirements-build.txt",
     ])
     def test_the_file_exists(self, filename):
         assert (REPO_ROOT / filename).is_file(), f"{filename} is referenced but missing"

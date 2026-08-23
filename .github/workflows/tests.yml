@@ -38,6 +38,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          # The test runner is not a runtime dependency, so it is not in
+          # requirements.txt. This job needs it, and saying so here is what
+          # keeps a user's install free of our toolchain.
+          python -m pip install -r requirements-dev.txt
       - name: Run unit tests
         env:
           # Qt has no display on the runner; without this the suite aborts

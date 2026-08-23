@@ -1,0 +1,12 @@
+# Producing the desktop bundle. Not needed to run Jarvis.
+#
+# Install on top of requirements.txt, then build with:
+#
+#   pyinstaller jarvis_desktop.spec
+#
+# This lives apart from requirements.txt because PyInstaller is a
+# packaging tool. Every user was installing it to run an app that was
+# already built, and it pulls a compiler toolchain on some platforms.
+
+# 6.13.0+ carries the VC runtime pre-loading fix for Windows.
+pyinstaller>=6.13.0

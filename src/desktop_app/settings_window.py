@@ -275,6 +275,15 @@ def _build_field_metadata() -> List[FieldMeta]:
       "Recognition model to request, e.g. whisper-large-v3-turbo. Leave empty "
       "for the endpoint's default.",
       "whisper", "str", nullable=True)
+    # Phrased as the wait it causes rather than as a network setting, because
+    # that is how it is experienced: the number is how long a sentence can
+    # hang before the local model answers instead.
+    f("stt_timeout_sec", "Endpoint Timeout (seconds)",
+      "How long to wait for a remote endpoint before transcribing locally "
+      "instead. This is silence between your sentences, so keep it short: "
+      "the local model is standing by, and waiting longer rarely produces a "
+      "better answer than falling back sooner.",
+      "whisper", "float", min_val=1.0, max_val=30.0, step=0.5)
 
     f("whisper_model", "Model Size",
       "Whisper model size (tiny/base/small/medium/large)",
