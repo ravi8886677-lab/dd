@@ -45,6 +45,13 @@ PERSONAL_WORKSPACE_KIND = "personal"
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
+-- Identity is established at startup, before the action log opens, so
+-- this is usually the connection that creates the file. Journal mode is
+-- a property of the database rather than the connection, so whichever
+-- store gets there first decides it for everyone; leaving it unset here
+-- meant the file's mode depended on start order.
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
 
 CREATE TABLE IF NOT EXISTS users (
     id           TEXT PRIMARY KEY,

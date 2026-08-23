@@ -52,10 +52,6 @@ MAX_ARGUMENTS_CHARS = 4096
 #: Same reasoning for the failure text a tool hands back.
 MAX_DETAIL_CHARS = 2048
 
-#: How much beyond the cap the scrubber still sees, so a credential
-#: sitting across the cut is matched whole rather than left a fragment.
-SCRUB_WINDOW_MARGIN_CHARS = 1024
-
 BUSY_TIMEOUT_SEC = 15.0
 
 
@@ -180,24 +176,6 @@ def _describe_secrets(secrets: Optional[dict[str, Any]]) -> str:
 
 
 
-def _bounded(text: str, cap: int) -> str:
-    """Cut text down before it reaches the scrubber.
-
-    ``redact`` carries a lookahead that rescans to the end of the string
-    at every position, so its cost is quadratic in the input: 5KB takes
-    a tenth of a second, 100KB takes forty. Writing a file logs its
-    content, so scrubbing first and truncating afterwards would spend
-    minutes inside the audit path, on the request path, for a row that
-    gets cut to ``cap`` anyway.
-
-    The window is wider than ``cap`` so a credential straddling the cut
-    is still whole when the scrubber sees it. Anything past the window
-    could not have reached the stored row in any case.
-    """
-    window = cap + SCRUB_WINDOW_MARGIN_CHARS
-    return text if len(text) <= window else text[:window]
-
-
 def summarise_arguments(
     arguments: Optional[dict[str, Any]],
     secrets: Optional[dict[str, Any]] = None,
@@ -219,9 +197,7 @@ def summarise_arguments(
                 rendered = json.dumps(safe, default=str, sort_keys=True)
             except Exception:
                 rendered = str(safe)
-    scrubbed = redact(
-        _bounded(rendered, MAX_ARGUMENTS_CHARS), max_len=MAX_ARGUMENTS_CHARS,
-    )
+    scrubbed = redact(rendered, max_len=MAX_ARGUMENTS_CHARS)
 
     # Appended after the scrub, not through it. The description holds a
     # name and a character count and no value, so it is safe by
@@ -298,10 +274,7 @@ class ActionLog:
             mcp_server=mcp_server,
             arguments_redacted=summarise_arguments(arguments, secrets),
             decision=decision.value,
-            decision_reason=redact(
-                _bounded(decision_reason, MAX_DETAIL_CHARS),
-                max_len=MAX_DETAIL_CHARS,
-            ),
+            decision_reason=redact(decision_reason, max_len=MAX_DETAIL_CHARS),
             policy_rule_id=policy_rule_id,
             user_id=user_id,
             workspace_id=workspace_id,
@@ -339,9 +312,7 @@ class ActionLog:
             tool_source=row["tool_source"],
             mcp_server=row["mcp_server"],
             outcome=outcome.value,
-            outcome_detail=redact(
-                _bounded(detail, MAX_DETAIL_CHARS), max_len=MAX_DETAIL_CHARS,
-            ),
+            outcome_detail=redact(detail, max_len=MAX_DETAIL_CHARS),
             verification=verification.value,
             user_id=row["user_id"],
             workspace_id=row["workspace_id"],
@@ -370,9 +341,7 @@ class ActionLog:
             tool_name=name,
             tool_source="human",
             decision=Decision.CONFIRMED.value,
-            decision_reason=redact(
-                _bounded(detail, MAX_DETAIL_CHARS), max_len=MAX_DETAIL_CHARS,
-            ),
+            decision_reason=redact(detail, max_len=MAX_DETAIL_CHARS),
             user_id=user_id,
             device_id=device_id,
         )
