@@ -79,13 +79,6 @@ class Verification(str, Enum):
 
 
 _SCHEMA_SQL = """
--- Same journal settings as the diary database in `memory/db.py`, and for
--- the same reason: without them every append fsyncs, and the boundary
--- appends twice per tool call on the request path. WAL also stops a
--- reader (the dashboard) blocking a writer (the daemon) on one file.
-PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
-
 CREATE TABLE IF NOT EXISTS actions (
     id                 TEXT PRIMARY KEY,
     action_id          TEXT NOT NULL,
@@ -207,6 +200,30 @@ def summarise_arguments(
     return f"{scrubbed} {described}".strip() if described else scrubbed
 
 
+
+def _set_journal_mode(conn: sqlite3.Connection) -> None:
+    """Ask for WAL, and carry on if another process is mid-open.
+
+    Converting a database to WAL takes a brief exclusive lock, and
+    SQLite does **not** run the busy handler for that operation: the
+    timeout on the connection does not cover it. Two processes opening a
+    fresh install at the same moment is the ordinary case here - the
+    daemon establishes identity while the tray spawns the dashboard - so
+    one of them can see `database is locked` before anything has gone
+    wrong.
+
+    Failing to set it is not a reason to fail the open. Journal mode is a
+    property of the database rather than the connection, so whoever wins
+    sets it for everyone; and a database in the default mode is slower,
+    not broken.
+    """
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.OperationalError as exc:
+        debug_log(f"left the journal mode as it was: {exc}", "storage")
+
+
 class ActionLog:
     """The ``actions`` table, in the same SQLite file as everything else.
 
@@ -227,6 +244,9 @@ class ActionLog:
         self.conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         with self._lock:
+            # Without WAL every append fsyncs, and the boundary appends
+            # twice per tool call on the request path.
+            _set_journal_mode(self.conn)
             self.conn.executescript(_SCHEMA_SQL)
 
     def close(self) -> None:
