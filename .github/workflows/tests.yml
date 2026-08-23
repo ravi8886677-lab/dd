@@ -3,27 +3,31 @@ name: tests
 on:
   pull_request:
   push:
-    branches: [ main ]
+    # Slice branches run CI on push. Without this a branch is verified
+    # only once a pull request exists, so work that is pushed and not yet
+    # proposed has no automated check anywhere - which is exactly the
+    # state this branch was in after its first pull request merged.
+    branches: [ main, 'claude/**' ]
 
 jobs:
   unit:
     name: Unit tests (Linux, Python 3.11)
     runs-on: ubuntu-latest
-    # A slow run is a defect this pipeline could not otherwise report:
-    # an audit write left without WAL once took the suite from 95
-    # seconds to 41 minutes, and CI went green, because nothing here
-    # failed on duration. A 41-minute passing build is a passing build,
-    # the same blind spot as a test file with no marker.
+    # A bound on wasted runner minutes, and nothing more. It is not a
+    # health signal and must not be read as one: four times in one branch
+    # a duration reported a problem that was not in the tree. The same
+    # commit finished in 116s on one runner and was killed at a
+    # ten-minute ceiling on another, then killed again at twenty; the
+    # suite once took 2545s in a container that had just run it in 103s.
+    # These runners degrade by a large multiple rather than hanging, so
+    # no finite ceiling separates a sick runner from a slow suite.
     #
-    # The ceiling is set against measured runner noise rather than
-    # against the healthy run. Healthy is 104-125 seconds. A ceiling at
-    # ten minutes is about five times that, and a runner was observed
-    # taking 570 seconds on a tree that ran in 115 seconds on the next
-    # attempt, so five times sat inside the noise and cancelled a good
-    # commit. Twenty minutes clears it and still fails the 41-minute
-    # case loudly. A ceiling that trips on variance teaches people to
-    # press re-run without reading the log, which is the habit it exists
-    # to prevent.
+    # What replaced it is a test count. `COLLECTED_FLOOR` in
+    # tests/test_ci_selection.py asserts that CI still selects as many
+    # tests as it did, which is the thing duration was being asked to
+    # detect and cannot be made flaky by a struggling runner.
+    #
+    # `--durations` stays as diagnostics: useful to read, never a gate.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5

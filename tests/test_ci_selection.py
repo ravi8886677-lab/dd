@@ -94,3 +94,42 @@ class TestEveryTestIsVisibleToCI:
         assert also_integration, "expected some unit tests to also be integration"
 
         assert also_integration <= _collect("unit and not needs_hardware")
+
+
+#: How many tests the CI selector collects. A floor, not an equality: it
+#: exists to catch tests *disappearing*, which is the failure that has
+#: actually happened here twice (an unmarked file, then a marker that
+#: spread), and an exact match would fail on every commit that adds one.
+#:
+#: Raise it when you add tests. Lowering it is the interesting act, and
+#: should appear in a diff with a reason next to it.
+#:
+#: This replaces wall-clock as the health signal for this pipeline. Four
+#: times in one branch a duration told us something was wrong when the
+#: only thing wrong was the runner: the same tree finished in 116s and
+#: was also killed at both a 10-minute and a 20-minute ceiling, and this
+#: suite once took 2545s in a container that had just run it in 103s. A
+#: sick runner cannot change how many tests exist, so a count says the
+#: thing a duration was being asked to say and cannot be made flaky.
+COLLECTED_FLOOR = 3096
+
+
+class TestNoTestSilentlyDisappears:
+    """The count is the signal; the clock never was.
+
+    What this cannot catch is an equal number removed and added in one
+    change. Nothing cheap catches that, and it is not the failure mode
+    this pipeline has: both real incidents were tests vanishing from
+    selection while the suite went on reporting success.
+    """
+
+    def test_ci_collects_at_least_the_recorded_number_of_tests(self):
+        collected = _collect("unit and not needs_hardware")
+        assert len(collected) >= COLLECTED_FLOOR, (
+            f"CI collects {len(collected)} tests, down from "
+            f"{COLLECTED_FLOOR}. {COLLECTED_FLOOR - len(collected)} test(s) "
+            "stopped being selected. Either a file lost its marker, a "
+            "marker spread to tests that should run, or tests were "
+            "deleted. If the removal is deliberate, lower COLLECTED_FLOOR "
+            "in the same commit and say why."
+        )
