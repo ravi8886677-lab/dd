@@ -47,6 +47,7 @@ other defence in `mcp_security.spec.md`.
 | `packages[]` with `registryType` npm/pypi and a `version` | `install`: a pinned `npx`/`uvx` launch |
 | `packages[]` without a version, or another ecosystem | `install: None` |
 | `remotes[0].url` | `remote_url` |
+| `remotes[0].type` | `remote_transport` |
 | `_meta[…].isLatest == false` | dropped |
 | `_meta[…].status != active` | dropped |
 
@@ -55,6 +56,29 @@ package, or one from an ecosystem the supply-chain guard cannot pin, gets no
 Add button. Offering one would write a config that
 `validate_server_launch` refuses at spawn time, which is the exact failure
 the connections directory exists to prevent.
+
+**A hosted server is a different proposition, and gets a Connect button.**
+Nothing is installed, so there is nothing to pin: the risk is not what runs
+on this machine but who the data is handed to. Most of the registry is this
+kind of server, and refusing them for want of a package left the majority of
+the directory unreachable from the page that lists them.
+
+Two checks stand in for the supply-chain guard, both brought forward from
+connect time to the click, because a sentence at the moment of the decision
+is worth more than a mystery later:
+
+- the declared transport must be one the client speaks. `sse` is common in
+  the registry and Jarvis does not speak it, so it is refused by name rather
+  than written and left to fail on first use.
+- the URL passes `_validate_remote_url`, the same check the client applies
+  when it connects.
+
+**The host is shown before the click, not after.** Namespace proof says who
+published the entry; it says nothing about where the data goes, and the
+registry is thick with aggregators re-publishing other people's tools under
+their own domain. The tile names the hostname the tokens and the content
+will travel to. That is a fact the user needs, not a verdict about safety —
+the registry cannot supply one of those.
 
 **The guard itself decides what counts as pinned**, by being run over the
 candidate config. A registry `version` is free text and holds `latest`,

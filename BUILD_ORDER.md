@@ -260,6 +260,47 @@ the change that relied on it, so it is asserted rather than remembered.
 
 **When adding a test, mark it.** An unmarked test is not a test CI runs.
 
+## 3b. Hosted servers, and what the catalogue still cannot show
+
+The remote transport and the OAuth flow were finished and tested, and
+nothing in the dashboard could reach them. The registry's Add refused
+anything without a pinned package, and most hosted servers have no
+package at all: measured against the live registry, **5,133 of 6,000
+servers are hosted, and 5,040 of those speak streamable HTTP.** All of
+them were unreachable from the page listing them. They are now a click.
+
+Two things remain, and the second is a decision rather than work:
+
+- **`sse` is not supported.** 93 registry servers declare it, and so do
+  two of the few first-party entries a client would recognise (Linear,
+  Atlassian). They are refused by name at the click rather than written
+  and left to fail on first use. Supporting SSE means a second client
+  path in `mcp_client.py`; worth doing when a customer asks for one of
+  those names.
+
+- **The curated catalogue is still nine local `npx`/`uvx` servers.**
+  Adding first-party remote tiles (Notion, and whichever others prove
+  out) is the cheapest change to how the product feels in a demo, and it
+  needs `MCPEntry` to carry `url`/`transport`/`auth` — the registry path
+  proves the mechanism works.
+
+  It is not done here because the endpoints could not be verified from
+  this container: outbound HTTPS is proxied and every candidate host was
+  unreachable, so every URL would have been copied from documentation
+  and never tried. Notion publishes `https://mcp.notion.com/mcp`
+  (streamable HTTP, OAuth) in its own developer docs, which is good
+  evidence and not the same as a connection. **Whoever has a browser
+  should add one entry by hand, connect it, and then the catalogue rows
+  can be written from something that worked.** That closes R0.4 in
+  `REQUIREMENTS.md`, which is the outstanding "OAuth against a real
+  provider" item, in the same sitting.
+
+  A caution for whoever writes those rows: the registry's `notion`,
+  `slack` and `clickup` entries are **third-party proxies**
+  (`server.smithery.ai`), not the vendors. Shipping one as a curated
+  tile would route a user's data through a middleman, which is what
+  `CLAUDE.md` line 1 forbids. First-party or nothing.
+
 ## 4. The decision that has to be made before slice 5
 
 `CLAUDE.md` line 1 is "Data privacy comes first, always", and the project

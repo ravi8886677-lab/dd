@@ -703,6 +703,10 @@
             }
         }
 
+        // What the client can actually speak. `sse` is deliberately
+        // absent, and the server refuses it too.
+        const REMOTE_TRANSPORTS = new Set(['streamable-http', 'streamable_http', 'http', 'https']);
+
         let registryEntries = [];
 
         function renderRegistry() {
@@ -722,15 +726,32 @@
                 // worded as who was checked rather than as a tick.
                 const proof = e.namespace_proof === 'github'
                     ? 'GitHub account checked' : 'Domain checked';
+                // Who the data goes to is the question a hosted server
+                // raises, and the registry is thick with aggregators
+                // re-publishing other people's tools. Naming the host is
+                // not a safety verdict, it is the fact the user needs to
+                // reach one.
+                let host = '';
+                if (e.remote_url) {
+                    try { host = new URL(e.remote_url).hostname; } catch (err) { host = ''; }
+                }
                 let action;
                 if (e.configured) {
                     action = '<button class="conn-added" disabled>Added</button>';
                 } else if (e.install) {
                     action = `<button class="conn-registry-add btn-primary"
                                       data-name="${escapeHtml(e.name)}">Add</button>`;
+                } else if (e.remote_url && REMOTE_TRANSPORTS.has(
+                        (e.remote_transport || 'streamable-http').toLowerCase())) {
+                    // Hosted, and speakable. Nothing is installed: the
+                    // browser opens, you approve, the token goes to the
+                    // keychain. "Connect" rather than "Add" because that
+                    // is what the click actually does.
+                    action = `<button class="conn-registry-add btn-primary"
+                                      data-name="${escapeHtml(e.name)}">Connect</button>`;
                 } else {
                     action = `<span class="conn-tag" title="${e.remote_url
-                        ? 'A hosted server: add it under Advanced with its URL.'
+                        ? 'A hosted server speaking a transport Jarvis cannot use yet.'
                         : 'No pinned package, so it cannot be launched safely.'}">not installable</span>`;
                 }
                 return `<div class="conn-tile${e.configured ? ' is-added' : ''}">
@@ -740,7 +761,8 @@
                         <span class="conn-tag" title="${escapeHtml(proof)}">${escapeHtml(e.namespace)}</span>
                         ${action}
                     </div>
-                    <div class="conn-tile-hint">${escapeHtml(proof)} · v${escapeHtml(e.version)}</div>
+                    <div class="conn-tile-hint">${escapeHtml(proof)} · v${escapeHtml(e.version)}${
+                        host ? ' · sends your data to ' + escapeHtml(host) : ''}</div>
                 </div>`;
             }).join('');
 

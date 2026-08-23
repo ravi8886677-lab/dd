@@ -691,6 +691,74 @@ def _registry_config_name(registry_name: str) -> str:
     return registry_name.rsplit("/", 1)[-1] or registry_name
 
 
+
+#: What the registry calls a transport, mapped to what the client speaks.
+#: `sse` is deliberately absent: it is a different protocol, it is common
+#: in the registry, and writing it here would produce a server that fails
+#: at connect time long after the user believed the Add had worked.
+_REGISTRY_TRANSPORTS = {
+    "streamable-http": "http",
+    "streamable_http": "http",
+    "http": "http",
+    "https": "http",
+}
+
+
+def _remote_entry_from_registry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The config for a hosted server, or ``None`` if it is not one."""
+    url = entry.get("remote_url")
+    if not url:
+        return None
+    return {
+        "transport": entry.get("remote_transport") or "streamable-http",
+        "url": str(url),
+        "auth": "oauth",
+    }
+
+
+def _write_remote_server(name: str, remote: Dict[str, Any]) -> Response:
+    """Store a hosted server, once its URL and transport are usable.
+
+    The checks are the ones that would otherwise fail at connect time,
+    brought forward to the click: an unsupported transport, and a URL
+    the client would refuse. Failing here is a sentence the user can
+    act on; failing later is a mystery.
+    """
+    from jarvis.config import _load_json, _save_json
+    from jarvis.tools.external.mcp_client import _validate_remote_url
+
+    declared = str(remote.get("transport") or "").strip().lower()
+    transport = _REGISTRY_TRANSPORTS.get(declared)
+    if transport is None:
+        return jsonify({
+            "error": (
+                f"that server speaks {declared or 'an unknown transport'}, which "
+                "Jarvis cannot connect to yet. Only streamable HTTP is supported."
+            ),
+        }), 400
+
+    key = _registry_config_name(name)
+    url = str(remote.get("url") or "")
+    try:
+        _validate_remote_url(key, url)
+    except Exception as e:  # noqa: BLE001
+        debug_log(f"refused registry remote {name}: {e}", "mcp")
+        return jsonify({"error": f"that server's address was refused: {e}"}), 400
+
+    path = _config_path()
+    cfg_json = _load_json(path)
+    mcps = cfg_json.setdefault("mcps", {})
+    collision = _key_collision(mcps, key)
+    if collision is not None:
+        return collision
+
+    mcps[key] = {"transport": transport, "url": url, "auth": "oauth"}
+    if not _save_json(path, cfg_json):
+        return jsonify({"error": "could not write config.json"}), 500
+    debug_log(f"added hosted MCP server {name} ({url}) from the dashboard", "mcp")
+    return jsonify({"ok": True, "remote": True, "url": url})
+
+
 @app.route("/api/mcp/registry/add", methods=["POST"])
 def mcp_registry_add() -> Response:
     """Install a cached registry server using its pinned package version."""
@@ -704,9 +772,15 @@ def mcp_registry_add() -> Response:
     if entry is None:
         return jsonify({"error": f"no cached registry entry named {name}"}), 404
     if not entry.get("install"):
-        # Either the package is unpinned or its ecosystem is one the
-        # supply-chain guard cannot pin, so any config written here would be
-        # refused at spawn time.
+        # No package to pin. That is fatal for a local server, where an
+        # unpinned package is the supply-chain hazard the guard exists
+        # for. A hosted server is a different proposition: there is
+        # nothing to install, the transport and the OAuth flow are
+        # already built, and refusing here is what left most of the
+        # registry unreachable from the page that lists it.
+        remote = _remote_entry_from_registry(entry)
+        if remote is not None:
+            return _write_remote_server(name, remote)
         return jsonify({"error": "that server has no pinned package to install"}), 400
 
     install = entry.get("install")
