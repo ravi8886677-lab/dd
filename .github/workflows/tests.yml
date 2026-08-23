@@ -3,20 +3,28 @@ name: tests
 on:
   pull_request:
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
 
 jobs:
   unit:
     name: Unit tests (Linux, Python 3.11)
     runs-on: ubuntu-latest
-    # The real run is under two minutes. This ceiling is roughly six
-    # times that, because a slow run is a defect this pipeline could not
-    # otherwise report: an audit write left without WAL once took the
-    # suite from 95 seconds to 41 minutes, and CI went green, because
-    # nothing here failed on duration. A 41-minute passing build is a
-    # passing build. Same class of blind spot as a test file with no
-    # marker — reporting success while measuring nothing useful.
-    timeout-minutes: 10
+    # A slow run is a defect this pipeline could not otherwise report:
+    # an audit write left without WAL once took the suite from 95
+    # seconds to 41 minutes, and CI went green, because nothing here
+    # failed on duration. A 41-minute passing build is a passing build,
+    # the same blind spot as a test file with no marker.
+    #
+    # The ceiling is set against measured runner noise rather than
+    # against the healthy run. Healthy is 104-125 seconds. A ceiling at
+    # ten minutes is about five times that, and a runner was observed
+    # taking 570 seconds on a tree that ran in 115 seconds on the next
+    # attempt, so five times sat inside the noise and cancelled a good
+    # commit. Twenty minutes clears it and still fails the 41-minute
+    # case loudly. A ceiling that trips on variance teaches people to
+    # press re-run without reading the log, which is the habit it exists
+    # to prevent.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
