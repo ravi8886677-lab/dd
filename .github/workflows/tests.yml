@@ -9,6 +9,14 @@ jobs:
   unit:
     name: Unit tests (Linux, Python 3.11)
     runs-on: ubuntu-latest
+    # The real run is under two minutes. This ceiling is roughly six
+    # times that, because a slow run is a defect this pipeline could not
+    # otherwise report: an audit write left without WAL once took the
+    # suite from 95 seconds to 41 minutes, and CI went green, because
+    # nothing here failed on duration. A 41-minute passing build is a
+    # passing build. Same class of blind spot as a test file with no
+    # marker — reporting success while measuring nothing useful.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -32,5 +40,8 @@ jobs:
         # one. `not needs_hardware` is what lets a single test that wants
         # a sound card be held back without its whole file leaving CI.
         run: |
-          xvfb-run -a python -m pytest -q -m "unit and not needs_hardware"
+          # `--durations` catches the slide, `timeout-minutes` catches
+          # the cliff. Without the first, the only signal that the suite
+          # is degrading is someone noticing the wall-clock by eye.
+          xvfb-run -a python -m pytest -q -m "unit and not needs_hardware" --durations=10
 

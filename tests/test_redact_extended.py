@@ -84,3 +84,61 @@ class TestKeywordAnchoredCredentials:
         out = redact("oauth_token=qwertyuiop")
         assert "qwertyuiop" not in out
         assert "oauth_token=[REDACTED]" in out
+
+
+@pytest.mark.unit
+class TestScrubbingIsLinearInTheInput:
+    """A scrubber on the reply path cannot be quadratic.
+
+    The email rule used to start a fresh greedy scan at every offset in
+    a run of local-part characters and backtrack the whole way on
+    failure. That is 19 seconds on 50KB of ordinary text — and 50KB is
+    what `fetchWebPage` hands back, through `scrub_secrets`, on the
+    reply path. It is asserted here rather than left to review because
+    the shape reads harmless and the cost only shows up on real input.
+    """
+
+    def test_redacting_a_large_input_stays_fast(self):
+        import time
+
+        started = time.perf_counter()
+        redact("x" * 200_000)
+        took = time.perf_counter() - started
+
+        assert took < 2.0, f"redact took {took:.1f}s on 200KB"
+
+    def test_scrubbing_a_page_extract_stays_fast(self):
+        """`scrub_secrets` has no length cap, so the rules must be cheap."""
+        import time
+
+        started = time.perf_counter()
+        scrub_secrets("a.b-c+d%e" * 20_000)
+        took = time.perf_counter() - started
+
+        assert took < 2.0, f"scrub_secrets took {took:.1f}s on 180KB"
+
+    def test_the_cost_grows_linearly_not_quadratically(self):
+        """Doubling the input must not quadruple the time."""
+        import time
+
+        def cost(size: int) -> float:
+            text = "x" * size
+            started = time.perf_counter()
+            for _ in range(3):
+                redact(text)
+            return time.perf_counter() - started
+
+        small = max(cost(50_000), 1e-4)
+        large = cost(200_000)
+
+        # Linear would be 4x for 4x the input. Quadratic would be 16x.
+        assert large / small < 8, f"scaled {large / small:.1f}x for 4x the input"
+
+    def test_an_address_in_a_long_page_is_still_redacted(self):
+        """Speed must not have come from matching less."""
+        haystack = "x" * 50_000 + " contact alice@example.com now"
+
+        scrubbed = redact(haystack, max_len=200_000)
+
+        assert "alice@example.com" not in scrubbed
+        assert "[REDACTED_EMAIL]" in scrubbed
