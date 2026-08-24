@@ -171,6 +171,13 @@
                             card.remove();
                             showToast('Memory deleted', 'success');
                             loadStats();
+                        } else {
+                            showToast('Failed to delete', 'error');
+                        }
+                    }
+                });
+            });
+        }
 
         // ── YOLO mode ────────────────────────────────────────────────
         // The window is granted here, by a person clicking, and nowhere
@@ -240,7 +247,9 @@
             } catch (e) {
                 console.error('could not change YOLO mode', e);
             }
-            document.getElementById('yolo-slider')?.addEventListener('input', (e) => {
+        }
+
+        document.getElementById('yolo-slider')?.addEventListener('input', (e) => {
             document.getElementById('yolo-duration').textContent =
                 describeDuration(Number(e.target.value));
         });
@@ -252,17 +261,6 @@
         });
 
         refreshYolo();
-        }
-
-        refreshYolo();
-
-                        } else {
-                            showToast('Failed to delete', 'error');
-                        }
-                    }
-                });
-            });
-        }
 
         function renderMeals(meals) {
             if (!meals.length) {
@@ -736,6 +734,7 @@
                     try { host = new URL(e.remote_url).hostname; } catch (err) { host = ''; }
                 }
                 let action;
+                let authNote = '';
                 if (e.configured) {
                     action = '<button class="conn-added" disabled>Added</button>';
                 } else if (e.install) {
@@ -743,12 +742,23 @@
                                       data-name="${escapeHtml(e.name)}">Add</button>`;
                 } else if (e.remote_url && REMOTE_TRANSPORTS.has(
                         (e.remote_transport || 'streamable-http').toLowerCase())) {
-                    // Hosted, and speakable. Nothing is installed: the
-                    // browser opens, you approve, the token goes to the
-                    // keychain. "Connect" rather than "Add" because that
-                    // is what the click actually does.
+                    // Hosted, and speakable. The click writes the endpoint
+                    // to the config and nothing else: no browser opens and
+                    // no token is obtained here. The OAuth handshake runs
+                    // lazily, in the daemon, the first time the client
+                    // actually connects to this server.
+                    //
+                    // So the label is "Add", the same as a local server,
+                    // because adding is the whole of what it does. It said
+                    // "Connect" and promised a browser that never opened,
+                    // which is a completion claimed and not performed - the
+                    // front-end form of what CLAUDE.md forbids the assistant
+                    // from doing. The hint below says when authorisation
+                    // really happens, so the wait is expected rather than
+                    // read as a failure.
                     action = `<button class="conn-registry-add btn-primary"
-                                      data-name="${escapeHtml(e.name)}">Connect</button>`;
+                                      data-name="${escapeHtml(e.name)}">Add</button>`;
+                    authNote = ' · sign-in happens on first use';
                 } else {
                     action = `<span class="conn-tag" title="${e.remote_url
                         ? 'A hosted server speaking a transport Jarvis cannot use yet.'
@@ -762,7 +772,7 @@
                         ${action}
                     </div>
                     <div class="conn-tile-hint">${escapeHtml(proof)} · v${escapeHtml(e.version)}${
-                        host ? ' · sends your data to ' + escapeHtml(host) : ''}</div>
+                        host ? ' · sends your data to ' + escapeHtml(host) : ''}${authNote}</div>
                 </div>`;
             }).join('');
 

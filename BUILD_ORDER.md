@@ -284,6 +284,24 @@ Two things remain, and the second is a decision rather than work:
   needs `MCPEntry` to carry `url`/`transport`/`auth` — the registry path
   proves the mechanism works.
 
+  **The dashboard does not start the OAuth flow, and no endpoint asks it
+  to.** Adding a hosted server writes `transport`/`url`/`auth` to
+  `config.json` and stops there; nothing in `memory_viewer.py` touches
+  `mcp_oauth`. The handshake runs lazily in the daemon, on the first
+  actual connection to that server. The button said "Connect" and its
+  comment promised a browser window, an approval and a token in the
+  keychain, none of which happened - a completion claimed and not
+  performed, which is what `CLAUDE.md` forbids the assistant from doing
+  and is no better in a UI. It now says "Add", with the tile noting that
+  sign-in happens on first use.
+
+  Making the button mean what it said needs an endpoint that drives
+  `mcp_oauth` from the dashboard process. That is deliberately not built
+  yet: the callback listener binds inside this container and
+  `webbrowser.open` has no browser here, so it could be written but not
+  once exercised. It belongs in the same sitting as the item below, on a
+  machine with a browser.
+
   It is not done here because the endpoints could not be verified from
   this container: outbound HTTPS is proxied and every candidate host was
   unreachable, so every URL would have been copied from documentation
