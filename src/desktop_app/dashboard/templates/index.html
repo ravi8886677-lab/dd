@@ -115,7 +115,7 @@
                             <div class="hud-readout">
                                 <div class="hud-row"><span>Provider</span><b id="sys-provider">—</b></div>
                                 <div class="hud-row"><span>Model</span><b id="sys-model">—</b></div>
-                                <div class="hud-row"><span>Status</span><b id="sys-state" class="ok">IDLE</b></div>
+                                <div class="hud-row"><span>Dashboard</span><b id="sys-state" class="ok">READY</b></div>
                             </div>
                         </section>
                     </aside>
@@ -123,9 +123,14 @@
                     <div class="hud-core">
                         <div class="orb-stage">
                             <canvas id="orb" width="840" height="840"></canvas>
-                            <div class="orb-state" id="orb-state">idle</div>
+                            <div class="orb-state" id="orb-state">type below</div>
                         </div>
-                        <button id="activate-btn" class="hud-activate">Activate</button>
+                        <!-- Focuses the composer, and says so. A browser cannot
+                             reach the microphone through Flask, so a control
+                             labelled "Activate" beside a glowing orb and an IDLE
+                             badge promises a power switch this page does not
+                             have. The orb is decoration; this is a text box. -->
+                        <button id="activate-btn" class="hud-activate">Type a message</button>
                     </div>
 
                     <section class="hud-panel hud-conversation">
@@ -259,6 +264,7 @@
                        Saved to <code>config.json</code> and applied on your next message.</p>
                 </div>
 
+                <h3 class="settings-group">Chat and reasoning</h3>
                 <div class="settings-grid">
                     <label>Provider</label>
                     <select id="set-provider">
@@ -277,9 +283,51 @@
 
                     <label>Fast model</label>
                     <input id="set-fast" placeholder="used for planning and routing" />
+                </div>
+
+                <h3 class="settings-group">Embeddings</h3>
+                <p class="settings-note">Used to find relevant memories and to narrow the
+                   tool list before choosing one. This must be an endpoint that serves
+                   <code>/v1/embeddings</code> — a chat-only API will not do, and the
+                   failure is silent: recall and tool choice quietly get worse.
+                   Leave the provider blank to reuse the chat provider above.</p>
+                <div class="settings-grid">
+                    <label>Provider</label>
+                    <input id="set-embed-provider" placeholder="blank = same as chat provider" />
+
+                    <label>Base URL</label>
+                    <input id="set-embed-baseurl" placeholder="blank = same as chat base URL" />
+
+                    <label>API key</label>
+                    <input id="set-embed-key" type="password" placeholder="blank = keep current, or reuse the chat key" />
 
                     <label>Embedding model</label>
                     <input id="set-embed" placeholder="gemini-embedding-001" />
+                </div>
+
+                <h3 class="settings-group">Speech recognition</h3>
+                <p class="settings-note">Local Whisper runs on this machine and uploads
+                   nothing. A remote endpoint is faster, and your recorded speech goes to
+                   whoever runs it. Local is used automatically whenever a remote one
+                   fails, so this can never stop transcription working.</p>
+                <div class="settings-grid">
+                    <label>Provider</label>
+                    <select id="set-stt-provider">
+                        <option value="local">local (Whisper on this computer)</option>
+                        <option value="openai_compatible">remote endpoint (OpenAI-compatible)</option>
+                    </select>
+
+                    <label>Base URL</label>
+                    <input id="set-stt-baseurl" placeholder="https://api.groq.com/openai/v1" />
+
+                    <label>API key</label>
+                    <input id="set-stt-key" type="password" placeholder="leave blank to keep the current key" />
+
+                    <label>Model</label>
+                    <input id="set-stt-model" placeholder="whisper-large-v3-turbo" />
+
+                    <label>Timeout (seconds)</label>
+                    <input id="set-stt-timeout" placeholder="5" />
                 </div>
 
                 <div class="settings-actions">

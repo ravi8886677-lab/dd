@@ -124,7 +124,7 @@ class TestEveryTestIsVisibleToCI:
 #: suite once took 2545s in a container that had just run it in 103s. A
 #: sick runner cannot change how many tests exist, so a count says the
 #: thing a duration was being asked to say and cannot be made flaky.
-COLLECTED_FLOOR = 3100
+COLLECTED_FLOOR = 3113
 
 
 class TestNoTestSilentlyDisappears:

@@ -576,11 +576,26 @@
             document.getElementById('set-baseurl').value = d.llm_base_url || '';
             document.getElementById('set-chat').value = d.llm_chat_model || '';
             document.getElementById('set-fast').value = d.fast_model || '';
+            document.getElementById('set-embed-provider').value = d.embedding_provider || '';
+            document.getElementById('set-embed-baseurl').value = d.embedding_base_url || '';
             document.getElementById('set-embed').value = d.embedding_model || '';
-            // The key is never sent to the page. A hint identifies which one
-            // is loaded without exposing the credential.
-            document.getElementById('set-key').placeholder = d.has_key
-                ? `key ending ${d.key_hint} is saved — leave blank to keep it`
+            document.getElementById('set-stt-provider').value = d.stt_provider || 'local';
+            document.getElementById('set-stt-baseurl').value = d.stt_base_url || '';
+            document.getElementById('set-stt-model').value = d.stt_model || '';
+            document.getElementById('set-stt-timeout').value =
+                d.stt_timeout_sec === '' || d.stt_timeout_sec == null ? '' : d.stt_timeout_sec;
+            // Keys are never sent to the page. A hint identifies which one is
+            // loaded without exposing the credential.
+            keyPlaceholder('set-key', d.has_llm_api_key ?? d.has_key, d.hint_llm_api_key ?? d.key_hint);
+            keyPlaceholder('set-embed-key', d.has_embedding_api_key, d.hint_embedding_api_key);
+            keyPlaceholder('set-stt-key', d.has_stt_api_key, d.hint_stt_api_key);
+        }
+
+        function keyPlaceholder(id, has, hint) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.placeholder = has
+                ? `key ending ${hint} is saved — leave blank to keep it`
                 : 'paste your API key';
         }
 
@@ -590,8 +605,16 @@
                 llm_base_url: document.getElementById('set-baseurl').value.trim(),
                 llm_chat_model: document.getElementById('set-chat').value.trim(),
                 fast_model: document.getElementById('set-fast').value.trim(),
+                embedding_provider: document.getElementById('set-embed-provider').value.trim(),
+                embedding_base_url: document.getElementById('set-embed-baseurl').value.trim(),
                 embedding_model: document.getElementById('set-embed').value.trim(),
-                llm_api_key: document.getElementById('set-key').value.trim()
+                stt_provider: document.getElementById('set-stt-provider').value,
+                stt_base_url: document.getElementById('set-stt-baseurl').value.trim(),
+                stt_model: document.getElementById('set-stt-model').value.trim(),
+                stt_timeout_sec: document.getElementById('set-stt-timeout').value.trim(),
+                llm_api_key: document.getElementById('set-key').value.trim(),
+                embedding_api_key: document.getElementById('set-embed-key').value.trim(),
+                stt_api_key: document.getElementById('set-stt-key').value.trim()
             };
         }
 

@@ -913,8 +913,26 @@ def weather_now() -> Response:
 # reach unrelated config (db paths, MCP commands, wake words).
 _SETTINGS_FIELDS = (
     "llm_provider", "llm_base_url", "llm_chat_model", "fast_model",
-    "embedding_provider", "embedding_model",
+    # Embeddings are a second provider, not a second model. Offering the
+    # provider without its endpoint and key was a choice the panel could
+    # not complete: point `embedding_provider` somewhere new and there
+    # was no way to say where or with what credential.
+    "embedding_provider", "embedding_base_url", "embedding_model",
+    # Speech recognition is a third. It was absent entirely, so the only
+    # way to configure a hosted recogniser was to edit config.json by
+    # hand - and the PyQt settings window that does expose it cannot be
+    # opened on a machine without a desktop session.
+    "stt_provider", "stt_base_url", "stt_model",
 )
+
+#: Written as numbers rather than strings, so config.json stays the
+#: shape `load_settings` expects to read back.
+_SETTINGS_NUMERIC_FIELDS = ("stt_timeout_sec",)
+
+#: Credentials. Never returned to the page, and only overwritten when a
+#: new value is actually supplied, so changing a model does not require
+#: re-typing a key.
+_SETTINGS_KEY_FIELDS = ("llm_api_key", "embedding_api_key", "stt_api_key")
 
 
 def _key_hint(key: str) -> str:
@@ -983,8 +1001,16 @@ def settings_get() -> Response:
 
     raw = _load_json(_config_path())
     out = {f: raw.get(f, "") for f in _SETTINGS_FIELDS}
-    out["has_key"] = bool((raw.get("llm_api_key") or "").strip())
-    out["key_hint"] = _key_hint(raw.get("llm_api_key", ""))
+    for field in _SETTINGS_NUMERIC_FIELDS:
+        out[field] = raw.get(field, "")
+    for field in _SETTINGS_KEY_FIELDS:
+        value = str(raw.get(field) or "").strip()
+        out[f"has_{field}"] = bool(value)
+        out[f"hint_{field}"] = _key_hint(value)
+    # Retained so an older page served from cache still finds the two
+    # names it knows. Both describe the LLM key.
+    out["has_key"] = out["has_llm_api_key"]
+    out["key_hint"] = out["hint_llm_api_key"]
     return jsonify(out)
 
 
@@ -1000,11 +1026,25 @@ def settings_post() -> Response:
         if field in payload:
             raw[field] = str(payload[field] or "").strip()
 
-    # Only replace the key when a new one is actually supplied, so the
-    # user can change the model without re-typing their credential.
-    new_key = str(payload.get("llm_api_key", "") or "").strip()
-    if new_key:
-        raw["llm_api_key"] = new_key
+    for field in _SETTINGS_NUMERIC_FIELDS:
+        if field not in payload:
+            continue
+        supplied = str(payload[field] or "").strip()
+        if not supplied:
+            # Blank means "stop overriding", not "zero".
+            raw.pop(field, None)
+            continue
+        try:
+            raw[field] = float(supplied)
+        except ValueError:
+            return jsonify({"error": f"{field} must be a number"}), 400
+
+    # Only replace a key when a new one is actually supplied, so the user
+    # can change a model without re-typing their credential.
+    for field in _SETTINGS_KEY_FIELDS:
+        new_key = str(payload.get(field, "") or "").strip()
+        if new_key:
+            raw[field] = new_key
 
     if not _save_json(_config_path(), raw):
         return jsonify({"error": "could not write config.json"}), 500
