@@ -47,6 +47,14 @@ class Transcription:
 class SpeechToText(ABC):
     """A speech recogniser."""
 
+    #: Why the last call returned ``None``, in words fit to show a user, or
+    #: ``None`` when the last call succeeded. ``None`` from ``transcribe``
+    #: remains the entire contract for *what* happened; this says *why*, so
+    #: a caller can tell someone that recognition is degraded instead of
+    #: leaving them with an assistant that has quietly gone slow. Adapters
+    #: that never explain themselves inherit this and read as "no detail".
+    last_error: Optional[str] = None
+
     @abstractmethod
     def transcribe(
         self,

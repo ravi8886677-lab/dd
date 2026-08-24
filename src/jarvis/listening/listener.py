@@ -462,6 +462,10 @@ class VoiceListener(threading.Thread):
         # that startup never blocks on it. ``None`` is a resolved answer.
         self._hosted_stt: Optional[Any] = None
         self._hosted_stt_resolved = False
+        # Whether the user has already been told that hosted recognition is
+        # failing. Cleared by a success, so a second outage after a recovery
+        # is announced again rather than passing in silence.
+        self._hosted_failure_announced = False
         self._audio_q: queue.Queue = queue.Queue(maxsize=64)
         self._pre_roll: deque = deque()
 
@@ -1621,6 +1625,30 @@ class VoiceListener(threading.Thread):
             )
         return self._hosted_stt
 
+    def _announce_hosted_failure(self, reason: Optional[str]) -> None:
+        """Say once, out loud, that recognition has dropped to local.
+
+        This is a `print` rather than a `debug_log` deliberately. Debug
+        output is off unless the user turned it on, so every hosted failure
+        was being reported to nobody: a rejected key produced a pause and
+        then a worse transcript, with no way to connect either to a setting.
+
+        Once, not per utterance. A warning on every sentence is its own
+        fault, and the condition is almost always persistent - a key is
+        wrong, or a quota is spent - so repeating it adds nothing after the
+        first time.
+        """
+        if self._hosted_failure_announced:
+            return
+        self._hosted_failure_announced = True
+        detail = f" ({reason})" if reason else ""
+        print(
+            f"  ⚠️  Speech recognition: hosted provider failed{detail}, "
+            "using local Whisper",
+            flush=True,
+        )
+        debug_log(f"⚠️ hosted stt degraded to local: {reason or 'no detail'}", "whisper")
+
     def _transcribe_hosted(self, audio) -> Optional[str]:
         """Transcribe through the hosted provider, or ``None`` to fall back.
 
@@ -1633,16 +1661,28 @@ class VoiceListener(threading.Thread):
         if backend is None:
             return None
 
+        # The adapter's own default is 15 seconds, which is a reasonable
+        # ceiling for a file upload and a poor one for a spoken sentence:
+        # the user hears it as the assistant having stopped responding. The
+        # local model is standing by, so waiting longer buys nothing.
+        timeout_sec = float(getattr(self.cfg, "stt_timeout_sec", 5.0) or 5.0)
+
         try:
-            result = backend.transcribe_detailed(audio, sample_rate=self._samplerate)
+            result = backend.transcribe_detailed(
+                audio, sample_rate=self._samplerate, timeout_sec=timeout_sec
+            )
         except Exception as exc:
             # Adapters are contracted to return None rather than raise, but a
             # caller on the audio thread cannot afford to rely on that.
             debug_log(f"⚠️ hosted stt raised, using local: {exc}", "whisper")
+            self._announce_hosted_failure(type(exc).__name__)
             return None
 
         if result is None:
+            self._announce_hosted_failure(getattr(backend, "last_error", None))
             return None
+
+        self._hosted_failure_announced = False
 
         if result.language:
             self._last_detected_language = result.language
@@ -1963,124 +2003,51 @@ class VoiceListener(threading.Thread):
             return f"\"How's the weather, {wake_title}?\""
         return f"\"How's the weather in [your city], {wake_title}?\""
 
-    def run(self) -> None:
-        """Main voice listening loop."""
-        if sd is None:
-            debug_log("sounddevice not available", "voice")
-            print("  ❌ Audio system not available - sounddevice failed to load", flush=True)
-            return
+    def _should_defer_local_whisper(self) -> bool:
+        """Whether a configured hosted recogniser makes local Whisper wait.
 
-        # Verify PortAudio is working by querying devices (catches Windows DLL issues)
+        Local Whisper is the fallback and stays the fallback: this never
+        decides that it will not be used, only that it need not be paid
+        for before anything has asked for it. A hosted setup that works
+        never loads it; one that fails loads it on the first failure and
+        keeps the guarantee.
+
+        The question is "is a hosted provider actually reachable", not
+        "is one named". A provider selected with no endpoint resolves to
+        local, so deferring on the name alone would leave the recogniser
+        unloaded on a setup that has nothing else to fall back to.
+        """
         try:
-            devices = sd.query_devices()
-            input_devices = [d for d in devices if d.get('max_input_channels', 0) > 0]
-            debug_log(f"PortAudio initialised: {len(input_devices)} input device(s) found", "voice")
-            if not input_devices:
-                print("  ❌ No microphone found. Please connect a microphone.", flush=True)
-                return
-        except Exception as e:
-            debug_log(f"PortAudio device query failed: {e}", "voice")
-            print(f"  ❌ Audio system error: {e}", flush=True)
-            print("     PortAudio may not be properly installed", flush=True)
-            if sys.platform == 'linux':
-                print("     On Linux, ensure PortAudio is installed: sudo apt install libportaudio2", flush=True)
-            return
+            from ..speech.factory import get_stt_backend
 
-        # Windows 11: Test microphone permission by attempting a brief recording
-        # This catches privacy settings that silently block audio access.
-        # A 5-second timeout prevents indefinite hangs when Windows blocks
-        # the audio device at the system level without raising an error.
-        # Uses InputStream (not sd.rec) so the stream can be explicitly closed
-        # on timeout, avoiding resource leaks that could block later audio init.
-        if sys.platform == 'win32':
-            try:
-                print("  🔐 Checking microphone permission...", flush=True)
-                mic_ok = threading.Event()
-                mic_error: list = [None]
+            return get_stt_backend(self.cfg) is not None
+        except Exception as exc:
+            # Failing to answer means loading the model, because the cost
+            # of a needless load is memory and the cost of a wrong defer
+            # is an assistant that cannot hear anything.
+            debug_log(f"⚠️ could not resolve hosted stt, loading local: {exc}", "whisper")
+            return False
 
-                def _mic_check():
-                    # Deliberately NOT under portaudio_lock: this probe's
-                    # open/start can hang indefinitely when Windows blocks
-                    # mic access at the system level (that is what the 5s
-                    # timeout below is for), and hanging while holding the
-                    # process-wide lock would freeze every other audio user
-                    # (listener, dictation, TTS). The probe runs once at
-                    # startup before the listener's main stream opens, so
-                    # the residual open/open race is minimal; the quick
-                    # stop/close after a successful start stays guarded.
-                    stream = None
-                    try:
-                        stream = sd.InputStream(
-                            samplerate=self._samplerate, channels=1,
-                            dtype="float32", blocksize=int(self._samplerate * 0.1),
-                        )
-                        stream.start()
-                        time.sleep(0.15)
-                        with portaudio_lock:
-                            stream.stop()
-                            stream.close()
-                        stream = None
-                        mic_ok.set()
-                    except Exception as exc:
-                        mic_error[0] = exc
-                        if stream is not None:
-                            try:
-                                with portaudio_lock:
-                                    stream.close()
-                            except Exception:
-                                pass
+    def _local_whisper_ready(self) -> bool:
+        """Whether a local model is loaded and can be transcribed with.
 
-                check_thread = threading.Thread(target=_mic_check, daemon=True)
-                check_thread.start()
-                check_thread.join(timeout=5.0)
+        The two backends signal readiness differently: faster-whisper holds
+        a model object, MLX holds only a repo name and loads from cache on
+        each call. Asking one question of both is what lets the deferred
+        path stay ignorant of which is in use.
+        """
+        if self._whisper_backend == "mlx":
+            return bool(getattr(self, "_mlx_model_repo", None))
+        return self.model is not None
 
-                if check_thread.is_alive():
-                    # Do NOT abort/close the stream from this thread: the
-                    # check thread may still be blocked inside start()/stop()
-                    # on it, and closing a stream under another thread's feet
-                    # is a native use-after-free that aborts the whole app on
-                    # Windows (#401). Abandon it — the daemon check thread
-                    # will finish the stop/close itself if it ever unblocks.
-                    debug_log("microphone permission check timed out after 5s", "voice")
-                    print("  ⚠️  Microphone permission check timed out", flush=True)
-                    print("     This may indicate Windows is blocking microphone access.", flush=True)
-                    print("     Continuing anyway — voice input may not work.", flush=True)
-                elif mic_error[0] is not None:
-                    e = mic_error[0]
-                    error_str = str(e).lower()
-                    print(f"  ❌ Microphone permission check failed: {e}", flush=True)
-                    if "unapproved" in error_str or "denied" in error_str or "access" in error_str or "-9999" in str(e):
-                        print("", flush=True)
-                        print("  ┌─────────────────────────────────────────────────────────┐", flush=True)
-                        print("  │  🔒 MICROPHONE ACCESS BLOCKED BY WINDOWS               │", flush=True)
-                        print("  │                                                         │", flush=True)
-                        print("  │  To fix this:                                          │", flush=True)
-                        print("  │  1. Open Windows Settings                              │", flush=True)
-                        print("  │  2. Go to Privacy & security → Microphone              │", flush=True)
-                        print("  │  3. Turn ON 'Microphone access'                        │", flush=True)
-                        print("  │  4. Turn ON 'Let apps access your microphone'          │", flush=True)
-                        print("  │  5. Turn ON 'Let desktop apps access your microphone'  │", flush=True)
-                        print("  │                                                         │", flush=True)
-                        print("  │  Then restart Jarvis.                                  │", flush=True)
-                        print("  └─────────────────────────────────────────────────────────┘", flush=True)
-                        print("", flush=True)
-                    return
-                elif mic_ok.is_set():
-                    print("  ✅ Microphone permission OK", flush=True)
-                else:
-                    print("  ⚠️  Microphone returned empty audio", flush=True)
-            except Exception as e:
-                debug_log(f"microphone permission check error: {e}", "voice")
-                print(f"  ⚠️  Microphone check error: {e}", flush=True)
+    def _initialise_local_whisper(self) -> bool:
+        """Load the local Whisper model. ``False`` if it could not be.
 
-        # Kick off LLM warmups in parallel with Whisper load so the first
-        # user engagement doesn't pay cold-load cost on either model. All
-        # warmup output (Whisper + LLMs) is indented under this header to
-        # visually group the phase.
-        print("  🔥 Warming up models...", flush=True)
-        self._llm_warmup_started_at = time.time()
-        self._llm_warmup_threads = self._start_llm_warmup()
-
+        Called at startup on a local setup, and on first need when a
+        hosted provider was configured and has since failed. It is
+        idempotent by way of the caller: both call sites check whether a
+        model is already loaded before asking.
+        """
         # Determine and initialise Whisper backend
         self._whisper_backend = self._determine_whisper_backend()
         model_name = getattr(self.cfg, "whisper_model", "small")
@@ -2102,7 +2069,7 @@ class VoiceListener(threading.Thread):
             if not MLX_WHISPER_AVAILABLE:
                 debug_log("MLX Whisper not available", "voice")
                 print("  ❌ MLX Whisper not available. Install with: pip install mlx-whisper", flush=True)
-                return
+                return False
 
             self._mlx_model_repo = _get_mlx_model_repo(model_name)
             print(f"     🎤 Loading MLX Whisper '{model_name}' (Apple Silicon GPU)...", flush=True)
@@ -2142,13 +2109,13 @@ class VoiceListener(threading.Thread):
                     print(f"  ❌ Failed to initialise MLX Whisper: {e}", flush=True)
                     if is_rate_limited:
                         print("  💡 HuggingFace is rate limiting downloads. Please wait a few minutes and restart.", flush=True)
-                    return
+                    return False
         else:
             # faster-whisper backend
             if not FASTER_WHISPER_AVAILABLE:
                 debug_log("faster-whisper not available", "voice")
                 print("  ❌ faster-whisper not available. Install with: pip install faster-whisper", flush=True)
-                return
+                return False
 
             device = getattr(self.cfg, "whisper_device", "auto")
             compute = getattr(self.cfg, "whisper_compute_type", "int8")
@@ -2292,17 +2259,17 @@ class VoiceListener(threading.Thread):
                         debug_log(f"gave up after {_max_retries} rate-limit retries", "voice")
                         print(f"  ❌ Failed to load Whisper model after {_max_retries} retries: {last_error}", flush=True)
                         print("  💡 HuggingFace is rate limiting downloads. Please wait a few minutes and restart.", flush=True)
-                        return
+                        return False
                     else:
                         # For other errors (model not found, etc.), don't try fallbacks
                         debug_log(f"failed to initialise faster-whisper: {e}", "voice")
                         print(f"  ❌ Failed to load Whisper model: {e}", flush=True)
-                        return
+                        return False
 
             if last_error is not None:
                 debug_log(f"failed to initialise faster-whisper with any config: {last_error}", "voice")
                 print(f"  ❌ Failed to load Whisper model: {last_error}", flush=True)
-                return
+                return False
 
             # Warm up faster-whisper so the first real utterance doesn't pay
             # the cold-decode cost. Use low-amplitude noise rather than pure
@@ -2330,6 +2297,137 @@ class VoiceListener(threading.Thread):
                     debug_log("faster-whisper warmup transcription complete", "voice")
                 except Exception as e:
                     debug_log(f"faster-whisper warmup failed: {e}", "voice")
+        return True
+
+    def run(self) -> None:
+        """Main voice listening loop."""
+        if sd is None:
+            debug_log("sounddevice not available", "voice")
+            print("  ❌ Audio system not available - sounddevice failed to load", flush=True)
+            return
+
+        # Verify PortAudio is working by querying devices (catches Windows DLL issues)
+        try:
+            devices = sd.query_devices()
+            input_devices = [d for d in devices if d.get('max_input_channels', 0) > 0]
+            debug_log(f"PortAudio initialised: {len(input_devices)} input device(s) found", "voice")
+            if not input_devices:
+                print("  ❌ No microphone found. Please connect a microphone.", flush=True)
+                return
+        except Exception as e:
+            debug_log(f"PortAudio device query failed: {e}", "voice")
+            print(f"  ❌ Audio system error: {e}", flush=True)
+            print("     PortAudio may not be properly installed", flush=True)
+            if sys.platform == 'linux':
+                print("     On Linux, ensure PortAudio is installed: sudo apt install libportaudio2", flush=True)
+            return
+
+        # Windows 11: Test microphone permission by attempting a brief recording
+        # This catches privacy settings that silently block audio access.
+        # A 5-second timeout prevents indefinite hangs when Windows blocks
+        # the audio device at the system level without raising an error.
+        # Uses InputStream (not sd.rec) so the stream can be explicitly closed
+        # on timeout, avoiding resource leaks that could block later audio init.
+        if sys.platform == 'win32':
+            try:
+                print("  🔐 Checking microphone permission...", flush=True)
+                mic_ok = threading.Event()
+                mic_error: list = [None]
+
+                def _mic_check():
+                    # Deliberately NOT under portaudio_lock: this probe's
+                    # open/start can hang indefinitely when Windows blocks
+                    # mic access at the system level (that is what the 5s
+                    # timeout below is for), and hanging while holding the
+                    # process-wide lock would freeze every other audio user
+                    # (listener, dictation, TTS). The probe runs once at
+                    # startup before the listener's main stream opens, so
+                    # the residual open/open race is minimal; the quick
+                    # stop/close after a successful start stays guarded.
+                    stream = None
+                    try:
+                        stream = sd.InputStream(
+                            samplerate=self._samplerate, channels=1,
+                            dtype="float32", blocksize=int(self._samplerate * 0.1),
+                        )
+                        stream.start()
+                        time.sleep(0.15)
+                        with portaudio_lock:
+                            stream.stop()
+                            stream.close()
+                        stream = None
+                        mic_ok.set()
+                    except Exception as exc:
+                        mic_error[0] = exc
+                        if stream is not None:
+                            try:
+                                with portaudio_lock:
+                                    stream.close()
+                            except Exception:
+                                pass
+
+                check_thread = threading.Thread(target=_mic_check, daemon=True)
+                check_thread.start()
+                check_thread.join(timeout=5.0)
+
+                if check_thread.is_alive():
+                    # Do NOT abort/close the stream from this thread: the
+                    # check thread may still be blocked inside start()/stop()
+                    # on it, and closing a stream under another thread's feet
+                    # is a native use-after-free that aborts the whole app on
+                    # Windows (#401). Abandon it — the daemon check thread
+                    # will finish the stop/close itself if it ever unblocks.
+                    debug_log("microphone permission check timed out after 5s", "voice")
+                    print("  ⚠️  Microphone permission check timed out", flush=True)
+                    print("     This may indicate Windows is blocking microphone access.", flush=True)
+                    print("     Continuing anyway — voice input may not work.", flush=True)
+                elif mic_error[0] is not None:
+                    e = mic_error[0]
+                    error_str = str(e).lower()
+                    print(f"  ❌ Microphone permission check failed: {e}", flush=True)
+                    if "unapproved" in error_str or "denied" in error_str or "access" in error_str or "-9999" in str(e):
+                        print("", flush=True)
+                        print("  ┌─────────────────────────────────────────────────────────┐", flush=True)
+                        print("  │  🔒 MICROPHONE ACCESS BLOCKED BY WINDOWS               │", flush=True)
+                        print("  │                                                         │", flush=True)
+                        print("  │  To fix this:                                          │", flush=True)
+                        print("  │  1. Open Windows Settings                              │", flush=True)
+                        print("  │  2. Go to Privacy & security → Microphone              │", flush=True)
+                        print("  │  3. Turn ON 'Microphone access'                        │", flush=True)
+                        print("  │  4. Turn ON 'Let apps access your microphone'          │", flush=True)
+                        print("  │  5. Turn ON 'Let desktop apps access your microphone'  │", flush=True)
+                        print("  │                                                         │", flush=True)
+                        print("  │  Then restart Jarvis.                                  │", flush=True)
+                        print("  └─────────────────────────────────────────────────────────┘", flush=True)
+                        print("", flush=True)
+                    return
+                elif mic_ok.is_set():
+                    print("  ✅ Microphone permission OK", flush=True)
+                else:
+                    print("  ⚠️  Microphone returned empty audio", flush=True)
+            except Exception as e:
+                debug_log(f"microphone permission check error: {e}", "voice")
+                print(f"  ⚠️  Microphone check error: {e}", flush=True)
+
+        # Kick off LLM warmups in parallel with Whisper load so the first
+        # user engagement doesn't pay cold-load cost on either model. All
+        # warmup output (Whisper + LLMs) is indented under this header to
+        # visually group the phase.
+        print("  🔥 Warming up models...", flush=True)
+        self._llm_warmup_started_at = time.time()
+        self._llm_warmup_threads = self._start_llm_warmup()
+
+        # Load the local recogniser unless a working hosted one makes it
+        # unnecessary. Deferring saves the model download and roughly a
+        # gigabyte of resident memory on a hosted setup; the fallback is
+        # unaffected, because the first hosted failure loads it.
+        if self._should_defer_local_whisper():
+            print(
+                "     🎤 Speech recognition: hosted (local Whisper loads only if needed)",
+                flush=True,
+            )
+        elif not self._initialise_local_whisper():
+            return
 
         # Wait for LLM warmups before announcing "Listening!" so the first
         # engagement is responsive. A single 60s budget is shared across
@@ -2777,7 +2875,17 @@ class VoiceListener(threading.Thread):
 
         Returns ``""`` rather than raising: a recogniser failing mid-turn
         should cost the user that turn, not the process.
+
+        On a hosted setup the model is not loaded until here, which is the
+        first moment it is genuinely needed. That load costs this one
+        utterance its latency; the alternative is paying for it on every
+        startup that never reaches this line.
         """
+        if not self._local_whisper_ready():
+            if not self._initialise_local_whisper():
+                debug_log("local whisper unavailable, no transcript", "voice")
+                return ""
+
         try:
             if self._whisper_backend == "mlx":
                 # MLX Whisper transcription

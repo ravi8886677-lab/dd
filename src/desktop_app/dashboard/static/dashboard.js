@@ -171,6 +171,13 @@
                             card.remove();
                             showToast('Memory deleted', 'success');
                             loadStats();
+                        } else {
+                            showToast('Failed to delete', 'error');
+                        }
+                    }
+                });
+            });
+        }
 
         // ── YOLO mode ────────────────────────────────────────────────
         // The window is granted here, by a person clicking, and nowhere
@@ -240,7 +247,9 @@
             } catch (e) {
                 console.error('could not change YOLO mode', e);
             }
-            document.getElementById('yolo-slider')?.addEventListener('input', (e) => {
+        }
+
+        document.getElementById('yolo-slider')?.addEventListener('input', (e) => {
             document.getElementById('yolo-duration').textContent =
                 describeDuration(Number(e.target.value));
         });
@@ -252,17 +261,6 @@
         });
 
         refreshYolo();
-        }
-
-        refreshYolo();
-
-                        } else {
-                            showToast('Failed to delete', 'error');
-                        }
-                    }
-                });
-            });
-        }
 
         function renderMeals(meals) {
             if (!meals.length) {
@@ -578,11 +576,26 @@
             document.getElementById('set-baseurl').value = d.llm_base_url || '';
             document.getElementById('set-chat').value = d.llm_chat_model || '';
             document.getElementById('set-fast').value = d.fast_model || '';
+            document.getElementById('set-embed-provider').value = d.embedding_provider || '';
+            document.getElementById('set-embed-baseurl').value = d.embedding_base_url || '';
             document.getElementById('set-embed').value = d.embedding_model || '';
-            // The key is never sent to the page. A hint identifies which one
-            // is loaded without exposing the credential.
-            document.getElementById('set-key').placeholder = d.has_key
-                ? `key ending ${d.key_hint} is saved — leave blank to keep it`
+            document.getElementById('set-stt-provider').value = d.stt_provider || 'local';
+            document.getElementById('set-stt-baseurl').value = d.stt_base_url || '';
+            document.getElementById('set-stt-model').value = d.stt_model || '';
+            document.getElementById('set-stt-timeout').value =
+                d.stt_timeout_sec === '' || d.stt_timeout_sec == null ? '' : d.stt_timeout_sec;
+            // Keys are never sent to the page. A hint identifies which one is
+            // loaded without exposing the credential.
+            keyPlaceholder('set-key', d.has_llm_api_key ?? d.has_key, d.hint_llm_api_key ?? d.key_hint);
+            keyPlaceholder('set-embed-key', d.has_embedding_api_key, d.hint_embedding_api_key);
+            keyPlaceholder('set-stt-key', d.has_stt_api_key, d.hint_stt_api_key);
+        }
+
+        function keyPlaceholder(id, has, hint) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.placeholder = has
+                ? `key ending ${hint} is saved — leave blank to keep it`
                 : 'paste your API key';
         }
 
@@ -592,8 +605,16 @@
                 llm_base_url: document.getElementById('set-baseurl').value.trim(),
                 llm_chat_model: document.getElementById('set-chat').value.trim(),
                 fast_model: document.getElementById('set-fast').value.trim(),
+                embedding_provider: document.getElementById('set-embed-provider').value.trim(),
+                embedding_base_url: document.getElementById('set-embed-baseurl').value.trim(),
                 embedding_model: document.getElementById('set-embed').value.trim(),
-                llm_api_key: document.getElementById('set-key').value.trim()
+                stt_provider: document.getElementById('set-stt-provider').value,
+                stt_base_url: document.getElementById('set-stt-baseurl').value.trim(),
+                stt_model: document.getElementById('set-stt-model').value.trim(),
+                stt_timeout_sec: document.getElementById('set-stt-timeout').value.trim(),
+                llm_api_key: document.getElementById('set-key').value.trim(),
+                embedding_api_key: document.getElementById('set-embed-key').value.trim(),
+                stt_api_key: document.getElementById('set-stt-key').value.trim()
             };
         }
 
@@ -736,6 +757,7 @@
                     try { host = new URL(e.remote_url).hostname; } catch (err) { host = ''; }
                 }
                 let action;
+                let authNote = '';
                 if (e.configured) {
                     action = '<button class="conn-added" disabled>Added</button>';
                 } else if (e.install) {
@@ -743,12 +765,23 @@
                                       data-name="${escapeHtml(e.name)}">Add</button>`;
                 } else if (e.remote_url && REMOTE_TRANSPORTS.has(
                         (e.remote_transport || 'streamable-http').toLowerCase())) {
-                    // Hosted, and speakable. Nothing is installed: the
-                    // browser opens, you approve, the token goes to the
-                    // keychain. "Connect" rather than "Add" because that
-                    // is what the click actually does.
+                    // Hosted, and speakable. The click writes the endpoint
+                    // to the config and nothing else: no browser opens and
+                    // no token is obtained here. The OAuth handshake runs
+                    // lazily, in the daemon, the first time the client
+                    // actually connects to this server.
+                    //
+                    // So the label is "Add", the same as a local server,
+                    // because adding is the whole of what it does. It said
+                    // "Connect" and promised a browser that never opened,
+                    // which is a completion claimed and not performed - the
+                    // front-end form of what CLAUDE.md forbids the assistant
+                    // from doing. The hint below says when authorisation
+                    // really happens, so the wait is expected rather than
+                    // read as a failure.
                     action = `<button class="conn-registry-add btn-primary"
-                                      data-name="${escapeHtml(e.name)}">Connect</button>`;
+                                      data-name="${escapeHtml(e.name)}">Add</button>`;
+                    authNote = ' · sign-in happens on first use';
                 } else {
                     action = `<span class="conn-tag" title="${e.remote_url
                         ? 'A hosted server speaking a transport Jarvis cannot use yet.'
@@ -762,7 +795,7 @@
                         ${action}
                     </div>
                     <div class="conn-tile-hint">${escapeHtml(proof)} · v${escapeHtml(e.version)}${
-                        host ? ' · sends your data to ' + escapeHtml(host) : ''}</div>
+                        host ? ' · sends your data to ' + escapeHtml(host) : ''}${authNote}</div>
                 </div>`;
             }).join('');
 

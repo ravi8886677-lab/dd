@@ -640,9 +640,11 @@ Setup: [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/goo
 <details>
 <summary><strong>Common issues</strong></summary>
 
-**First startup takes a bit** - Jarvis pre-warms the Whisper, chat, and intent-judge models before announcing "Listening!" so the first engagement feels instant. This adds a few seconds on cold start and is bounded at 60 s — if Ollama is slow, Jarvis will start listening anyway and load the models on demand.
+**First startup takes a bit** - Jarvis pre-warms the Whisper, chat, and intent-judge models before announcing "Listening!" so the first engagement feels instant. This adds a few seconds on cold start and is bounded at 60 s — if Ollama is slow, Jarvis will start listening anyway and load the models on demand. If you have configured a remote recognition endpoint, the local Whisper model is not downloaded or loaded at startup at all; it loads only if the endpoint fails, which keeps a remote setup light without giving up the offline fallback.
 
 **Jarvis doesn't hear me** - Check microphone permissions, speak clearly after "Jarvis"
+
+**Speech recognition suddenly got worse, or pauses before answering** - if you configured a remote recognition endpoint, look for `⚠️ Speech recognition: hosted provider failed` in the logs. It names the reason once: `HTTP 401, the API key was rejected` means the key is wrong, `HTTP 429, rate limited` means the quota is spent, and `no response within 5s` means the endpoint is slow or unreachable. In every case Jarvis falls back to local Whisper, so it keeps working, just more slowly and with whatever accuracy the local model gives you. Adjust the wait with `stt_timeout_sec`.
 
 **Responses are slow** - Ensure you have enough VRAM (8GB+ for default model; see System Requirements for other models)
 

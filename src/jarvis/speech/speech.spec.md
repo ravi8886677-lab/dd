@@ -56,6 +56,25 @@ all of them accept.
 Collapsing these would make silence trigger a redundant local pass, or make a
 dead provider look like a quiet room.
 
+`None` says *what* happened and `last_error` says *why*, in words fit to show
+a user. Nothing has to read it, and no decision depends on it: the fallback
+is driven entirely by `None`. It exists because "hosted recognition stopped
+working" and "the assistant has gone slow" are the same experience otherwise,
+and they need different responses from the person hearing them. Adapters set
+it on every path that returns `None` and clear it on success, so it can never
+describe an older failure than the one just returned.
+
+### The timeout belongs to the conversation, not to the HTTP call
+
+`timeout_sec` is not a network setting. A spoken sentence has a local
+recogniser standing by, so waiting longer than a person will tolerate buys
+nothing that the fallback would not deliver sooner. The caller passes
+`stt_timeout_sec` (5s) rather than inheriting the adapter's 15s default,
+which is a sensible ceiling for a file upload and dead air in a dialogue.
+
+A caller that passes nothing gets the adapter's default. That is a safe
+value, not a good one, and no caller in the voice loop should rely on it.
+
 ### Why `transcribe_detailed` exists
 
 The listener does not simply take Whisper's text. It drops segments by
@@ -166,7 +185,8 @@ transcripts face.
   "stt_provider": "local",
   "stt_api_key": "",
   "stt_model": "",
-  "stt_base_url": ""
+  "stt_base_url": "",
+  "stt_timeout_sec": 5.0
 }
 ```
 
@@ -176,13 +196,15 @@ transcripts face.
 | `stt_api_key` | `""` | Read through the credential store. Optional: a local endpoint needs none, and a remote one that wants a key answers with an error, which falls back to local. |
 | `stt_model` | `""` | Empty means the adapter's default (`whisper-large-v3-turbo`). |
 | `stt_base_url` | `""` | **Required** to reach anything: empty means unconfigured and recognition stays local. Point it at any OpenAI-compatible transcriptions endpoint, including a local one. |
+| `stt_timeout_sec` | `5.0` | How long one utterance may wait before the local model answers instead. Non-numeric or non-positive values fall back to the default, because "give up immediately" reads as a typo. |
 
 The README must not claim "100% local" while a hosted provider is selectable.
 
 ## Testing
 
 `tests/test_speech_stt.py` (13), `tests/test_speech_detailed.py` (13),
-`tests/test_listener_hosted_stt.py` (11).
+`tests/test_listener_hosted_stt.py` (11),
+`tests/test_hosted_stt_experience.py` (11).
 
 - **Assert the fallback, not just the return value.** The contract is that a
   failing provider costs speed and nothing else, so the test that matters is
@@ -191,6 +213,10 @@ The README must not claim "100% local" while a hosted provider is selectable.
   that only checks falsiness cannot tell them apart.
 - **Stub the HTTP call.** Jarvis is offline-first and its suite runs with no
   network.
+- **Assert what the user is told, not only what the function returns.** A
+  failure reported solely through `debug_log` is a failure reported to
+  nobody, because debug output is off by default. The test is that something
+  reaches stdout, once, naming the reason.
 - **Assert hosted transcripts face the segment filters.** A hosted path that
   skips `avg_logprob` / `no_speech_prob` is the specific regression
   `transcribe_detailed` exists to prevent, and it is invisible in the text.

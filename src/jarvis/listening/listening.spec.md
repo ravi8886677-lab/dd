@@ -129,7 +129,7 @@ The weather example adapts to location availability: if `location_enabled` is tr
 On small models, a caveat line is appended above a more involved example to set expectations (`⚠️ Small model in use (…). Assume it can't infer — spell out the steps for anything more involved:`). The Chrome MCP tip continues to appear as its own block when the browser tool is detected.
 
 **What gets warmed:**
-- **Whisper** — loading the model; additionally a silent-audio transcribe so the first real utterance doesn't pay the cold-decode cost. Both the MLX and faster-whisper backends do this.
+- **Whisper** — loading the model; additionally a silent-audio transcribe so the first real utterance doesn't pay the cold-decode cost. Both the MLX and faster-whisper backends do this. **Skipped when a hosted recogniser is configured and reachable**, because the model is roughly a gigabyte of resident memory and a download on first run, and a working hosted setup never reaches it. It is not abandoned: `_transcribe_locally` loads it on first need, so the first hosted failure pays the load and the fallback guarantee is unchanged. **On a machine that has never held the model, that first need is a download, not a load**, and it happens in the middle of a spoken sentence. The user has already been told recognition dropped to local, so nothing is silent, but the sentence carrying that warning can take tens of seconds to come back. This is the accepted cost of not paying for the model on every startup that never needs it. The decision asks `get_stt_backend` whether a provider actually resolves, not whether one is named — a provider selected with no endpoint resolves to local, and deferring on the name alone would leave that setup with no recogniser at all.
 - **Chat model** (`cfg.llm_chat_model`) — verifies the server is actually Ollama via `GET /api/version`, then issues a minimal `/api/generate` request with `keep_alive=30m` so the weights stay resident.
 - **Intent judge model** (the fast tier: `resolve_model(cfg, Tier.FAST)`) — same pattern. If it points at the same Ollama model as the chat model, a single warmup covers both roles (Ollama loads the weights once).
 
@@ -339,6 +339,7 @@ If the intent judge later rejects the query (and no hot window override applies)
 | `voice_follow_on_seconds` | 0.6 | Silence that ends a collection that **already** holds a query. Capped at `voice_collect_seconds`, so shortening the window shortens both. |
 | `voice_max_collect_seconds` | 180.0 | Hard ceiling on a single collection, enforced even mid-utterance. |
 | `stt_provider` | `"local"` | Speech recogniser. `local` uses the in-process Whisper model; a hosted provider is tried first and falls back to local on any failure. See [speech.spec.md](../speech/speech.spec.md). |
+| `stt_timeout_sec` | `5.0` | How long one utterance waits on a hosted recogniser before local Whisper answers instead. This is dead air in a conversation, so it sits far below a normal HTTP timeout. See [speech.spec.md](../speech/speech.spec.md). |
 | `aec_enabled` | `false` | Acoustic echo cancellation. Off means microphone frames pass through untouched. See [audio.spec.md](../audio/audio.spec.md). |
 | `aec_delay_ms` | 0.0 | Speaker→microphone round trip, measured by `python -m jarvis.audio.calibration`. |
 | `aec_filter_ms` | 200 | Adaptive filter length. Lower it if the user's speech comes out chopped. |
@@ -457,7 +458,7 @@ When components are unavailable, the system degrades gracefully:
 | 16 kHz sample rate | Stream at device native rate, resample to 16 kHz for Whisper |
 | Transcript Buffer | Process each utterance independently |
 | webrtcvad (missing, or an unsupported rate/frame size) | Energy threshold on `voice_min_energy`, announced once |
-| Hosted speech provider | Local Whisper, silently — a hosted recogniser being down costs speed, never the feature |
+| Hosted speech provider | Local Whisper, announced once with the reason (`HTTP 401, the API key was rejected`), then silent. A hosted recogniser being down costs speed, never the feature — but it is said out loud, because `debug_log` is off by default and a silent 5-second pause per sentence reads as a broken assistant rather than as a setting |
 | Echo cancellation (off, `pyaec` absent, or a frame it cannot honestly cancel) | Frame passes through untouched, announced once |
 
 ### The VAD must never fail silently

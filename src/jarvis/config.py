@@ -279,6 +279,10 @@ class Settings:
     stt_api_key: str
     stt_model: str  # empty means the provider's default
     stt_base_url: str  # empty means the provider's default endpoint
+    # How long one utterance may wait on the hosted recogniser before the
+    # local model answers instead. This is dead air in a conversation, so
+    # it is deliberately far below a normal HTTP timeout.
+    stt_timeout_sec: float
     # Speak a reply sentence at a time instead of synthesising it whole.
     # Faster to first audio; off until validated against a real microphone.
     tts_stream_sentences: bool
@@ -850,6 +854,7 @@ def get_default_config() -> Dict[str, Any]:
         "stt_api_key": "",
         "stt_model": "",
         "stt_base_url": "",
+        "stt_timeout_sec": 5.0,
         "tts_stream_sentences": False,
         "aec_enabled": False,
         "aec_delay_ms": 0.0,
@@ -1100,6 +1105,14 @@ def load_settings() -> Settings:
     stt_api_key = resolve_secret(
         "stt_api_key", str(merged.get("stt_api_key", "") or "").strip()
     )
+    # A non-positive value would mean "give up immediately", which reads as
+    # a typo rather than an intention, so it falls back to the default.
+    try:
+        stt_timeout_sec = float(merged.get("stt_timeout_sec", 5.0) or 5.0)
+    except (TypeError, ValueError):
+        stt_timeout_sec = 5.0
+    if stt_timeout_sec <= 0:
+        stt_timeout_sec = 5.0
 
     brave_search_api_key = resolve_secret(
         "brave_search_api_key",
@@ -1252,6 +1265,7 @@ def load_settings() -> Settings:
         stt_api_key=stt_api_key,
         stt_model=stt_model,
         stt_base_url=stt_base_url,
+        stt_timeout_sec=stt_timeout_sec,
         tts_stream_sentences=bool(merged.get("tts_stream_sentences", False)),
         aec_enabled=bool(merged.get("aec_enabled", False)),
         aec_delay_ms=float(merged.get("aec_delay_ms", 0.0) or 0.0),
