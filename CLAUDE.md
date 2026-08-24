@@ -108,6 +108,8 @@ Run your changes and test them manually, iterate until everything is good.
 
 Always use TDD: write failing tests first, then implement the fix. Tests should verify **behaviours**, not implementation details. Test what the system does (observable outcomes), not how it does it (internal state, mock call counts, etc.).
 
+Run every new guard against the bug it is meant to catch, and read what it says when it fails. A guard you have not seen fail is decoration: it may be asserting something the defect never violated, or reading the wrong side of the problem. A completeness rule anchored on what a page *sent* passed against the broken code by **skipping** rather than failing, because the page sent nothing at all - and a skip is indistinguishable from a pass in every summary line. Re-anchored on the API's allow-list, the same rule failed with the actual diagnosis. Confirm the failure message names the defect, not just that something went red.
+
 Ensure all your changes are covered by all appropriate form of automated tests - unit, integration, visual regression, evals, etc.
 
 Mark every test. CI runs `-m "unit and not needs_hardware"`, so an unmarked test is one CI never runs. Use `pytest.mark.unit` for anything that runs in a container. To hold a single test back because a runner genuinely cannot run it (a sound card, a GPU), add `pytest.mark.needs_hardware` alongside it and list it in `tests/test_ci_selection.py`, which asserts the quarantine is exactly what we meant. Do not quarantine with `integration`: that marker means complex setup, and most such tests run in a container fine.
