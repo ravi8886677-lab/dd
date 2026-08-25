@@ -68,7 +68,13 @@ Use the `/triage` skill for triaging open issues and discussions. It owns the fu
 
 ## Releases
 
-A release is whatever advances `main`: it is the default branch, it is what the release workflow watches, and it is what auto-closes issues referenced by `Closes #NNN`. Work reaches it by merging its pull request.
+Merging does not publish. `release.yml` runs on manual dispatch only: to cut a release, run **Release** from the Actions tab against `main`. It used to fire on every push to `main`, which meant merging a pull request published a version as a side effect, and two went out in two days that nobody intended.
+
+Before dispatching it, check that the desktop bundle builds. The **Desktop build check** workflow builds Linux and smoke-tests it on every pull request and every push to `main` or `claude/**`, which is the signal that the four-platform release build will succeed. It exists because nothing built the app outside the release path, so v1.13.1 was published to the public with no binaries attached: a dependency rename broke a PyInstaller hook, every test stayed green because no test builds anything, and the failure surfaced only after the release existed.
+
+Note the ordering inside `release.yml`, which is still wrong: `semantic-release` creates the GitHub release before the builds run, and `release-main` attaches whatever artifacts exist afterwards with `fail_on_unmatched_files: false`. A failed build therefore leaves a published release with nothing in it, rather than no release at all. Manual dispatch means this cannot happen by accident; it does not mean it cannot happen.
+
+Advancing `main` still auto-closes issues referenced by `Closes #NNN`. Work reaches `main` by merging its pull request.
 
 **Do not run `git merge --ff-only develop`.** There is no `develop` branch here, for the reason given under Git Workflow above. That recipe is upstream's; run in this repository it either fails outright or fast-forwards `main` to whatever a stale local branch of that name points at. This paragraph is read at exactly the moment someone is about to move `main` by hand, so before doing that, check what you are moving it to: `git log --oneline main..<branch>`.
 

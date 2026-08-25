@@ -272,7 +272,10 @@ a = Analysis(
     binaries=aec_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    # Our hooks take precedence over PyInstaller's bundled ones. See
+    # hooks/hook-webrtcvad.py: the contrib hook looks the package up by
+    # distribution name, which the move to prebuilt wheels changed.
+    hookspath=[str(Path(SPECPATH) / 'hooks')],
     hooksconfig={},
     runtime_hooks=['src/desktop_app/rthook_onnxruntime.py'],
     excludes=[

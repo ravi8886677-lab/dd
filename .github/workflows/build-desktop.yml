@@ -16,6 +16,15 @@ on:
         required: false
         default: false
         type: boolean
+      linux_only:
+        description: >-
+          Build Linux alone. For the pre-merge check, where the point is to
+          learn whether the bundle still builds at all, and one platform
+          answers that for a fraction of the runner minutes. A release
+          always builds every platform.
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: build-desktop-${{ github.ref_name }}-${{ inputs.version }}
@@ -24,6 +33,7 @@ concurrency:
 jobs:
   # ── Windows: build + optional smoke test ────────────────────────────────
   build-windows:
+    if: ${{ !inputs.linux_only }}
     runs-on: windows-latest
     timeout-minutes: 45
 
@@ -118,6 +128,7 @@ jobs:
 
   # ── macOS: build + optional smoke test (arm64 + x64) ────────────────────
   build-macos:
+    if: ${{ !inputs.linux_only }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
