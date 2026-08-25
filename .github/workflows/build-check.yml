@@ -17,6 +17,19 @@ on:
   pull_request:
   push:
     branches: [ main, 'claude/**' ]
+  workflow_dispatch:
+    inputs:
+      all_platforms:
+        description: >-
+          Build every platform, not just Linux. Use this as a rehearsal
+          before dispatching Release: a release attempt cannot be undone
+          in place, because the tag and the public release are created
+          before any binary exists, so the only safe way to learn whether
+          all four platforms build is to build all four without
+          publishing.
+        required: false
+        default: true
+        type: boolean
 
 concurrency:
   group: build-check-${{ github.ref }}
@@ -31,4 +44,7 @@ jobs:
       # Build it and then run it. A bundle that links but cannot start is
       # a broken download, and this is the cheapest place to find out.
       smoke_test: true
-      linux_only: true
+      # A dispatch defaults to all four; the automatic pre-merge run
+      # stays Linux-only, because its job is to answer "does this still
+      # bundle" on every push without spending four runners to do it.
+      linux_only: ${{ github.event_name != 'workflow_dispatch' || !inputs.all_platforms }}

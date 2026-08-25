@@ -20,16 +20,28 @@ concurrency:
 
 jobs:
   # ── Semantic versioning analysis (main only) ────────────────────────────
-  semantic-release:
+  # ── What version would this be? (main only, publishes nothing) ─────────
+  #
+  # This runs `semantic-release --dry-run`, which analyses the commits and
+  # reports the next version without creating a tag or a release. That is
+  # what lets the builds run *before* anything is published.
+  #
+  # The previous shape published first and built afterwards, which is how
+  # v1.13.1 became a public release with no binaries: the builds failed,
+  # every downstream guard behaved correctly and refused to attach
+  # binaries it did not have, and none of that could un-publish a release
+  # that already existed. A release attempt is not reversible in place, so
+  # nothing irreversible may happen until the reversible parts have passed.
+  next-version:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
-      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
-      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
-      new_release_git_tag: ${{ steps.semantic.outputs.new_release_git_tag }}
+      will_publish: ${{ steps.dry.outputs.will_publish }}
+      version: ${{ steps.dry.outputs.version }}
+      git_tag: ${{ steps.dry.outputs.git_tag }}
 
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: 📥 Checkout code
@@ -48,25 +60,27 @@ jobs:
             @semantic-release/github@9 \
             conventional-changelog-conventionalcommits@7
 
-      - name: 🏷️ Semantic Release
-        id: semantic
+      - name: 🔎 Work out the next version
+        id: dry
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npx semantic-release --debug > release_output.log 2>&1 || true
+          set -uo pipefail
+          npx semantic-release --dry-run --debug > dry.log 2>&1 || true
 
-          if grep -q "Published release" release_output.log; then
-            echo "new_release_published=true" >> $GITHUB_OUTPUT
-            VERSION=$(grep "Published release" release_output.log | sed -n 's/.*Published release \([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p')
-            echo "new_release_version=$VERSION" >> $GITHUB_OUTPUT
-            echo "new_release_git_tag=v$VERSION" >> $GITHUB_OUTPUT
-            echo "✅ Released version $VERSION"
+          # Dry-run says "The next release version is X". No tag, no release.
+          VERSION=$(sed -n 's/.*The next release version is \([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' dry.log | head -1)
+          if [ -n "$VERSION" ]; then
+            echo "will_publish=true" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "git_tag=v$VERSION" >> $GITHUB_OUTPUT
+            echo "🔎 Next version would be $VERSION - building before publishing anything"
           else
-            echo "new_release_published=false" >> $GITHUB_OUTPUT
-            echo "ℹ️ No release created (no releasable changes found)"
+            echo "will_publish=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No releasable changes found"
           fi
 
-          cat release_output.log
+          cat dry.log
 
   # ── Build desktop apps (develop only; main builds stable-stamped below) ─
   build-desktop:
@@ -85,19 +99,22 @@ jobs:
   # Rebuild the same (already smoke-tested) commit with the real version so
   # stable installs report channel "stable" and only see stable updates.
   build-stable:
-    needs: [semantic-release]
-    if: always() && needs.semantic-release.result == 'success' && needs.semantic-release.outputs.new_release_published == 'true'
+    needs: [next-version]
+    if: needs.next-version.outputs.will_publish == 'true'
     uses: ./.github/workflows/build-desktop.yml
     with:
-      version: ${{ needs.semantic-release.outputs.new_release_version }}
+      version: ${{ needs.next-version.outputs.version }}
       channel: stable
       smoke_test: false
 
   # ── Create versioned GitHub release (main only, from stable-stamped builds) ─
   release-main:
-    needs: [semantic-release, build-stable]
+    needs: [next-version, build-stable]
     runs-on: ubuntu-latest
-    if: always() && needs.semantic-release.result == 'success' && needs.semantic-release.outputs.new_release_published == 'true'
+    # No `always()`. Every build must have succeeded before this job runs,
+    # because this is the job that creates the tag and the public release
+    # and there is no undoing either.
+    if: needs.next-version.outputs.will_publish == 'true' && needs.build-stable.result == 'success'
 
     permissions:
       contents: write
@@ -132,10 +149,55 @@ jobs:
           echo "Available artifacts:"
           find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) | sort || echo "(none)"
 
+      # Everything above this line is reversible. Everything below creates
+      # a tag and a public release, and cannot be undone in place - so the
+      # binaries are already downloaded and verified present before the
+      # first irreversible step runs.
+      - name: 📥 Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          path: repo
+
+      - name: 🐍 Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: 📦 Install semantic-release
+        run: |
+          npm install -g semantic-release@22 \
+            @semantic-release/github@9 \
+            conventional-changelog-conventionalcommits@7
+
+      - name: 🏷️ Publish the release
+        id: semantic
+        working-directory: repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          npx semantic-release --debug > release_output.log 2>&1 || true
+
+          if grep -q "Published release" release_output.log; then
+            VERSION=$(grep "Published release" release_output.log | sed -n 's/.*Published release \([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p')
+            echo "git_tag=v$VERSION" >> $GITHUB_OUTPUT
+            echo "✅ Published $VERSION, with binaries already built and waiting"
+          else
+            # The dry run said there was a version to cut, so nothing here
+            # should be a no-op. Failing is right: a silent skip would leave
+            # built binaries with no release to attach them to.
+            echo "::error::semantic-release published nothing, though the dry run expected ${{ needs.next-version.outputs.version }}"
+            cat release_output.log
+            exit 1
+          fi
+
+          cat release_output.log
+
       - name: 📎 Attach binaries to release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ needs.semantic-release.outputs.new_release_git_tag }}
+          tag_name: ${{ steps.semantic.outputs.git_tag }}
           files: |
             artifacts/**/*.zip
             artifacts/**/*.tar.gz
@@ -269,6 +331,51 @@ jobs:
         run: |
           echo "Available artifacts:"
           find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) | sort || echo "(none)"
+
+      # Everything above this line is reversible. Everything below creates
+      # a tag and a public release, and cannot be undone in place - so the
+      # binaries are already downloaded and verified present before the
+      # first irreversible step runs.
+      - name: 📥 Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          path: repo
+
+      - name: 🐍 Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: 📦 Install semantic-release
+        run: |
+          npm install -g semantic-release@22 \
+            @semantic-release/github@9 \
+            conventional-changelog-conventionalcommits@7
+
+      - name: 🏷️ Publish the release
+        id: semantic
+        working-directory: repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          npx semantic-release --debug > release_output.log 2>&1 || true
+
+          if grep -q "Published release" release_output.log; then
+            VERSION=$(grep "Published release" release_output.log | sed -n 's/.*Published release \([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p')
+            echo "git_tag=v$VERSION" >> $GITHUB_OUTPUT
+            echo "✅ Published $VERSION, with binaries already built and waiting"
+          else
+            # The dry run said there was a version to cut, so nothing here
+            # should be a no-op. Failing is right: a silent skip would leave
+            # built binaries with no release to attach them to.
+            echo "::error::semantic-release published nothing, though the dry run expected ${{ needs.next-version.outputs.version }}"
+            cat release_output.log
+            exit 1
+          fi
+
+          cat release_output.log
 
       - name: 📝 Create/Update Latest Release
         uses: softprops/action-gh-release@v3

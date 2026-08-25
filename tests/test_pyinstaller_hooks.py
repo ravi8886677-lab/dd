@@ -162,3 +162,70 @@ class TestTheDesktopBuildRunsBeforeARelease:
             "release.yml has no manual trigger left, so there is now no way "
             "to publish at all."
         )
+
+
+class TestNothingIrreversibleHappensBeforeTheBuilds:
+    """A release attempt cannot be undone in place.
+
+    `semantic-release` creates a tag and a public GitHub release. Neither
+    can be withdrawn by a later job failing, so both must come after every
+    reversible check has passed.
+
+    v1.13.1 is what the other order looks like: it published first, the
+    builds then failed, and every downstream guard behaved correctly -
+    the artifact download refused to continue without binaries and failed
+    the job, so the attach step never ran. None of that could un-publish
+    a release that already existed. The defect was the ordering alone.
+
+    On this infrastructure the argument is stronger than "a future bug
+    might". A release builds four platforms, and runner cancellations have
+    been frequent enough that at least one build drawing a sick runner is
+    likely within a few releases. Under the old order that alone published
+    an empty release, with nothing wrong in the code at all.
+    """
+
+    WORKFLOWS = ROOT / ".github/workflows"
+
+    def _release(self) -> dict:
+        yaml = pytest.importorskip("yaml")
+        return yaml.safe_load((self.WORKFLOWS / "release.yml").read_text(encoding="utf-8"))
+
+    def test_the_publishing_job_waits_for_the_builds(self) -> None:
+        jobs = self._release()["jobs"]
+        publish = jobs["release-main"]
+        assert "build-stable" in (publish.get("needs") or []), (
+            "release-main no longer waits for build-stable, so it can "
+            "publish a release for binaries that were never built."
+        )
+
+    def test_the_publishing_job_does_not_run_when_a_build_failed(self) -> None:
+        publish = self._release()["jobs"]["release-main"]
+        condition = str(publish.get("if", ""))
+        assert "always()" not in condition, (
+            "release-main carries always(), so it runs even when a build "
+            "failed. This job creates the tag and the public release."
+        )
+        assert "build-stable.result == 'success'" in condition, (
+            "release-main does not require build-stable to have succeeded."
+        )
+
+    def test_the_version_is_worked_out_without_publishing(self) -> None:
+        """The dry run is what makes building-before-publishing possible."""
+        jobs = self._release()["jobs"]
+        assert "next-version" in jobs, (
+            "the dry-run job is gone; without it the version is unknown "
+            "until something has already been published."
+        )
+        steps = jobs["next-version"]["steps"]
+        commands = " ".join(str(step.get("run", "")) for step in steps)
+        assert "--dry-run" in commands, (
+            "next-version runs semantic-release without --dry-run, so the "
+            "job that exists to publish nothing now publishes."
+        )
+
+    def test_the_builds_do_not_wait_on_a_published_release(self) -> None:
+        build = self._release()["jobs"]["build-stable"]
+        assert build.get("needs") == ["next-version"], (
+            "build-stable depends on something other than the dry run. If "
+            "that is the publishing job, the old order is back."
+        )
