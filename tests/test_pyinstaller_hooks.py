@@ -223,6 +223,29 @@ class TestNothingIrreversibleHappensBeforeTheBuilds:
             "job that exists to publish nothing now publishes."
         )
 
+    def test_the_dry_run_can_complete_its_preflight(self) -> None:
+        """`--dry-run` still checks that it *could* push.
+
+        semantic-release runs `git push --dry-run` as part of its
+        preflight even when told to publish nothing, so the job needs the
+        permission it is testing for. With `contents: read` it aborts on
+        EGITNOPERMISSION before working out a version, `will_publish`
+        comes out false, every downstream job skips, and the release
+        quietly does nothing at all. Observed, not theorised: that is
+        exactly what the first dispatched release did.
+
+        The safety here is the `--dry-run` flag, which is what stops a tag
+        or a release being created. It is not the token scope, and using
+        the scope for that purpose breaks the job instead of protecting
+        anything.
+        """
+        job = self._release()["jobs"]["next-version"]
+        assert (job.get("permissions") or {}).get("contents") == "write", (
+            "next-version cannot complete semantic-release's preflight "
+            "without contents: write, so it will report no version and the "
+            "whole release will skip silently."
+        )
+
     def test_the_builds_do_not_wait_on_a_published_release(self) -> None:
         build = self._release()["jobs"]["build-stable"]
         assert build.get("needs") == ["next-version"], (

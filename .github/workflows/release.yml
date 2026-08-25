@@ -41,7 +41,16 @@ jobs:
       git_tag: ${{ steps.dry.outputs.git_tag }}
 
     permissions:
-      contents: read
+      # Write, even though this job publishes nothing. `--dry-run` still
+      # runs semantic-release's preflight, which includes
+      # `git push --dry-run` to confirm it *could* push, and that check
+      # needs the permission it is testing for. With `contents: read` the
+      # dry run aborts on EGITNOPERMISSION before working out a version,
+      # every downstream job skips, and the release silently does nothing.
+      #
+      # `--dry-run` is what keeps this safe: it is the flag that stops a
+      # tag or a release being created, not the token scope.
+      contents: write
 
     steps:
       - name: 📥 Checkout code
