@@ -100,3 +100,65 @@ class TestEveryHookImportsCleanly:
                 "PyInstaller aborts the entire build when a hook cannot be "
                 "imported."
             )
+
+
+class TestTheDesktopBuildRunsBeforeARelease:
+    """A check that only runs while publishing is not a check.
+
+    `build-desktop.yml` is `workflow_call` only, and its sole caller was
+    `release.yml`. So the desktop bundle was first built *during* a
+    release, and v1.13.1 went public with no binaries because the failure
+    could not surface any earlier. The Python tests above assert the hook
+    files are right; they do not build anything, and nothing in this suite
+    does. Only a workflow can answer whether the app still bundles.
+
+    This is the same shape as the marker sweep: a check that never ran,
+    reporting nothing while appearing to cover the ground.
+    """
+
+    WORKFLOWS = ROOT / ".github/workflows"
+
+    def _load(self, name: str) -> dict:
+        yaml = pytest.importorskip("yaml")
+        return yaml.safe_load((self.WORKFLOWS / name).read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _triggers(workflow: dict) -> dict:
+        # PyYAML reads a bare `on:` key as the boolean True.
+        return workflow.get("on") or workflow.get(True) or {}
+
+    def test_something_builds_the_desktop_app_outside_the_release(self) -> None:
+        callers = [
+            path.name
+            for path in self.WORKFLOWS.glob("*.yml")
+            if "build-desktop.yml" in path.read_text(encoding="utf-8")
+            and path.name != "build-desktop.yml"
+        ]
+        assert callers, "nothing calls build-desktop.yml at all"
+
+        pre_merge = []
+        for name in callers:
+            triggers = self._triggers(self._load(name))
+            if "pull_request" in triggers or "push" in triggers:
+                pre_merge.append(name)
+
+        assert pre_merge, (
+            "build-desktop.yml is only reachable from workflows that publish. "
+            f"Its callers are {callers}, none of which run on a pull request "
+            "or a push, so the first time anyone learns the app still builds "
+            "is while a release is going out."
+        )
+
+    def test_the_release_does_not_fire_on_a_merge(self) -> None:
+        triggers = self._triggers(self._load("release.yml"))
+        push = triggers.get("push") or {}
+        branches = (push or {}).get("branches") or []
+        assert "main" not in branches, (
+            "release.yml fires on push to main, so merging a pull request "
+            "publishes a version as a side effect. Two went out that way "
+            "before this was noticed."
+        )
+        assert "workflow_dispatch" in triggers, (
+            "release.yml has no manual trigger left, so there is now no way "
+            "to publish at all."
+        )

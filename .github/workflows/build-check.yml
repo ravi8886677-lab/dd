@@ -1,0 +1,34 @@
+name: Desktop build check
+
+# The desktop bundle is what users actually download, and until this
+# existed nothing built it outside a release. `build-desktop.yml` is
+# `workflow_call` only, and its single caller is `release.yml`, so the
+# first time anyone learned whether the app still built was while a
+# version was being published to the public.
+#
+# That is how v1.13.1 shipped with no binaries: a dependency rename broke
+# a PyInstaller hook, every test stayed green because no test builds
+# anything, and the failure surfaced after the release existed.
+#
+# One platform is enough to answer "does it still build". The release
+# path builds all four.
+
+on:
+  pull_request:
+  push:
+    branches: [ main, 'claude/**' ]
+
+concurrency:
+  group: build-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      version: 0.0.0-check-${{ github.sha }}
+      channel: develop
+      # Build it and then run it. A bundle that links but cannot start is
+      # a broken download, and this is the cheapest place to find out.
+      smoke_test: true
+      linux_only: true

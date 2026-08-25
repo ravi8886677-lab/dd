@@ -1,14 +1,18 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
-      - develop
+  # Manual only. Publishing is a decision, and on `push: main` it was a
+  # side effect of merging: two releases went out in two days that nobody
+  # asked for, and one of them (v1.13.1) is public with no binaries
+  # attached, because `semantic-release` creates the release before the
+  # builds run and `release-main` attaches whatever exists afterwards.
+  #
+  # Gating the trigger does not fix that ordering, which is still wrong
+  # and worth its own change. It does mean the ordering can no longer be
+  # tripped by accident.
+  #
+  # To publish: run this workflow from the Actions tab against `main`.
   workflow_dispatch:
-    # Dispatched by release-smoke.yml after it fast-forwards main: GitHub
-    # does not fire on:push workflows for pushes made with GITHUB_TOKEN, so
-    # the release would otherwise never be published automatically.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
