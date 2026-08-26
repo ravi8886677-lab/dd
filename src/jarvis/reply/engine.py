@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
 
 from ..utils.redact import redact
-from ..system_prompt import build_system_prompt
+from ..system_prompt import build_system_prompt, COLD_START_GUIDANCE
 from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS, available_builtin_tools
 from ..tools.builtin.stop import STOP_SIGNAL
 from ..debug import debug_log
@@ -1352,6 +1352,32 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         except Exception as e:
             debug_log(f"memory digest step failed (non-fatal): {e}", "memory")
 
+    # Step 5: Cold start.
+    #
+    # Every memory block above is empty, so nothing is stored about this user:
+    # a fresh install, which is where every new user starts. That leaves the
+    # `[Context: ...]` line as the only concrete data in the prompt, while the
+    # persona's open-ended rule licenses inventing an observation whenever the
+    # stored-facts section is absent. With no branch of its own the model
+    # reaches for the one thing it can see and narrates the clock, on every
+    # turn, to every new user — and cannot satisfy the same rule's "vary your
+    # reply" clause, because the material never changes.
+    #
+    # The guidance supplies material of its own and takes the clock off the
+    # table. It is dropped the moment any memory exists, so it never competes
+    # with the "lead with a concrete stored fact" rule and never spends a small
+    # model's prompt budget on a turn that has real material to work from.
+    cold_start = not (
+        warm_profile_block or conversation_context or graph_context or memory_digest_text
+    )
+    if cold_start:
+        print("  🌱 Cold start: no stored memory yet, greeting guidance active", flush=True)
+        debug_log(
+            "cold start: no warm profile, diary, graph or digest — "
+            "injecting cold-start guidance",
+            "memory",
+        )
+
     # Step 6: Tool allow-list for this turn.
     #
     # The router already ran upstream (before the planner) so the planner's
@@ -1530,6 +1556,9 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 "current tools and constraints above still apply:\n"
                 + memory_digest_text
             )
+
+        if cold_start:
+            guidance.append("\n" + COLD_START_GUIDANCE)
 
         # Inject the ACTION PLAN block when the plan has meaningful
         # tool steps — i.e. more than 1 step OR a single step that

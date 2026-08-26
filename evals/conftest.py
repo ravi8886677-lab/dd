@@ -80,6 +80,7 @@ CLASS_DESCRIPTIONS = {
     "TestFollowUpContext": "Tests context retention for follow-up questions",
     "TestMultiTurnExtended": "Extended multi-turn scenarios with longer conversations",
     "TestGreetingNoToolsLive": "Tests that greetings don't trigger tool calls",
+    "TestColdStartGreeting": "Cold start (empty memory): greetings must not anchor on the clock",
     "TestHelpfulness": "Tests that agent uses tools proactively instead of deflecting",
     "TestDiaryRecencyOrder": "Tests that diary search returns newer entries before older ones",
     "TestGraphRecencySuperseding": "Tests that graph handles contradicting facts with date context",
@@ -122,6 +123,10 @@ TEST_DESCRIPTIONS = {
     "test_greeting_no_tools_live": "Greetings do not trigger tool calls",
     "test_user_instructions_no_tools_live": "User instructions do not trigger tool calls",
     "test_weather_still_triggers_tools_live": "Weather query still triggers tools after a greeting",
+    # Cold-start greeting tests
+    "test_cold_start_reply_does_not_narrate_the_clock": "Cold-start greeting is not answered with a time report",
+    "test_cold_start_replies_vary_across_turns": "Cold-start greetings vary instead of repeating one reply",
+    "test_cold_start_still_answers_a_direct_time_question": "Cold start still answers a direct time or date question",
     # Helpfulness / anti-deflection tests
     "test_no_deflection_for_weather_forecast_live": "No deflection on weather forecast questions",
     "test_no_deflection_for_answerable_queries_live": "No deflection on answerable questions",
