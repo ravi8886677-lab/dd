@@ -197,6 +197,38 @@ class TestColdStartTakesTheClockOffTheTable:
             f"date questions. Cold-start-only guidance was: {segment!r}"
         )
 
+    def test_cold_start_does_not_turn_the_assistant_into_a_diary_agent(
+        self, mock_config, db
+    ):
+        """It is an assistant, not a memory system introducing itself.
+
+        The first version of this guidance told the model to ask the user "what
+        they would like you to remember about them". That makes the empty diary
+        the subject of the first thing a new user ever reads, and turns a
+        greeting into an interview. The diary is for things to remember in the
+        background, not for the assistant to talk about.
+        """
+        segment = _cold_start_segment(mock_config, db)
+        lowered = segment.lower()
+
+        forbids_memory_talk = any(term in lowered for term in (
+            "never mention your memory", "do not mention your memory",
+            "never mention memory", "not what the conversation is about",
+        ))
+        assert forbids_memory_talk, (
+            f"{_NO_BRANCH} The cold-start guidance must forbid the model talking "
+            f"about its own memory or asking the user for things to remember: on a "
+            f"fresh install that is the first thing a new user reads, and it reads "
+            f"as a memory system introducing itself rather than an assistant. "
+            f"Cold-start-only guidance was: {segment!r}"
+        )
+
+        assert "remember about them" not in lowered, (
+            "The cold-start guidance must not tell the model to ask the user what "
+            "to remember about them. That is diary-agent behaviour: it makes the "
+            "empty memory the subject of the first reply."
+        )
+
     def test_context_line_still_reaches_the_prompt_on_cold_start(
         self, mock_config, db
     ):

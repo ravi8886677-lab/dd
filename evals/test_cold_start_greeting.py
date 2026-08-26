@@ -87,6 +87,64 @@ def _judge_says_anchored_on_time(query: str, response: str):
     return None, f"unparseable judge verdict: {verdict.strip()}"
 
 
+_DIARY_AGENT_JUDGE_SYSTEM = """You are an evaluation judge for a voice assistant.
+
+You will be shown a user's message and the assistant's reply. Decide whether the
+reply READS AS A MEMORY SYSTEM rather than as an assistant: that is, whether it
+talks about what the assistant does or does not remember, whether it recognises
+the user, that this is their first conversation, or asks the user to supply facts
+for it to store.
+
+Examples of MEMORY_SYSTEM (the failure being tested):
+- "I don't have anything stored about you yet. What would you like me to remember?"
+- "We haven't spoken before. Tell me a bit about yourself so I can remember it."
+- "My memory of you is empty at the moment."
+- "I don't recognise you yet, but I'll remember what you tell me."
+
+Examples of ASSISTANT (acceptable):
+- "Hello. What are you working on?"
+- "Hi. I can look things up, check the weather, or take notes, whatever is useful."
+- "Morning. What do you need?"
+
+Asking what the user is working on or needs is an ASSISTANT reply, not a memory
+system, even though it is a question. The distinction is whether the reply is
+about the assistant's memory or about helping.
+
+Output in this EXACT format:
+VERDICT: [MEMORY_SYSTEM/ASSISTANT]
+REASONING: [one sentence]"""
+
+# Cheap pre-check before the judge: wording that is almost always the failure.
+MEMORY_TALK_TOKENS = (
+    "remember about you", "like me to remember", "stored about you",
+    "don't have anything stored", "do not have anything stored",
+    "my memory", "haven't spoken before", "have not spoken before",
+    "don't recognise you", "do not recognise you", "don't recognize you",
+    "first conversation",
+)
+
+
+def _memory_talk(response: str) -> list[str]:
+    lowered = (response or "").lower()
+    return [t for t in MEMORY_TALK_TOKENS if t in lowered]
+
+
+def _judge_says_memory_system(query: str, response: str):
+    """Return (is_memory_system, reasoning) or (None, reason) when unusable."""
+    verdict = call_judge_llm(
+        _DIARY_AGENT_JUDGE_SYSTEM,
+        f"User message: {query}\n\nAssistant reply: {response}",
+    )
+    if not verdict:
+        return None, "judge LLM returned nothing"
+    upper = verdict.upper()
+    if "MEMORY_SYSTEM" in upper:
+        return True, verdict.strip()
+    if "ASSISTANT" in upper:
+        return False, verdict.strip()
+    return None, f"unparseable judge verdict: {verdict.strip()}"
+
+
 class TestColdStartGreeting:
     """Empty database, greeting-shaped input: the reply must not be about the clock."""
 
@@ -148,6 +206,64 @@ class TestColdStartGreeting:
         assert not anchored, (
             f"Cold-start reply to '{query}' is anchored on the clock/calendar even "
             f"though it did not quote the context line verbatim. Judge: {reasoning}. "
+            f"Response: {response}"
+        )
+
+    @pytest.mark.eval
+    @requires_judge_llm
+    @pytest.mark.parametrize("query", [
+        pytest.param("hi", id="Diary agent: hi"),
+        pytest.param("say something", id="Diary agent: say something"),
+    ])
+    def test_cold_start_reply_is_an_assistant_not_a_memory_system(
+        self, query, mock_config, eval_db, eval_dialogue_memory
+    ):
+        """A greeting must not be answered by talking about the empty diary.
+
+        The diary is for things to remember in the background. An assistant that
+        opens by reporting it has nothing stored, or by asking the user to supply
+        facts for it to keep, has made its memory the subject of the first thing
+        a new user ever reads.
+        """
+        from jarvis.reply import engine as engine_mod
+
+        mock_config.ollama_base_url = "http://localhost:11434"
+        mock_config.ollama_chat_model = JUDGE_MODEL
+        mock_config.llm_chat_model = JUDGE_MODEL
+
+        capture = ToolCallCapture()
+
+        with patch.object(
+            engine_mod, "_live_time_location_string", return_value=PINNED_CONTEXT
+        ), patch.object(
+            engine_mod, "run_tool_with_retries", side_effect=create_mock_tool_run(capture)
+        ):
+            response = engine_mod.run_reply_engine(
+                db=eval_db, cfg=mock_config, tts=None,
+                text=query, dialogue_memory=eval_dialogue_memory,
+            )
+
+        print(f"\n  Live Cold-Start Diary-Agent Test ({JUDGE_MODEL}):")
+        print(f"  Query: '{query}'")
+        print(f"  Response: {response}")
+
+        assert_not_fallback_reply(response, context=f"cold start '{query}'")
+
+        talk = _memory_talk(response)
+        assert not talk, (
+            f"Cold-start reply to '{query}' made the assistant's own memory the "
+            f"subject: it contains {talk}. The diary is for things to remember in "
+            f"the background, not for the assistant to talk about, and this is the "
+            f"first thing a new user reads. Response: {response}"
+        )
+
+        is_memory_system, reasoning = _judge_says_memory_system(query, response)
+        if is_memory_system is None:
+            print(f"  Judge unusable ({reasoning}) — token check alone applied.")
+            return
+        assert not is_memory_system, (
+            f"Cold-start reply to '{query}' reads as a memory system introducing "
+            f"itself rather than an assistant. Judge: {reasoning}. "
             f"Response: {response}"
         )
 

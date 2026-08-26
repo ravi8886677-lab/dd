@@ -127,6 +127,7 @@ TEST_DESCRIPTIONS = {
     "test_cold_start_reply_does_not_narrate_the_clock": "Cold-start greeting is not answered with a time report",
     "test_cold_start_replies_vary_across_turns": "Cold-start greetings vary instead of repeating one reply",
     "test_cold_start_still_answers_a_direct_time_question": "Cold start still answers a direct time or date question",
+    "test_cold_start_reply_is_an_assistant_not_a_memory_system": "Cold-start greeting reads as an assistant, not a memory system",
     # Helpfulness / anti-deflection tests
     "test_no_deflection_for_weather_forecast_live": "No deflection on weather forecast questions",
     "test_no_deflection_for_answerable_queries_live": "No deflection on answerable questions",
