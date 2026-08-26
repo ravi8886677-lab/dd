@@ -140,6 +140,7 @@ class TestTheBoundaryRecordsWhatTheToolFound:
         from jarvis.tools import registry
 
         db_path = str(tmp_path / "jarvis.db")
+        mock_config.db_path = db_path
         recorder.reset_for_tests()
         recorder.configure(db_path=db_path)
         log = ActionLog(db_path)
@@ -169,6 +170,7 @@ class TestTheBoundaryRecordsWhatTheToolFound:
         from jarvis.tools import registry
 
         db_path = str(tmp_path / "jarvis.db")
+        mock_config.db_path = db_path
         recorder.reset_for_tests()
         recorder.configure(db_path=db_path)
         log = ActionLog(db_path)

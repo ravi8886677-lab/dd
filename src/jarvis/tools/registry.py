@@ -512,6 +512,27 @@ def run_tool_with_retries(
     source, mcp_server = _classify_tool(name_for_log, cfg)
     denial = _authorise(cfg, name_for_log, tool_args)
 
+    # Where the log lives is not something every front end should have to
+    # remember, for the same reason arguments are redacted by the log
+    # rather than by asking every caller to scrub them. The boundary is
+    # handed `cfg` on every call, so it points the recorder at the database
+    # the caller is already using. `configure` is cheap and idempotent: it
+    # reopens only when the path actually changes, so a front end that did
+    # configure at startup passes through here as a no-op.
+    #
+    # The dashboard is why this lives here. It can act as the user from
+    # `/api/chat`, it reads the log for its Activity tab, and it never
+    # called `configure` — only `daemon.py` and `chat/cli.py` did. Because
+    # recording is best-effort and never raises, every action taken through
+    # the dashboard went unrecorded without a single error, which is the
+    # one failure mode an audit trail cannot have.
+    _log_db_path = getattr(cfg, "db_path", "") or ""
+    if _log_db_path:
+        try:
+            recorder.configure(db_path=_log_db_path)
+        except Exception as exc:
+            debug_log(f"could not point the action log at the database: {exc}", "audit")
+
     action_id = None
     try:
         action_id = recorder.record_attempt(

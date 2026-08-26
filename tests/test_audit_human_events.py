@@ -37,6 +37,65 @@ def log(tmp_path):
         recorder.reset_for_tests()
 
 
+@pytest.fixture
+def unconfigured_log(tmp_path):
+    """A process where nobody called ``recorder.configure``.
+
+    The dashboard grants YOLO from ``/api/yolo`` and never configured the
+    recorder: only ``daemon.py`` and ``chat/cli.py`` do, and the frozen
+    desktop app serves the dashboard in-process without going through
+    either. So the most consequential thing the user does was recorded
+    from the tray and dropped from the dashboard, silently, because
+    recording is best-effort by design.
+    """
+    from types import SimpleNamespace
+
+    db_path = str(tmp_path / "jarvis.db")
+    recorder.reset_for_tests()  # deliberately NOT configured
+    approval.revoke()
+    log = ActionLog(db_path)
+    settings = SimpleNamespace(db_path=db_path)
+    try:
+        with patch("jarvis.config.load_settings", return_value=settings):
+            yield log
+    finally:
+        approval.revoke()
+        log.close()
+        recorder.reset_for_tests()
+
+
+class TestTheGrantIsRecordedWhoeverOpenedTheWindow:
+    """The tray and the dashboard both grant. Only one of them had
+    configured the recorder, and the log cannot say which grants it is
+    missing."""
+
+    def test_granting_is_recorded_when_no_front_end_configured_the_recorder(
+        self, unconfigured_log
+    ):
+        approval.grant(30)
+
+        entries = [e for e in unconfigured_log.get_entries() if e.tool_source == "human"]
+        assert [e.tool_name for e in entries] == ["yolo.granted"], (
+            "A YOLO grant left no trace because the process granting it had "
+            "not configured the recorder. A log showing Jarvis driving the "
+            "mouse with nothing to say the window was opened cannot explain "
+            "itself, so resolving where the log lives cannot be left to each "
+            "front end remembering to."
+        )
+
+    def test_revoking_is_recorded_when_no_front_end_configured_the_recorder(
+        self, unconfigured_log
+    ):
+        approval.grant(30)
+        approval.revoke()
+
+        names = [
+            e.tool_name for e in unconfigured_log.get_entries()
+            if e.tool_source == "human"
+        ]
+        assert names == ["yolo.granted", "yolo.revoked"]
+
+
 class TestTheWindowIsOnTheRecord:
     def test_granting_is_recorded(self, log):
         approval.grant(30)

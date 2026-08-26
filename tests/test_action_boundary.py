@@ -55,6 +55,66 @@ def _run(cfg, tool_name, tool_args=None):
     )
 
 
+@pytest.fixture
+def unconfigured(tmp_path, mock_config):
+    """A front end that never configured the recorder.
+
+    The dashboard is this case: it imports ``ActionLog`` to *read* the log
+    for its Activity tab, calls ``run_reply_engine`` from ``/api/chat``, and
+    never calls ``recorder.configure``. Only ``daemon.py`` and ``chat/cli.py``
+    do. Recording is best-effort and never raises, so the result was a front
+    end that could act as the user and leave no trace, silently.
+    """
+    from jarvis.audit import recorder
+
+    db_path = str(tmp_path / "jarvis.db")
+    mock_config.db_path = db_path
+    recorder.reset_for_tests()  # deliberately NOT configured
+
+    log = ActionLog(db_path)
+    try:
+        yield mock_config, log
+    finally:
+        log.close()
+        recorder.reset_for_tests()
+
+
+class TestTheRecordDoesNotDependOnTheCallerRememberingTo:
+    """Arguments are redacted by the log rather than by asking every caller
+    to remember. Where the log lives is the same kind of thing: a front end
+    that forgets loses the entire record, and loses it quietly."""
+
+    def test_a_call_is_recorded_when_no_front_end_configured_the_recorder(
+        self, unconfigured
+    ):
+        cfg, log = unconfigured
+
+        _run(cfg, "stop")
+
+        assert [e.entry for e in log.get_entries()] == ["decision", "outcome"], (
+            "A tool call left no trace because no front end had configured the "
+            "recorder. The boundary is handed cfg.db_path on every call and can "
+            "resolve the log itself; requiring each front end to remember means "
+            "the one that forgets is invisible, which is the opposite of an "
+            "audit trail."
+        )
+
+    def test_the_recorded_call_still_names_the_tool_and_the_actor(
+        self, unconfigured
+    ):
+        cfg, log = unconfigured
+
+        _run(cfg, "stop")
+
+        decision = log.get_entries()[0]
+        assert decision.tool_name == "stop"
+        assert decision.device_id, (
+            "An entry that cannot say which machine acted is not an audit trail, "
+            "so the actor must resolve on this path too, not just when a front "
+            "end configured the recorder up front."
+        )
+
+
 class TestEveryCallIsRecorded:
     def test_a_builtin_call_leaves_a_decision_and_an_outcome(self, recorded):
         cfg, log = recorded

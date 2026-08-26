@@ -101,6 +101,30 @@ Consolidating enforcement belongs to the permission engine, which is
 what a stored, evaluable policy is for. Until then the boundary records
 every decision and enforces the ones it can express.
 
+## Where the log lives is not the caller's job
+
+`configure(db_path)` is the precise path: a caller holding a `Settings`
+points the recorder at the database it is already using, and the
+boundary does it on every call from the `cfg` it is handed, so the
+record lands in the same database the action operated against.
+
+Nothing depends on a front end remembering to, because a front end that
+forgets loses its entire record and loses it without an error: recording
+is best-effort by design, so the failure is silent by construction. An
+unconfigured recorder therefore resolves the database from settings
+rather than going quiet.
+
+The dashboard is why this is stated. It reads the log for its Activity
+tab, it can act as the user from `/api/chat`, and it granted YOLO from
+`/api/yolo`, while only `daemon.py` and `chat/cli.py` ever called
+`configure` and the frozen desktop app serves the dashboard in-process
+without going through either. Every action taken there went unrecorded,
+so the log was missing exactly the calls someone went looking for, and
+had nothing to say it was missing them.
+
+A log that is complete for the front ends someone remembered is not an
+audit trail; it is a summary written by the ones that were thought of.
+
 ## Secrets
 
 Arguments are redacted by the log on the way in, through

@@ -53,10 +53,39 @@ def _close_locked() -> None:
         _log = None
 
 
+def _resolve_db_path_locked() -> None:
+    """Fall back to the configured database when nobody pointed us at one.
+
+    ``configure`` is the precise path: a caller holding a ``Settings``
+    passes the database it is already using. But a front end that never
+    calls it would otherwise lose its entire record without an error,
+    because recording is best-effort by design, and a log that is missing
+    exactly the events nobody thought about is worse than no log at all.
+
+    So an unconfigured recorder resolves the database itself rather than
+    going quiet. Read once and cached by ``configure``.
+    """
+    global _db_path
+    if _db_path:
+        return
+    try:
+        from ..config import load_settings
+
+        resolved = getattr(load_settings(), "db_path", "") or ""
+    except Exception as exc:
+        debug_log(f"could not resolve where the action log lives: {exc}", "audit")
+        return
+    if resolved:
+        _db_path = resolved
+        debug_log("action log resolved from settings: nobody configured it", "audit")
+
+
 def get_log() -> Optional[ActionLog]:
     """The shared log, opened on first use. ``None`` if it cannot open."""
     global _log
     with _lock:
+        if _log is None and not _db_path:
+            _resolve_db_path_locked()
         if _log is None and _db_path:
             try:
                 _log = ActionLog(_db_path)
