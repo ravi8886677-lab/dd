@@ -153,6 +153,53 @@ class TestColdStartGreeting:
 
     @pytest.mark.eval
     @requires_judge_llm
+    @pytest.mark.parametrize("query", [
+        pytest.param("what time is it", id="Cold start: what time is it"),
+        pytest.param("what is today's date", id="Cold start: what is the date"),
+    ])
+    def test_cold_start_still_answers_a_direct_time_question(
+        self, query, mock_config, eval_db, eval_dialogue_memory
+    ):
+        """The counterpart guard: the clock is removed as material, not as data.
+
+        The cold-start guidance tells the model not to build a reply out of the
+        `[Context: ...]` line. Scoped wrongly, that reads as "never use the
+        line" and breaks the persona's standing promise to answer time and date
+        questions from it. This is the regression the fix could introduce, so it
+        is tested in the same file as the bug it fixes.
+        """
+        from jarvis.reply import engine as engine_mod
+
+        mock_config.ollama_base_url = "http://localhost:11434"
+        mock_config.ollama_chat_model = JUDGE_MODEL
+        mock_config.llm_chat_model = JUDGE_MODEL
+
+        capture = ToolCallCapture()
+
+        with patch.object(
+            engine_mod, "_live_time_location_string", return_value=PINNED_CONTEXT
+        ), patch.object(
+            engine_mod, "run_tool_with_retries", side_effect=create_mock_tool_run(capture)
+        ):
+            response = engine_mod.run_reply_engine(
+                db=eval_db, cfg=mock_config, tts=None,
+                text=query, dialogue_memory=eval_dialogue_memory,
+            )
+
+        print(f"\n  Live Cold-Start Time-Question Test ({JUDGE_MODEL}):")
+        print(f"  Query: '{query}'")
+        print(f"  Response: {response}")
+
+        assert_not_fallback_reply(response, context=f"cold start '{query}'")
+        assert _leaked_context_tokens(response), (
+            f"Cold start asked '{query}' directly and the reply carries nothing from "
+            f"'{PINNED_CONTEXT}'. The cold-start guidance removes the clock as reply "
+            f"material, not as data: a direct time or date question must still be "
+            f"answered from the context line. Response: {response}"
+        )
+
+    @pytest.mark.eval
+    @requires_judge_llm
     def test_cold_start_replies_vary_across_turns(
         self, mock_config, eval_db, eval_dialogue_memory
     ):

@@ -47,16 +47,17 @@ def _system_message(messages) -> str:
 
 
 def _capture_system(
-    mock_config, db, dialogue_memory, text="hi bro", keywords=(), plan=(), **patches
+    mock_config, db, text="hi bro", keywords=(), plan=(), **patches
 ) -> str:
     """Run one reply against a stubbed chat model and return the system message.
 
     Everything except message construction is stubbed, so what comes back is
     exactly the prompt a fresh install would send for ``text``.
 
-    Each call gets its own ``DialogueMemory``: the warm profile is cached for
-    the lifetime of a conversation, so reusing one across a cold and a warm
-    capture would serve the cold run's empty profile to both.
+    Each call builds its own ``DialogueMemory`` rather than taking the fixture:
+    the warm profile is cached for the lifetime of a conversation, so sharing
+    one across a cold and a warm capture would serve the cold run's empty
+    profile to both.
     """
     from jarvis.memory.conversation import DialogueMemory
     from jarvis.reply import engine as engine_mod
@@ -93,15 +94,15 @@ def _capture_system(
     return captured[0]
 
 
-def _warm_system(mock_config, db, dialogue_memory, text="hi bro") -> str:
+def _warm_system(mock_config, db, text="hi bro") -> str:
     """The same prompt for a user the assistant already knows something about."""
     return _capture_system(
-        mock_config, db, dialogue_memory, text=text,
+        mock_config, db, text=text,
         **{"jarvis.memory.graph_ops.format_warm_profile_block": {"return_value": WARM_PROFILE}},
     )
 
 
-def _cold_start_segment(mock_config, db, dialogue_memory, text="hi bro") -> str:
+def _cold_start_segment(mock_config, db, text="hi bro") -> str:
     """Return the guidance the cold path adds that the warm path does not.
 
     Anchoring on the difference is what makes these assertions guards rather
@@ -109,8 +110,8 @@ def _cold_start_segment(mock_config, db, dialogue_memory, text="hi bro") -> str:
     already says "when the user asks", so searching the whole system message
     for those matches text that predates the bug.
     """
-    cold = _capture_system(mock_config, db, dialogue_memory, text=text)
-    warm = _warm_system(mock_config, db, dialogue_memory, text=text)
+    cold = _capture_system(mock_config, db, text=text)
+    warm = _warm_system(mock_config, db, text=text)
     assert WARM_SENTINEL in warm, "warm-profile patch did not take effect"
     warm_lines = set(warm.splitlines())
     return "\n".join(line for line in cold.splitlines() if line and line not in warm_lines)
@@ -130,11 +131,11 @@ class TestColdStartTakesTheClockOffTheTable:
     only material an open-ended reply can be built from."""
 
     def test_cold_start_forbids_the_context_line_as_reply_material(
-        self, mock_config, db, dialogue_memory
+        self, mock_config, db
     ):
         """With an empty database the prompt must rule out narrating the
         time/date/location back at the user."""
-        segment = _cold_start_segment(mock_config, db, dialogue_memory)
+        segment = _cold_start_segment(mock_config, db)
         lowered = segment.lower()
 
         prohibits_it = any(term in lowered for term in (
@@ -150,7 +151,7 @@ class TestColdStartTakesTheClockOffTheTable:
         )
 
     def test_cold_start_supplies_material_of_its_own(
-        self, mock_config, db, dialogue_memory
+        self, mock_config, db
     ):
         """Removing the clock is only half the fix.
 
@@ -158,7 +159,7 @@ class TestColdStartTakesTheClockOffTheTable:
         persona prompt already bans bare greetings, so the cold-start branch
         must hand it something concrete to say instead.
         """
-        segment = _cold_start_segment(mock_config, db, dialogue_memory)
+        segment = _cold_start_segment(mock_config, db)
         lowered = segment.lower()
 
         assert any(term in lowered for term in (
@@ -174,7 +175,7 @@ class TestColdStartTakesTheClockOffTheTable:
         )
 
     def test_cold_start_prohibition_is_scoped_to_unasked_questions(
-        self, mock_config, db, dialogue_memory
+        self, mock_config, db
     ):
         """The clock rule must not break "what time is it".
 
@@ -182,7 +183,7 @@ class TestColdStartTakesTheClockOffTheTable:
         context line. An unscoped ban contradicts it, and small models resolve
         that contradiction unpredictably.
         """
-        segment = _cold_start_segment(mock_config, db, dialogue_memory)
+        segment = _cold_start_segment(mock_config, db)
         lowered = segment.lower()
 
         assert any(term in lowered for term in (
@@ -197,14 +198,14 @@ class TestColdStartTakesTheClockOffTheTable:
         )
 
     def test_context_line_still_reaches_the_prompt_on_cold_start(
-        self, mock_config, db, dialogue_memory
+        self, mock_config, db
     ):
         """The fix removes the clock as *material*, not as *data*.
 
         Scheduling suggestions and "what time is it" both still need the line
         present, so the cold-start branch must not suppress the injection.
         """
-        system = _capture_system(mock_config, db, dialogue_memory)
+        system = _capture_system(mock_config, db)
         assert "[Context: Tuesday, 26 August 2026 at 15:40 UTC" in system, (
             "The cold-start branch must not suppress the [Context: ...] injection "
             "— the model still needs it to answer time, date and location questions."
@@ -215,7 +216,7 @@ class TestColdStartBranchYieldsToStoredMemory:
     """When memory exists, the stored-fact rule owns the turn."""
 
     def test_guidance_present_when_cold_and_absent_when_warm(
-        self, mock_config, db, dialogue_memory
+        self, mock_config, db
     ):
         """A differential, so neither half can pass vacuously.
 
@@ -225,8 +226,8 @@ class TestColdStartBranchYieldsToStoredMemory:
         """
         from jarvis.system_prompt import COLD_START_GUIDANCE
 
-        cold = _capture_system(mock_config, db, dialogue_memory)
-        warm = _warm_system(mock_config, db, dialogue_memory)
+        cold = _capture_system(mock_config, db)
+        warm = _warm_system(mock_config, db)
 
         assert COLD_START_GUIDANCE in cold, (
             "Empty install must get the cold-start guidance — it is the only thing "
@@ -239,7 +240,7 @@ class TestColdStartBranchYieldsToStoredMemory:
         )
 
     def test_guidance_absent_when_diary_memory_present(
-        self, mock_config, db, dialogue_memory
+        self, mock_config, db
     ):
         """Diary enrichment counts as memory too, not just the warm profile."""
         from jarvis.system_prompt import COLD_START_GUIDANCE
@@ -247,7 +248,7 @@ class TestColdStartBranchYieldsToStoredMemory:
         mock_config.memory_enrichment_source = "diary"
         mock_config.memory_digest_enabled = False
         system = _capture_system(
-            mock_config, db, dialogue_memory, text=MEMORY_QUERY,
+            mock_config, db, text=MEMORY_QUERY,
             keywords=["fencing"], plan=MEMORY_PLAN,
             **{"jarvis.memory.conversation.search_conversation_memory_by_keywords": {
                 "return_value": [DIARY_ENTRY]
@@ -261,7 +262,7 @@ class TestColdStartBranchYieldsToStoredMemory:
         )
 
     def test_guidance_absent_when_only_the_digest_survives(
-        self, mock_config, db, dialogue_memory
+        self, mock_config, db
     ):
         """The small-model path is the one a naive check gets wrong.
 
@@ -280,7 +281,7 @@ class TestColdStartBranchYieldsToStoredMemory:
 
         with patch.object(engine_mod, "digest_memory_for_query", return_value=digest_note):
             system = _capture_system(
-                mock_config, db, dialogue_memory, text=MEMORY_QUERY,
+                mock_config, db, text=MEMORY_QUERY,
                 keywords=["fencing"], plan=MEMORY_PLAN,
                 **{"jarvis.memory.conversation.search_conversation_memory_by_keywords": {
                     "return_value": [DIARY_ENTRY]
